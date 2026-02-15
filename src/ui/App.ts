@@ -1,5 +1,5 @@
 import { AudioEngine } from '../core/AudioEngine';
-import { formatTime, CHANNEL_NAMES, PluginInfo } from '../core/types';
+import { formatTime, CHANNEL_NAMES, PluginInfo, ExportMetadata } from '../core/types';
 import { AudioEditor } from '../editor/AudioEditor';
 import { WaveformRenderer } from '../editor/WaveformRenderer';
 import { SpectrogramRenderer } from '../editor/SpectrogramRenderer';
@@ -7,6 +7,7 @@ import { CuePointManager, CuePointRenderer } from '../editor/CuePointManager';
 import { Mixer } from '../mixer/Mixer';
 import { PluginHost } from '../plugins/PluginHost';
 import { Metering } from './Metering';
+import { MetadataManager } from './MetadataManager';
 import { FileQueue } from './FileQueue';
 import { ProjectManager } from './ProjectManager';
 import { UndoManager } from '../utils/UndoManager';
@@ -29,8 +30,11 @@ export class App {
   cuePointRenderer: CuePointRenderer;
   mixer: Mixer;
   pluginHost: PluginHost | null = null;
+  metadataManager: MetadataManager;
   pendingCuePointSample: number | undefined;
   meterAnimationFrame = 0;
+  private pendingExportMetadata: ExportMetadata | null = null;
+  private pendingUCSFilename: string | null = null;
 
   constructor() {
     this.audioEngine = new AudioEngine();
@@ -51,6 +55,8 @@ export class App {
       this.audioEngine,
       null as any // Will be set after audio context init
     );
+
+    this.metadataManager = new MetadataManager();
 
     this.setupEventListeners();
     this.setupCuePointCallbacks();
@@ -925,11 +931,29 @@ export class App {
   // ==================== UI ====================
 
   showExportModal(): void {
-    const hasSelection = this.waveformRenderer.hasSelection();
-    const checkbox = document.getElementById('exportSelection') as HTMLInputElement;
-    checkbox.disabled = !hasSelection;
-    checkbox.checked = hasSelection;
-    this.showModal('exportModal');
+    if (!this.audioEngine.audioBuffer) return;
+
+    // Show metadata dialog first, then export settings
+    this.metadataManager.show(
+      this.audioEngine.audioBuffer.numberOfChannels,
+      (metadata, ucsFilename) => {
+        this.pendingExportMetadata = metadata;
+
+        // If UCS filename was generated, update the filename
+        if (ucsFilename) {
+          this.pendingUCSFilename = ucsFilename;
+        } else {
+          this.pendingUCSFilename = null;
+        }
+
+        // Now show export settings dialog
+        const hasSelection = this.waveformRenderer.hasSelection();
+        const checkbox = document.getElementById('exportSelection') as HTMLInputElement;
+        checkbox.disabled = !hasSelection;
+        checkbox.checked = hasSelection;
+        this.showModal('exportModal');
+      }
+    );
   }
 
   showNormalizeModal(): void { this.showModal('normalizeModal'); }
@@ -958,11 +982,13 @@ export class App {
       fileNameSuffix = '_selection';
     }
 
+    const metadata = this.pendingExportMetadata || undefined;
+
     let blob: Blob;
     let extension: string;
 
     if (format === 'wav') {
-      blob = FileHandler.exportWAV(bufferToExport, bitDepth, dither);
+      blob = FileHandler.exportWAV(bufferToExport, bitDepth, dither, metadata);
       extension = '.wav';
     } else {
       const aifBitDepth = bitDepth === 32 ? 24 : bitDepth;
@@ -970,7 +996,14 @@ export class App {
       extension = '.aif';
     }
 
-    const baseName = this.fileName ? this.fileName.replace(/\.[^/.]+$/, '') : 'audio';
+    // Use UCS filename if available, otherwise use original filename
+    let baseName: string;
+    if (this.pendingUCSFilename) {
+      baseName = this.pendingUCSFilename;
+    } else {
+      baseName = this.fileName ? this.fileName.replace(/\.[^/.]+$/, '') : 'audio';
+    }
+
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -978,6 +1011,8 @@ export class App {
     a.click();
     URL.revokeObjectURL(url);
 
+    this.pendingExportMetadata = null;
+    this.pendingUCSFilename = null;
     this.hideModal('exportModal');
   }
 

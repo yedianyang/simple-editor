@@ -1024,6 +1024,146 @@
         }
 
         /* ============================
+           Metadata / UCS Modal
+           ============================ */
+        .metadata-modal {
+            min-width: 520px;
+            max-width: 600px;
+            max-height: 80vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .metadata-tabs {
+            display: flex;
+            gap: 2px;
+            margin-bottom: 16px;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 0;
+        }
+
+        .metadata-tab {
+            padding: 8px 14px;
+            font-size: 12px;
+            background: none;
+            border: none;
+            border-bottom: 2px solid transparent;
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: color 0.15s, border-color 0.15s;
+            border-radius: 0;
+        }
+
+        .metadata-tab:hover {
+            color: var(--text-primary);
+            background: none;
+        }
+
+        .metadata-tab.active {
+            color: var(--accent-blue-hover);
+            border-bottom-color: var(--accent-blue);
+            background: none;
+        }
+
+        .metadata-tab-content {
+            overflow-y: auto;
+            max-height: calc(80vh - 180px);
+            padding-right: 4px;
+        }
+
+        .metadata-section-label {
+            font-size: 10px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin: 12px 0 8px 0;
+            padding-bottom: 4px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .metadata-section-label:first-child {
+            margin-top: 0;
+        }
+
+        .metadata-field-row {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            margin-bottom: 8px;
+        }
+
+        .metadata-field-row label {
+            flex: 0 0 110px;
+            font-size: 12px;
+            color: var(--text-primary);
+            padding-top: 6px;
+            line-height: 1.3;
+        }
+
+        .metadata-field-row .field-limit {
+            font-size: 9px;
+            color: var(--text-muted);
+            display: block;
+        }
+
+        .metadata-field-row input[type="text"],
+        .metadata-field-row textarea,
+        .metadata-field-row select {
+            flex: 1;
+            background-color: var(--bg-primary);
+            border: 1px solid var(--border-light);
+            color: var(--text-primary);
+            padding: 6px 10px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-family: inherit;
+        }
+
+        .metadata-field-row input[type="text"]:focus,
+        .metadata-field-row textarea:focus,
+        .metadata-field-row select:focus {
+            outline: none;
+            border-color: var(--accent-blue);
+        }
+
+        .metadata-field-row input[readonly] {
+            background-color: var(--bg-tertiary);
+            color: var(--text-secondary);
+        }
+
+        .metadata-field-row textarea {
+            resize: vertical;
+            min-height: 36px;
+        }
+
+        .metadata-checkbox-row {
+            display: flex;
+            gap: 16px;
+            padding: 4px 0;
+        }
+
+        .metadata-checkbox-row .checkbox-label {
+            font-size: 12px;
+        }
+
+        .metadata-filename-preview {
+            flex: 1;
+            background-color: var(--bg-primary);
+            border: 1px solid var(--border-light);
+            border-radius: 4px;
+            padding: 6px 10px;
+            font-size: 12px;
+            font-family: 'SF Mono', SFMono-Regular, ui-monospace, Menlo, monospace;
+            color: var(--text-muted);
+            word-break: break-all;
+        }
+
+        .metadata-filename-preview.has-value {
+            color: var(--accent-green-light);
+        }
+
+        /* ============================
            Hidden Inputs
            ============================ */
         #fileInput,
@@ -1362,6 +1502,147 @@
             <div class="modal-buttons">
                 <button id="pluginBrowserCancelBtn">Cancel</button>
                 <button id="pluginBrowserInsertBtn" class="primary" disabled>Insert</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============================
+         Metadata / UCS Export Modal
+         ============================ -->
+    <div class="modal-overlay" id="metadataModal">
+        <div class="modal metadata-modal">
+            <h3>Export Metadata & UCS Naming</h3>
+
+            <!-- Tab Navigation -->
+            <div class="metadata-tabs">
+                <button class="metadata-tab active" data-tab="ucs">UCS Naming</button>
+                <button class="metadata-tab" data-tab="bwf">BWF / BEXT</button>
+                <button class="metadata-tab" data-tab="ixml">iXML</button>
+                <button class="metadata-tab" data-tab="sfx">SFX Library</button>
+            </div>
+
+            <!-- UCS Tab -->
+            <div class="metadata-tab-content" data-tab="ucs" style="display:block;">
+                <div class="metadata-section-label">UCS Category</div>
+                <div class="metadata-field-row">
+                    <label>Category</label>
+                    <select id="ucsCategory"></select>
+                </div>
+                <div class="metadata-field-row">
+                    <label>SubCategory</label>
+                    <select id="ucsSubCategory"><option value="">-- Select SubCategory --</option></select>
+                </div>
+                <div class="metadata-field-row">
+                    <label>CatID</label>
+                    <input type="text" id="ucsCatId" readonly placeholder="(auto)">
+                </div>
+                <div class="metadata-section-label">UCS Filename</div>
+                <div class="metadata-field-row">
+                    <label>FX Name</label>
+                    <input type="text" id="ucsFxName" placeholder="e.g. ForestMorning">
+                </div>
+                <div class="metadata-field-row">
+                    <label>Creator ID</label>
+                    <input type="text" id="ucsCreatorId" placeholder="e.g. MyStudio">
+                </div>
+                <div class="metadata-field-row">
+                    <label>Source ID</label>
+                    <input type="text" id="ucsSourceId" placeholder="e.g. FieldRec2024">
+                </div>
+                <div class="metadata-field-row">
+                    <label>Filename Preview</label>
+                    <div class="metadata-filename-preview" id="ucsFilenamePreview">(set Category + FX Name to preview)</div>
+                </div>
+            </div>
+
+            <!-- BWF / BEXT Tab -->
+            <div class="metadata-tab-content" data-tab="bwf" style="display:none;">
+                <div class="metadata-section-label">BWF BEXT (EBU Tech 3285)</div>
+                <div class="metadata-field-row">
+                    <label>Description <span class="field-limit">256 chars</span></label>
+                    <textarea id="bpiDescription" maxlength="256" rows="3" placeholder="Description of the sound"></textarea>
+                </div>
+                <div class="metadata-field-row">
+                    <label>Originator <span class="field-limit">32 chars</span></label>
+                    <input type="text" id="originator" maxlength="32" value="FieldCorder" placeholder="Creator / application">
+                </div>
+                <div class="metadata-field-row">
+                    <label>Originator Ref <span class="field-limit">32 chars</span></label>
+                    <input type="text" id="originatorRef" maxlength="32" placeholder="Unique identifier (USID)">
+                </div>
+            </div>
+
+            <!-- iXML Tab -->
+            <div class="metadata-tab-content" data-tab="ixml" style="display:none;">
+                <div class="metadata-section-label">iXML Location Sound</div>
+                <div class="metadata-field-row">
+                    <label>Project</label>
+                    <input type="text" id="project" placeholder="Project name">
+                </div>
+                <div class="metadata-field-row">
+                    <label>Scene</label>
+                    <input type="text" id="scene" placeholder="Scene number">
+                </div>
+                <div class="metadata-field-row">
+                    <label>Take</label>
+                    <input type="text" id="take" placeholder="Take number">
+                </div>
+                <div class="metadata-field-row">
+                    <label>Tape</label>
+                    <input type="text" id="tape" placeholder="Tape / roll ID">
+                </div>
+                <div class="metadata-field-row">
+                    <label>Note</label>
+                    <textarea id="note" rows="2" placeholder="Free text notes"></textarea>
+                </div>
+                <div class="metadata-field-row metadata-checkbox-row">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="circled">
+                        <span>Circled Take</span>
+                    </label>
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="wildTrack">
+                        <span>Wild Track</span>
+                    </label>
+                </div>
+                <div class="metadata-section-label">Track Names</div>
+                <div id="trackNamesContainer"></div>
+            </div>
+
+            <!-- SFX Library Tab -->
+            <div class="metadata-tab-content" data-tab="sfx" style="display:none;">
+                <div class="metadata-section-label">Recording Info</div>
+                <div class="metadata-field-row">
+                    <label>Recordist</label>
+                    <input type="text" id="recordist" placeholder="Person who recorded">
+                </div>
+                <div class="metadata-field-row">
+                    <label>Microphone</label>
+                    <input type="text" id="microphone" placeholder="e.g. Sennheiser MKH 8040">
+                </div>
+                <div class="metadata-field-row">
+                    <label>Mic Perspective</label>
+                    <select id="micPerspective"></select>
+                </div>
+                <div class="metadata-field-row">
+                    <label>Location</label>
+                    <input type="text" id="location" placeholder="Recording location">
+                </div>
+                <div class="metadata-section-label">Library Info</div>
+                <div class="metadata-field-row">
+                    <label>Library</label>
+                    <input type="text" id="library" placeholder="Library name">
+                </div>
+                <div class="metadata-field-row">
+                    <label>Keywords</label>
+                    <input type="text" id="keywords" placeholder="Comma-separated keywords">
+                </div>
+            </div>
+
+            <!-- Modal Buttons -->
+            <div class="modal-buttons">
+                <button id="metadataCancelBtn">Cancel</button>
+                <button id="metadataExportBtn" class="primary">Continue to Export</button>
             </div>
         </div>
     </div>

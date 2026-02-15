@@ -110,6 +110,139 @@ export interface FileQueueItem {
   mixerState?: MixerState;
 }
 
+// ==================== BWF / iXML Metadata ====================
+
+/**
+ * BWF BEXT chunk metadata (EBU Tech 3285).
+ * Standard metadata embedded in Broadcast Wave Format files.
+ */
+export interface BextMetadata {
+  description: string;          // 256 chars max - Description of the sound
+  originator: string;           // 32 chars max - Creator/application name
+  originatorReference: string;  // 32 chars max - Unique identifier (USID)
+  originationDate: string;      // 10 chars: yyyy-mm-dd
+  originationTime: string;      // 8 chars: hh:mm:ss
+  codingHistory: string;        // Encoding history text
+}
+
+/**
+ * iXML metadata fields (iXML open standard).
+ * Location sound & field recording metadata.
+ */
+export interface IXMLMetadata {
+  project: string;              // Project/production name
+  scene: string;                // Scene or slate identifier
+  take: string;                 // Take number
+  tape: string;                 // Tape/sound roll identifier
+  note: string;                 // Free text notes
+  circled: boolean;             // Circled (preferred) take
+  wildTrack: boolean;           // Wild track (no sync to picture)
+  trackList: IXMLTrack[];       // Per-track metadata
+}
+
+export interface IXMLTrack {
+  channelIndex: number;
+  name: string;                 // Track name (e.g. mic assignment)
+  function: string;             // Channel function (LEFT, RIGHT, MID, SIDE, etc.)
+}
+
+/**
+ * UCS (Universal Category System) naming metadata.
+ * Standard for sound effects categorization and filename structure.
+ */
+export interface UCSMetadata {
+  category: string;             // Top-level category (e.g. "AMBIENCE")
+  subCategory: string;          // Sub-category (e.g. "FOREST")
+  catId: string;                // CatID code (e.g. "AMBForst")
+  fxName: string;               // Descriptive FX name
+  creatorId: string;            // Creator/recordist short ID
+  sourceId: string;             // Source/library ID
+}
+
+/**
+ * Sound Effects metadata fields (Soundminer / professional standard).
+ * Used for sound library management and search.
+ */
+export interface SFXMetadata {
+  description: string;          // Full description of the sound
+  category: string;             // UCS category
+  subCategory: string;          // UCS subcategory
+  recordist: string;            // Person who recorded
+  designer: string;             // Sound designer
+  microphone: string;           // Microphone used
+  micPerspective: string;       // INT, CU, MCU, MS, DIST, etc.
+  location: string;             // Recording location
+  library: string;              // Library name
+  keywords: string;             // Search keywords
+  notes: string;                // Additional notes
+}
+
+/**
+ * Combined export metadata for the metadata dialog.
+ */
+export interface ExportMetadata {
+  // BWF BEXT fields
+  bpiDescription: string;
+  originator: string;
+  originatorRef: string;
+
+  // iXML fields
+  project: string;
+  scene: string;
+  take: string;
+  tape: string;
+  note: string;
+  circled: boolean;
+  wildTrack: boolean;
+  trackNames: string[];         // Per-channel track names
+
+  // UCS naming
+  ucsCategory: string;
+  ucsSubCategory: string;
+  ucsCatId: string;
+  ucsFxName: string;
+  ucsCreatorId: string;
+  ucsSourceId: string;
+
+  // SFX library fields
+  recordist: string;
+  microphone: string;
+  micPerspective: string;
+  location: string;
+  library: string;
+  keywords: string;
+}
+
+export const MIC_PERSPECTIVES = ['INT', 'CU', 'MCU', 'MS', 'DIST', 'AERIAL'] as const;
+
+export function createDefaultExportMetadata(): ExportMetadata {
+  return {
+    bpiDescription: '',
+    originator: 'FieldCorder',
+    originatorRef: '',
+    project: '',
+    scene: '',
+    take: '',
+    tape: '',
+    note: '',
+    circled: false,
+    wildTrack: false,
+    trackNames: [],
+    ucsCategory: '',
+    ucsSubCategory: '',
+    ucsCatId: '',
+    ucsFxName: '',
+    ucsCreatorId: '',
+    ucsSourceId: '',
+    recordist: '',
+    microphone: '',
+    micPerspective: '',
+    location: '',
+    library: '',
+    keywords: '',
+  };
+}
+
 // Utility type for formatTime
 export function formatTime(seconds: number): string {
   const mins = Math.floor(seconds / 60);
