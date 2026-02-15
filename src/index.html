@@ -1,0 +1,1374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'">
+    <title>FieldCorder</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg-primary: #1a1a1a;
+            --bg-secondary: #222222;
+            --bg-tertiary: #2a2a2a;
+            --bg-elevated: #3a3a3a;
+            --bg-hover: #4a4a4a;
+            --bg-active: #5a5a5a;
+            --border-color: #3a3a3a;
+            --border-light: #4a4a4a;
+            --text-primary: #e0e0e0;
+            --text-secondary: #888888;
+            --text-muted: #666666;
+            --accent-blue: #2563eb;
+            --accent-blue-hover: #3b82f6;
+            --accent-green: #059669;
+            --accent-green-light: #10b981;
+            --accent-purple: #7c3aed;
+            --accent-purple-light: #8b5cf6;
+            --color-danger: #ef4444;
+            --color-warning: #fbbf24;
+            --color-success: #4ade80;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            user-select: none;
+        }
+
+        /* ============================
+           Titlebar (macOS hiddenInset)
+           ============================ */
+        .titlebar {
+            height: 40px;
+            background-color: var(--bg-tertiary);
+            -webkit-app-region: drag;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .titlebar-title {
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            letter-spacing: 0.3px;
+        }
+
+        .titlebar button,
+        .titlebar input,
+        .titlebar select {
+            -webkit-app-region: no-drag;
+        }
+
+        /* ============================
+           Toolbar
+           ============================ */
+        .toolbar {
+            display: flex;
+            gap: 8px;
+            padding: 8px 12px;
+            background-color: var(--bg-tertiary);
+            border-bottom: 1px solid var(--border-color);
+            flex-wrap: wrap;
+            align-items: center;
+            flex-shrink: 0;
+        }
+
+        .toolbar-group {
+            display: flex;
+            gap: 4px;
+            align-items: center;
+            padding-right: 12px;
+            border-right: 1px solid var(--border-color);
+        }
+
+        .toolbar-group:last-child {
+            border-right: none;
+        }
+
+        .toolbar-label {
+            font-size: 11px;
+            color: var(--text-secondary);
+            margin-right: 4px;
+        }
+
+        /* ============================
+           Buttons
+           ============================ */
+        button {
+            background-color: var(--bg-elevated);
+            color: var(--text-primary);
+            border: 1px solid var(--border-light);
+            padding: 6px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 13px;
+            transition: background-color 0.15s;
+            font-family: inherit;
+        }
+
+        button:hover:not(:disabled) {
+            background-color: var(--bg-hover);
+        }
+
+        button:active:not(:disabled) {
+            background-color: var(--bg-active);
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        button.primary {
+            background-color: var(--accent-blue);
+            border-color: var(--accent-blue-hover);
+        }
+
+        button.primary:hover:not(:disabled) {
+            background-color: var(--accent-blue-hover);
+        }
+
+        button.transport {
+            width: 40px;
+            font-size: 16px;
+            padding: 6px;
+            text-align: center;
+        }
+
+        button.transport.playing {
+            background-color: var(--accent-green);
+            border-color: var(--accent-green-light);
+        }
+
+        button.transport.loop-active {
+            background-color: var(--accent-purple);
+            border-color: var(--accent-purple-light);
+        }
+
+        /* ============================
+           Main Content Layout
+           ============================ */
+        .main-content {
+            flex: 1;
+            display: flex;
+            overflow: hidden;
+            min-height: 0;
+        }
+
+        /* ============================
+           Left Sidebar - File Queue
+           ============================ */
+        .left-sidebar {
+            width: 200px;
+            background-color: var(--bg-secondary);
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            flex-shrink: 0;
+        }
+
+        .file-list-panel {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .file-list-header {
+            padding: 8px 10px;
+            font-size: 11px;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            border-bottom: 1px solid var(--border-color);
+            font-weight: 600;
+        }
+
+        .file-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 4px;
+        }
+
+        .file-item {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            padding: 6px 8px;
+            margin-bottom: 2px;
+            background-color: var(--bg-tertiary);
+            border-radius: 3px;
+            cursor: pointer;
+            transition: background-color 0.15s;
+        }
+
+        .file-item:hover {
+            background-color: var(--bg-elevated);
+        }
+
+        .file-item.active {
+            background-color: var(--accent-blue);
+        }
+
+        .file-name {
+            flex: 1;
+            font-size: 11px;
+            color: var(--text-primary);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .file-delete {
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            cursor: pointer;
+            padding: 0;
+            width: 16px;
+            height: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            line-height: 1;
+            transition: color 0.15s;
+        }
+
+        .file-delete:hover {
+            color: var(--color-danger);
+        }
+
+        /* ============================
+           Editor Area
+           ============================ */
+        .editor-area {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            min-width: 0;
+        }
+
+        /* Cue point lane */
+        .cuepoint-container {
+            height: 30px;
+            position: relative;
+            background-color: #252525;
+            border-bottom: 1px solid var(--border-color);
+            overflow: hidden;
+            flex-shrink: 0;
+        }
+
+        #cuepointCanvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        /* Waveform container */
+        .waveform-container {
+            flex: 1;
+            position: relative;
+            background-color: var(--bg-primary);
+            overflow: hidden;
+            min-height: 120px;
+        }
+
+        #waveformCanvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        /* Spectrogram container */
+        .spectrogram-container {
+            height: 150px;
+            position: relative;
+            background-color: #0a0a0a;
+            border-top: 1px solid var(--border-color);
+            flex-shrink: 0;
+        }
+
+        #spectrogramCanvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        .spectrogram-label {
+            position: absolute;
+            top: 4px;
+            left: 8px;
+            font-size: 10px;
+            color: var(--text-muted);
+        }
+
+        .spectrogram-fft {
+            position: absolute;
+            bottom: 4px;
+            right: 8px;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .spectrogram-fft-label {
+            font-size: 9px;
+            color: var(--text-muted);
+        }
+
+        .fft-select {
+            background-color: var(--bg-primary);
+            border: 1px solid var(--border-light);
+            color: var(--text-primary);
+            padding: 4px 6px;
+            border-radius: 4px;
+            font-size: 12px;
+        }
+
+        /* ============================
+           Right Sidebar
+           ============================ */
+        .right-sidebar {
+            width: 250px;
+            background-color: var(--bg-secondary);
+            border-left: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+            flex-shrink: 0;
+        }
+
+        .sidebar-section {
+            padding: 8px 10px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .sidebar-section-header {
+            font-size: 10px;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 6px;
+            font-weight: 600;
+        }
+
+        /* Channel info */
+        .channel-info {
+            padding: 6px 0;
+        }
+
+        .channel-info-text {
+            font-size: 11px;
+            color: var(--text-primary);
+            margin-bottom: 2px;
+        }
+
+        /* Meters panel */
+        .meters-panel {
+            padding: 8px 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .meter {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .meter-label {
+            font-size: 9px;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+        }
+
+        .meter-value {
+            font-size: 14px;
+            font-family: 'SF Mono', SFMono-Regular, ui-monospace, Menlo, monospace;
+            font-weight: 600;
+            color: var(--color-success);
+        }
+
+        .meter-value.warning {
+            color: var(--color-warning);
+        }
+
+        .meter-value.danger {
+            color: var(--color-danger);
+        }
+
+        .meter-bar-container {
+            height: 4px;
+            background-color: var(--bg-primary);
+            border-radius: 2px;
+            overflow: hidden;
+        }
+
+        .meter-bar {
+            height: 100%;
+            background: linear-gradient(to right, #4ade80, #fbbf24, #ef4444);
+            border-radius: 2px;
+            transition: width 0.05s;
+        }
+
+        .meter-unit {
+            font-size: 8px;
+            color: var(--text-muted);
+        }
+
+        /* Stats divider */
+        .stats-divider {
+            height: 1px;
+            background-color: var(--border-color);
+            margin: 4px 0;
+        }
+
+        /* Real-time LUFS section */
+        .lufs-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 2px 0;
+            font-size: 10px;
+        }
+
+        .lufs-label {
+            color: var(--text-secondary);
+            font-size: 9px;
+        }
+
+        .lufs-value {
+            color: var(--text-primary);
+            font-family: 'SF Mono', SFMono-Regular, ui-monospace, Menlo, monospace;
+            font-size: 10px;
+        }
+
+        /* File statistics */
+        .file-stat {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 2px 0;
+            font-size: 10px;
+        }
+
+        .file-stat-label {
+            color: var(--text-secondary);
+            font-size: 9px;
+        }
+
+        .file-stat-value {
+            color: var(--text-primary);
+            font-family: 'SF Mono', SFMono-Regular, ui-monospace, Menlo, monospace;
+            font-size: 10px;
+        }
+
+        /* Volume control */
+        .volume-control {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            padding: 4px 0;
+        }
+
+        .volume-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .volume-label {
+            font-size: 9px;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+        }
+
+        .volume-value {
+            font-size: 10px;
+            color: var(--text-primary);
+            font-family: 'SF Mono', SFMono-Regular, ui-monospace, Menlo, monospace;
+        }
+
+        .volume-slider {
+            width: 100%;
+            height: 20px;
+            -webkit-appearance: none;
+            appearance: none;
+            background: transparent;
+            outline: none;
+            cursor: pointer;
+        }
+
+        .volume-slider::-webkit-slider-track {
+            width: 100%;
+            height: 4px;
+            background: var(--bg-primary);
+            border-radius: 2px;
+        }
+
+        .volume-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 12px;
+            height: 12px;
+            background: var(--accent-blue);
+            border-radius: 50%;
+            cursor: pointer;
+            margin-top: -4px;
+        }
+
+        .volume-slider::-webkit-slider-thumb:hover {
+            background: var(--accent-blue-hover);
+        }
+
+        .volume-slider::-moz-range-track {
+            width: 100%;
+            height: 4px;
+            background: var(--bg-primary);
+            border-radius: 2px;
+        }
+
+        .volume-slider::-moz-range-thumb {
+            width: 12px;
+            height: 12px;
+            background: var(--accent-blue);
+            border: none;
+            border-radius: 50%;
+            cursor: pointer;
+        }
+
+        .volume-slider::-moz-range-thumb:hover {
+            background: var(--accent-blue-hover);
+        }
+
+        /* ============================
+           Mixer Container (bottom)
+           ============================ */
+        .mixer-container {
+            background-color: var(--bg-secondary);
+            border-top: 1px solid var(--border-color);
+            flex-shrink: 0;
+            overflow-x: auto;
+            display: flex;
+        }
+
+        .mixer-empty {
+            padding: 12px 16px;
+            font-size: 12px;
+            color: var(--text-muted);
+            text-align: center;
+            width: 100%;
+        }
+
+        .mixer-channels {
+            display: flex;
+            gap: 1px;
+            padding: 4px;
+            min-height: 140px;
+        }
+
+        .mixer-strip {
+            width: 80px;
+            background-color: var(--bg-tertiary);
+            border-radius: 4px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 4px;
+            gap: 4px;
+        }
+
+        .mixer-strip.mixer-master {
+            border-left: 2px solid var(--border-light);
+            margin-left: 4px;
+        }
+
+        .mixer-strip-header {
+            width: 100%;
+            text-align: center;
+            padding: 4px 2px;
+            border-radius: 2px;
+        }
+
+        .mixer-strip-name {
+            font-size: 10px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .mixer-strip-plugins {
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            min-height: 24px;
+        }
+
+        .mixer-plugin-slot {
+            display: flex;
+            align-items: center;
+            gap: 2px;
+            background-color: var(--bg-primary);
+            border-radius: 2px;
+            padding: 2px 4px;
+            font-size: 9px;
+        }
+
+        .mixer-plugin-name {
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            color: var(--text-primary);
+        }
+
+        .mixer-plugin-remove {
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: 12px;
+            padding: 0;
+            line-height: 1;
+        }
+
+        .mixer-plugin-remove:hover {
+            color: var(--color-danger);
+        }
+
+        .mixer-plugin-add {
+            font-size: 9px;
+            padding: 2px 4px;
+            background-color: var(--bg-primary);
+            border: 1px dashed var(--border-light);
+            color: var(--text-muted);
+            border-radius: 2px;
+            cursor: pointer;
+        }
+
+        .mixer-plugin-add:hover {
+            border-color: var(--accent-blue);
+            color: var(--accent-blue);
+        }
+
+        .mixer-strip-fader {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 2px;
+            flex: 1;
+        }
+
+        .mixer-fader {
+            writing-mode: vertical-lr;
+            direction: rtl;
+            width: 24px;
+            height: 60px;
+            -webkit-appearance: none;
+            appearance: none;
+            background: transparent;
+            outline: none;
+        }
+
+        .mixer-fader::-webkit-slider-track {
+            width: 4px;
+            background: var(--bg-primary);
+            border-radius: 2px;
+        }
+
+        .mixer-fader::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 16px;
+            height: 8px;
+            background: var(--text-primary);
+            border-radius: 2px;
+            cursor: pointer;
+        }
+
+        .mixer-vol-value {
+            font-size: 9px;
+            color: var(--text-secondary);
+            font-family: 'SF Mono', SFMono-Regular, ui-monospace, Menlo, monospace;
+        }
+
+        .mixer-strip-buttons {
+            display: flex;
+            gap: 2px;
+            width: 100%;
+        }
+
+        .mixer-mute,
+        .mixer-solo {
+            flex: 1;
+            font-size: 10px;
+            font-weight: 700;
+            padding: 3px 4px;
+            border-radius: 2px;
+        }
+
+        .mixer-mute.active {
+            background-color: var(--color-danger);
+            border-color: var(--color-danger);
+        }
+
+        .mixer-solo.active {
+            background-color: var(--color-warning);
+            border-color: var(--color-warning);
+            color: #000;
+        }
+
+        .mixer-strip-meter {
+            width: 8px;
+            height: 60px;
+            background-color: var(--bg-primary);
+            border-radius: 2px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .mixer-meter-bar {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            height: 0%;
+            background-color: var(--accent-green-light);
+            border-radius: 2px;
+            transition: height 0.05s;
+        }
+
+        /* ============================
+           Status Bar
+           ============================ */
+        .status-bar {
+            display: flex;
+            justify-content: space-between;
+            padding: 6px 12px;
+            background-color: var(--bg-tertiary);
+            border-top: 1px solid var(--border-color);
+            font-size: 12px;
+            color: var(--text-secondary);
+            flex-shrink: 0;
+        }
+
+        .status-bar .info {
+            display: flex;
+            gap: 16px;
+        }
+
+        /* ============================
+           Selection Info Overlay
+           ============================ */
+        .selection-info {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            background-color: rgba(0, 0, 0, 0.75);
+            padding: 6px 10px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-family: 'SF Mono', SFMono-Regular, ui-monospace, Menlo, monospace;
+            display: none;
+            pointer-events: none;
+            z-index: 10;
+        }
+
+        .selection-info.visible {
+            display: block;
+        }
+
+        /* ============================
+           Drag & Drop Overlay
+           ============================ */
+        .drag-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: rgba(37, 99, 235, 0.15);
+            border: 3px dashed var(--accent-blue);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            pointer-events: none;
+            z-index: 100;
+        }
+
+        .drag-overlay.visible {
+            display: flex;
+        }
+
+        .drag-overlay-text {
+            font-size: 24px;
+            color: var(--accent-blue);
+            font-weight: 600;
+        }
+
+        /* ============================
+           Modal Overlay
+           ============================ */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: rgba(0, 0, 0, 0.7);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+
+        .modal-overlay.visible {
+            display: flex;
+        }
+
+        .modal {
+            background-color: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 20px;
+            min-width: 320px;
+            max-width: 460px;
+            box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+        }
+
+        .modal h3 {
+            margin-bottom: 16px;
+            font-weight: 500;
+            font-size: 15px;
+        }
+
+        .modal-row {
+            display: flex;
+            align-items: center;
+            margin-bottom: 12px;
+            gap: 12px;
+        }
+
+        .modal-row label {
+            flex: 0 0 110px;
+            font-size: 13px;
+            color: var(--text-primary);
+        }
+
+        .modal-row select,
+        .modal-row input[type="number"],
+        .modal-row input[type="text"] {
+            flex: 1;
+            background-color: var(--bg-primary);
+            border: 1px solid var(--border-light);
+            color: var(--text-primary);
+            padding: 6px 10px;
+            border-radius: 4px;
+            font-size: 13px;
+            font-family: inherit;
+        }
+
+        .modal-row select:focus,
+        .modal-row input:focus {
+            outline: none;
+            border-color: var(--accent-blue);
+        }
+
+        .modal-buttons {
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+            margin-top: 20px;
+        }
+
+        .checkbox-label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+            font-size: 13px;
+        }
+
+        .checkbox-label input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
+        }
+
+        .checkbox-label input[type="checkbox"]:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .checkbox-label input[type="checkbox"]:disabled + span {
+            opacity: 0.5;
+        }
+
+        /* ============================
+           Plugin Browser Modal
+           ============================ */
+        .plugin-browser-content {
+            max-height: 400px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .plugin-search {
+            width: 100%;
+            background-color: var(--bg-primary);
+            border: 1px solid var(--border-light);
+            color: var(--text-primary);
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-size: 13px;
+            font-family: inherit;
+        }
+
+        .plugin-search:focus {
+            outline: none;
+            border-color: var(--accent-blue);
+        }
+
+        .plugin-list {
+            flex: 1;
+            overflow-y: auto;
+            max-height: 300px;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+        }
+
+        .plugin-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 12px;
+            border-bottom: 1px solid var(--border-color);
+            cursor: pointer;
+            transition: background-color 0.15s;
+        }
+
+        .plugin-item:last-child {
+            border-bottom: none;
+        }
+
+        .plugin-item:hover {
+            background-color: var(--bg-elevated);
+        }
+
+        .plugin-item.selected {
+            background-color: var(--accent-blue);
+        }
+
+        .plugin-item-name {
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text-primary);
+        }
+
+        .plugin-item-info {
+            font-size: 11px;
+            color: var(--text-secondary);
+        }
+
+        /* ============================
+           Cue Point Name Input
+           ============================ */
+        .cuepoint-input {
+            position: absolute;
+            background-color: var(--bg-tertiary);
+            border: 1px solid var(--border-light);
+            border-radius: 4px;
+            padding: 4px 8px;
+            display: none;
+            z-index: 50;
+        }
+
+        .cuepoint-input.visible {
+            display: block;
+        }
+
+        .cuepoint-input input {
+            background-color: var(--bg-primary);
+            border: 1px solid var(--border-light);
+            color: var(--text-primary);
+            padding: 4px 8px;
+            border-radius: 3px;
+            font-size: 12px;
+            width: 140px;
+            font-family: inherit;
+        }
+
+        .cuepoint-input input:focus {
+            outline: none;
+            border-color: var(--accent-blue);
+        }
+
+        /* ============================
+           Hidden Inputs
+           ============================ */
+        #fileInput,
+        #projectInput {
+            display: none;
+        }
+
+        /* ============================
+           Scrollbar Styling
+           ============================ */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background-color: rgba(255, 255, 255, 0.15);
+            border-radius: 3px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background-color: rgba(255, 255, 255, 0.25);
+        }
+    </style>
+</head>
+<body>
+    <!-- Hidden file inputs -->
+    <input type="file" id="fileInput" accept=".wav,.aif,.aiff,.flac,.mp3,.ogg,.m4a" multiple>
+    <input type="file" id="projectInput" accept=".fcproj">
+
+    <!-- ============================
+         Titlebar (macOS hiddenInset)
+         ============================ -->
+    <div class="titlebar" id="titlebar">
+        <span class="titlebar-title">FieldCorder</span>
+    </div>
+
+    <!-- ============================
+         Toolbar
+         ============================ -->
+    <div class="toolbar" id="toolbar">
+        <!-- File operations -->
+        <div class="toolbar-group">
+            <span class="toolbar-label">File</span>
+            <button id="importBtn" title="Import audio files">Import</button>
+            <button id="exportBtn" disabled title="Export audio">Export</button>
+            <button id="saveProjectBtn" disabled title="Save project">Save Project</button>
+            <button id="loadProjectBtn" title="Load project">Load Project</button>
+        </div>
+
+        <!-- Transport -->
+        <div class="toolbar-group">
+            <span class="toolbar-label">Transport</span>
+            <button id="playBtn" class="transport" disabled title="Play (Space)">&#9654;</button>
+            <button id="pauseBtn" class="transport" disabled title="Pause (Space)">&#9208;</button>
+            <button id="stopBtn" class="transport" disabled title="Stop">&#9209;</button>
+            <button id="loopBtn" class="transport" disabled title="Loop selection (L)">&#10227;</button>
+        </div>
+
+        <!-- Zoom -->
+        <div class="toolbar-group">
+            <span class="toolbar-label">Zoom</span>
+            <button id="zoomInBtn" disabled title="Zoom In (+)">+</button>
+            <button id="zoomOutBtn" disabled title="Zoom Out (-)">-</button>
+            <button id="zoomFitBtn" disabled title="Zoom to fit window">&#8862;</button>
+        </div>
+
+        <!-- Edit -->
+        <div class="toolbar-group">
+            <span class="toolbar-label">Edit</span>
+            <button id="undoBtn" disabled title="Undo">&#8630;</button>
+            <button id="redoBtn" disabled title="Redo">&#8631;</button>
+            <button id="trimBtn" disabled title="Trim to selection">Trim</button>
+            <button id="normalizeBtn" disabled title="Normalize">Normalize</button>
+            <button id="fadeInBtn" disabled title="Fade In">Fade In</button>
+            <button id="fadeOutBtn" disabled title="Fade Out">Fade Out</button>
+            <button id="gainBtn" disabled title="Apply gain">Gain</button>
+            <button id="reverseBtn" disabled title="Reverse">Reverse</button>
+        </div>
+
+        <!-- Markers -->
+        <div class="toolbar-group">
+            <span class="toolbar-label">Markers</span>
+            <button id="addCueBtn" disabled title="Add cue point at playhead (M)">M</button>
+        </div>
+    </div>
+
+    <!-- ============================
+         Main Content
+         ============================ -->
+    <div class="main-content">
+        <!-- Left Sidebar: File Queue -->
+        <div class="left-sidebar">
+            <div class="file-list-panel">
+                <div class="file-list-header">File Queue</div>
+                <div class="file-list" id="fileList"></div>
+            </div>
+        </div>
+
+        <!-- Center: Editor Area -->
+        <div class="editor-area">
+            <!-- Cue point lane -->
+            <div class="cuepoint-container">
+                <canvas id="cuepointCanvas"></canvas>
+                <div class="cuepoint-input" id="cuepointInput">
+                    <input type="text" id="cuepointNameInput" placeholder="Cue name...">
+                </div>
+            </div>
+
+            <!-- Waveform -->
+            <div class="waveform-container">
+                <canvas id="waveformCanvas"></canvas>
+                <div class="selection-info" id="selectionInfo"></div>
+            </div>
+
+            <!-- Spectrogram -->
+            <div class="spectrogram-container">
+                <canvas id="spectrogramCanvas"></canvas>
+                <span class="spectrogram-label">Spectrum</span>
+                <div class="spectrogram-fft">
+                    <span class="spectrogram-fft-label">FFT:</span>
+                    <select id="fftSize" class="fft-select">
+                        <option value="256">256</option>
+                        <option value="512">512</option>
+                        <option value="1024">1024</option>
+                        <option value="2048" selected>2048</option>
+                        <option value="4096">4096</option>
+                        <option value="8192">8192</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Sidebar -->
+        <div class="right-sidebar">
+            <!-- Channel Info -->
+            <div class="sidebar-section">
+                <div class="sidebar-section-header">Channel Info</div>
+                <div class="channel-info" id="channelInfo">
+                    <div class="channel-info-text">No file loaded</div>
+                </div>
+            </div>
+
+            <!-- Peak Meter -->
+            <div class="sidebar-section">
+                <div class="sidebar-section-header">Peak Meter</div>
+                <div class="meter">
+                    <span class="meter-label">Peak (RT)</span>
+                    <span class="meter-value" id="peakValue">-&#8734;</span>
+                    <span class="meter-unit">dBFS</span>
+                    <div class="meter-bar-container">
+                        <div class="meter-bar" id="peakBar" style="width: 0%"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Real-time LUFS -->
+            <div class="sidebar-section">
+                <div class="sidebar-section-header">Real-time LUFS</div>
+                <div class="lufs-row">
+                    <span class="lufs-label">Momentary:</span>
+                    <span class="lufs-value" id="lufsMomentary">-</span>
+                </div>
+                <div class="lufs-row">
+                    <span class="lufs-label">Short-term:</span>
+                    <span class="lufs-value" id="lufsShortTerm">-</span>
+                </div>
+                <div class="lufs-row">
+                    <span class="lufs-label">Integrated:</span>
+                    <span class="lufs-value" id="lufsIntegrated">-</span>
+                </div>
+            </div>
+
+            <!-- File Stats -->
+            <div class="sidebar-section">
+                <div class="sidebar-section-header">File Stats</div>
+                <div class="file-stat">
+                    <span class="file-stat-label">RMS Peak:</span>
+                    <span class="file-stat-value" id="rmsPeakValue">-</span>
+                </div>
+                <div class="file-stat">
+                    <span class="file-stat-label">True Peak:</span>
+                    <span class="file-stat-value" id="truePeakValue">-</span>
+                </div>
+                <div class="file-stat">
+                    <span class="file-stat-label">LUFS:</span>
+                    <span class="file-stat-value" id="lufsValue">-</span>
+                </div>
+            </div>
+
+            <!-- FFT Size -->
+            <div class="sidebar-section">
+                <div class="sidebar-section-header">FFT Size</div>
+                <select id="fftSizeSidebar" class="fft-select" style="width: 100%">
+                    <option value="256">256</option>
+                    <option value="512">512</option>
+                    <option value="1024">1024</option>
+                    <option value="2048" selected>2048</option>
+                    <option value="4096">4096</option>
+                    <option value="8192">8192</option>
+                </select>
+            </div>
+
+            <!-- Volume Control -->
+            <div class="sidebar-section">
+                <div class="volume-control">
+                    <div class="volume-header">
+                        <span class="volume-label">Output Volume</span>
+                        <span class="volume-value" id="volumeValue">0.0 dB</span>
+                    </div>
+                    <input type="range" id="volumeSlider" class="volume-slider"
+                           min="-60" max="6" step="0.5" value="0">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============================
+         Bottom: Mixer Container
+         ============================ -->
+    <div class="mixer-container" id="mixerContainer">
+        <div class="mixer-empty">No audio loaded</div>
+    </div>
+
+    <!-- ============================
+         Status Bar
+         ============================ -->
+    <div class="status-bar">
+        <div class="info">
+            <span id="fileInfo">No file loaded</span>
+            <span id="positionInfo"></span>
+            <span id="channelLayoutInfo"></span>
+        </div>
+        <span id="zoomInfo"></span>
+    </div>
+
+    <!-- ============================
+         Drag & Drop Overlay
+         ============================ -->
+    <div class="drag-overlay" id="dragOverlay">
+        <div class="drag-overlay-text">Drop audio files here</div>
+    </div>
+
+    <!-- ============================
+         Export Modal
+         ============================ -->
+    <div class="modal-overlay" id="exportModal">
+        <div class="modal">
+            <h3>Export Audio</h3>
+            <div class="modal-row">
+                <label>Format</label>
+                <select id="exportFormat">
+                    <option value="wav">WAV</option>
+                    <option value="aif">AIF</option>
+                </select>
+            </div>
+            <div class="modal-row">
+                <label>Bit Depth</label>
+                <select id="exportBitDepth">
+                    <option value="16">16-bit</option>
+                    <option value="24" selected>24-bit</option>
+                    <option value="32">32-bit float</option>
+                </select>
+            </div>
+            <div class="modal-row">
+                <label>Dither</label>
+                <select id="exportDither">
+                    <option value="none" selected>None</option>
+                    <option value="tpdf">TPDF</option>
+                    <option value="shaped">Noise shaped</option>
+                </select>
+            </div>
+            <div class="modal-row">
+                <label></label>
+                <label class="checkbox-label">
+                    <input type="checkbox" id="exportSelection" disabled>
+                    <span>Export selection only</span>
+                </label>
+            </div>
+            <div class="modal-buttons">
+                <button id="exportCancelBtn">Cancel</button>
+                <button id="exportConfirmBtn" class="primary">Export</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============================
+         Normalize Modal
+         ============================ -->
+    <div class="modal-overlay" id="normalizeModal">
+        <div class="modal">
+            <h3>Normalize</h3>
+            <div class="modal-row">
+                <label>Peak Level (dBFS)</label>
+                <input type="number" id="normalizeLevel" value="0" min="-60" max="0" step="0.1">
+            </div>
+            <div class="modal-buttons">
+                <button id="normalizeCancelBtn">Cancel</button>
+                <button id="normalizeConfirmBtn" class="primary">Apply</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============================
+         Gain Modal
+         ============================ -->
+    <div class="modal-overlay" id="gainModal">
+        <div class="modal">
+            <h3>Apply Gain</h3>
+            <div class="modal-row">
+                <label>Gain (dB)</label>
+                <input type="number" id="gainAmount" value="0" min="-60" max="60" step="0.1">
+            </div>
+            <div class="modal-buttons">
+                <button id="gainCancelBtn">Cancel</button>
+                <button id="gainConfirmBtn" class="primary">Apply</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============================
+         Plugin Browser Modal
+         ============================ -->
+    <div class="modal-overlay" id="pluginBrowserModal">
+        <div class="modal" style="min-width: 400px;">
+            <h3>Plugin Browser</h3>
+            <div class="plugin-browser-content">
+                <input type="text" id="pluginSearch" class="plugin-search"
+                       placeholder="Search plugins...">
+                <div class="plugin-list" id="pluginList"></div>
+            </div>
+            <div class="modal-buttons">
+                <button id="pluginBrowserCancelBtn">Cancel</button>
+                <button id="pluginBrowserInsertBtn" class="primary" disabled>Insert</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============================
+         Script Entry Point
+         ============================ -->
+    <script type="module" src="./main.ts"></script>
+</body>
+</html>

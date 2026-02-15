@@ -1,62 +1,127 @@
-# Simple Audio Editor
+# FieldCorder DAW
 
-A browser-based audio editor for WAV and AIF files. No installation required - just open `index.html` in your browser.
+A lightweight Digital Audio Workstation designed for multi-channel environmental recording editing on macOS. Supports 2-6 channel audio with VST3/AudioUnit plugin hosting.
 
-**Key Features:**
-- 🎵 Multi-file workflow with drag & drop support
-- 📊 Real-time spectrum analyzer with FFT visualization
-- 📈 Professional metering (Peak, RMS, True Peak, LUFS)
-- ✂️ Essential editing tools (Trim, Normalize, Fade, Gain, Reverse)
-- 🔄 Full undo/redo history
-- 🎚️ Master output volume control
-- ⌨️ Keyboard shortcuts for efficient workflow
+## Key Features
 
-## Features
+- **Multi-channel editing**: Native support for Stereo (2ch), Quad (4ch), and 5.1 Surround (6ch)
+- **Per-channel waveform display**: Color-coded waveforms for each channel
+- **VST3/AudioUnit plugin support**: Load and use native macOS audio plugins
+- **Built-in effects**: 3-Band EQ, HPF/LPF, Compressor, Reverb, Delay, Gain
+- **Professional metering**: Real-time Peak, RMS, True Peak, LUFS (ITU-R BS.1770-4)
+- **Channel mixer**: Per-channel volume, mute, solo, and plugin inserts
+- **Multi-file workflow**: File queue with drag-and-drop support
+- **Spectrum analyzer**: Real-time FFT with configurable window size
+- **Non-destructive editing**: Full undo/redo history
+- **Mac-native**: Electron app with macOS menu bar, titlebar, and Core Audio integration
 
-### File Operations
-- **Import**: Load WAV and AIF audio files (single or multiple)
-- **Drag & Drop**: Drag multiple audio files onto the waveform to add them to the queue
-- **File Queue**: Manage multiple files in a list; click to switch between files, delete with X button
-- **Export**: Save as WAV or AIF with configurable bit depth (16-bit, 24-bit, 32-bit float)
+## Architecture
 
-### Playback
-- Play, pause, and stop controls
-- Click anywhere on the waveform to set the playhead position
-- Playback starts from the playhead position (or loops back to start if at end)
-- Selection-only playback: when audio is selected, only that portion plays
-- Loop selection: toggle looping to continuously replay the selected region
-- Master output volume control (-60 dB to +6 dB)
+```
+FieldCorder/
+├── electron/             # Electron main process
+│   ├── main.ts          # App shell, native menus, IPC
+│   └── preload.ts       # Context bridge for renderer
+├── src/                  # Renderer (Web Audio + Canvas UI)
+│   ├── core/            # Audio engine, types
+│   ├── editor/          # Waveform, spectrogram, cue points
+│   ├── mixer/           # Channel strips, routing
+│   ├── plugins/         # VST3/AU host, built-in effects
+│   ├── ui/              # App controller, metering, file queue
+│   └── utils/           # File I/O, undo manager
+├── native/              # C++ native addon (optional)
+│   └── src/             # VST3/AU hosting, Core Audio devices
+└── resources/           # App icon, entitlements
+```
 
-### Waveform Display
-- Visual waveform with zoom controls
-- Click to position playhead
-- Click and drag to create selections
-- Double-click or Cmd/Ctrl+A to select all
-- Clear file end indicator (dashed orange line with shaded area beyond)
+### Technology Stack
 
-### Spectrum Analyzer
-- Real-time frequency spectrum display during playback (blue)
-- Static spectrum analysis at playhead position when stopped
-- Configurable FFT size (256 to 8192) - control located in bottom-right of spectrum view
-- Logarithmic frequency scale with labeled axes
-- Smooth animated visualization with glow effects
+- **Electron** - Desktop app framework for macOS
+- **TypeScript** - Type-safe codebase
+- **Vite** - Fast build tooling
+- **Web Audio API** - Audio playback, routing, and built-in effects
+- **Canvas 2D** - Waveform and spectrum visualization
+- **N-API (C++)** - Native VST3/AudioUnit plugin hosting
+- **Core Audio** - macOS audio device enumeration
 
-### Audio Metering
-- **Real-time Peak Meter**: Live peak level display during playback (dBFS)
-- **File Statistics**: Calculated across entire file
-  - RMS Peak: Root mean square peak level
-  - True Peak: Inter-sample peak detection
-  - LUFS: Integrated loudness measurement
-- Color-coded peak display (green/yellow/red)
+## Getting Started
 
-### Editing Operations
-- **Trim**: Keep only the selected portion
-- **Delete**: Remove the selected portion (Delete/Backspace key)
-- **Normalize**: Set peak level to target dBFS
-- **Fade In/Out**: Apply linear fade to selection
-- **Gain**: Apply dB adjustment to selection or entire file
-- **Reverse**: Reverse audio (selection or entire file)
-- **Undo/Redo**: Full undo history for all edit operations
+### Prerequisites
+
+- Node.js 18+
+- npm or yarn
+- macOS (for full VST/AU and Core Audio support)
+
+### Installation
+
+```bash
+npm install
+```
+
+### Development
+
+```bash
+# Start Vite dev server + Electron
+npm run electron:dev
+
+# Or just the web UI (browser mode)
+npm run dev
+```
+
+### Building
+
+```bash
+# Build the app
+npm run electron:build
+
+# Build native addon (optional, for VST3/AU support)
+chmod +x scripts/build-native.sh
+./scripts/build-native.sh
+
+# With VST3 SDK
+VST3_SDK_PATH=/path/to/vst3sdk ./scripts/build-native.sh
+```
+
+## Multi-Channel Workflow
+
+FieldCorder is designed for environmental/field recording editing:
+
+1. **Import** multi-channel WAV/AIF files (2-6 channels)
+2. **View** per-channel waveforms with color-coded display
+3. **Edit** all channels simultaneously (trim, fade, normalize, etc.)
+4. **Mix** with per-channel volume, mute, solo controls
+5. **Process** with VST3/AU plugins or built-in effects per channel
+6. **Monitor** with professional LUFS metering (ITU-R BS.1770-4)
+7. **Export** as multi-channel WAV/AIF with configurable bit depth
+
+### Channel Layouts
+
+| Layout | Channels | Use Case |
+|--------|----------|----------|
+| Stereo | L, R | Standard stereo recording |
+| Quad | FL, FR, RL, RR | Ambisonic/spatial recording |
+| 5.1 | L, R, C, LFE, Ls, Rs | Surround field recording |
+
+## Plugin System
+
+### Built-in Effects (Web Audio)
+
+Always available, no native addon required:
+- **3-Band EQ** - Low shelf, parametric mid, high shelf
+- **High Pass Filter** - Variable frequency and Q
+- **Low Pass Filter** - Variable frequency and Q
+- **Compressor** - Threshold, knee, ratio, attack, release
+- **Gain** - Simple level adjustment
+- **Delay** - Time, feedback, wet/dry mix
+- **Reverb** - Convolution reverb with decay and damping
+
+### VST3/AudioUnit Plugins
+
+Requires building the native addon. Scans standard macOS paths:
+- `~/Library/Audio/Plug-Ins/VST3/`
+- `/Library/Audio/Plug-Ins/VST3/`
+- `~/Library/Audio/Plug-Ins/Components/`
+- `/Library/Audio/Plug-Ins/Components/`
 
 ## Keyboard Shortcuts
 
@@ -65,81 +130,39 @@ A browser-based audio editor for WAV and AIF files. No installation required - j
 | Space | Play/Pause |
 | L | Toggle loop |
 | R | Reverse |
-| ← / → | Move playhead left/right by 1ms |
-| + / = | Zoom in |
+| M | Add cue point |
+| Arrow Left/Right | Move playhead ±1ms |
+| +/= | Zoom in |
 | - | Zoom out |
-| Delete / Backspace | Delete selection |
-| Cmd/Ctrl + A | Select all |
-| Cmd/Ctrl + T | Trim to selection |
-| Cmd/Ctrl + F | Fade in |
-| Cmd/Ctrl + Shift + F | Fade out |
-| Cmd/Ctrl + Shift + N | Normalize |
-| Cmd/Ctrl + Z | Undo |
-| Cmd/Ctrl + Shift + Z | Redo |
-| Cmd/Ctrl + Y | Redo (alternative) |
+| Delete/Backspace | Delete selection |
+| Cmd+A | Select all |
+| Cmd+T | Trim to selection |
+| Cmd+F | Fade in |
+| Cmd+Shift+F | Fade out |
+| Cmd+Shift+N | Normalize |
+| Cmd+G | Apply gain |
+| Cmd+Z | Undo |
+| Cmd+Shift+Z | Redo |
+| Cmd+M | Toggle mixer |
+| Cmd+B | Toggle plugin browser |
+| Cmd+E | Export |
+| Cmd+S | Save project |
+| Cmd+O | Import audio |
 
-## Mouse Controls
+## File Formats
 
-| Action | Result |
-|--------|--------|
-| Click | Move playhead to position |
-| Click + Drag | Create selection |
-| Double-click | Select all |
-| Scroll up/down | Zoom in/out |
-| Scroll left/right | Pan waveform |
+### Import
+- WAV (PCM 16/24/32-bit, Float 32-bit)
+- AIFF/AIF
+- FLAC, MP3, OGG (via Web Audio API decoding)
 
-## Technical Details
+### Export
+- WAV (16-bit, 24-bit, 32-bit float)
+- AIF (16-bit, 24-bit, 32-bit)
+- Optional dithering: TPDF or noise-shaped
 
-- Built with vanilla HTML, CSS, and JavaScript
-- Uses Web Audio API for playback and analysis
-- Canvas-based waveform and spectrum visualization
-- No external dependencies
-- Works offline after initial load
-
-## Browser Compatibility
-
-Works in modern browsers that support:
-- Web Audio API
-- Canvas 2D
-- ES6+ JavaScript
-
-Tested in Chrome, Firefox, Safari, and Edge.
-
-## Usage
-
-### Getting Started
-1. Open `index.html` in your browser
-2. Load audio files:
-   - Click **Import** to select one or more WAV/AIF files, or
-   - Drag and drop multiple audio files directly onto the waveform
-
-### Working with Files
-- Multiple files appear in the file list on the right sidebar
-- Click any file in the list to load and work on it
-- Active file is highlighted in blue
-- Remove files from the queue using the X button
-
-### Editing Audio
-1. Use the waveform to navigate and select audio
-   - Click to position playhead
-   - Click and drag to select regions
-   - Use zoom controls (+/-) or mouse scroll
-2. Adjust playback volume with the output volume slider (right sidebar)
-3. Monitor levels with the real-time peak meter during playback
-4. Apply edits using the toolbar buttons (Trim, Normalize, Fade, Gain, Reverse)
-5. Use Undo/Redo (Cmd/Ctrl+Z) as needed
-6. Click **Export** to save your edited audio
-
-### Tips
-- Use keyboard shortcuts for faster editing workflow:
-  - **Cmd/Ctrl+T** to trim, **Cmd/Ctrl+F** to fade in, **Cmd/Ctrl+Shift+F** to fade out
-  - **Cmd/Ctrl+Shift+N** to normalize
-  - **L** to toggle loop mode, **R** to reverse
-  - **Space** to play/pause
-- Navigate precisely with **arrow keys** (←/→) to move the playhead in 1ms increments
-- Check the spectrum analyzer to view frequency content (FFT control in bottom-right)
-- File statistics (RMS Peak, True Peak, LUFS) update automatically when files are loaded or edited
-- All destructive edits can be undone with **Cmd/Ctrl+Z**
+### Project Files
+- `.fcproj` - JSON-based project file with embedded audio data
 
 ## License
 

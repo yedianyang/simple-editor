@@ -1,0 +1,1581 @@
+/* ==========================================================================
+   FieldCorder - Professional Field Recording DAW
+   Main Stylesheet
+   ========================================================================== */
+
+/* --------------------------------------------------------------------------
+   1. Reset & Base Styles
+   -------------------------------------------------------------------------- */
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100vh;
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  font-size: 13px;
+  color: #e0e0e0;
+  background-color: #1a1a1a;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  user-select: none;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+a {
+  color: #5b9cf6;
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+::selection {
+  background: rgba(37, 99, 235, 0.4);
+  color: #fff;
+}
+
+/* --------------------------------------------------------------------------
+   2. Titlebar
+   -------------------------------------------------------------------------- */
+
+.titlebar {
+  height: 40px;
+  min-height: 40px;
+  background-color: #2a2a2a;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  -webkit-app-region: drag;
+  padding-left: 80px; /* macOS traffic lights */
+  position: relative;
+  z-index: 100;
+}
+
+.titlebar-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: #999;
+  letter-spacing: 0.02em;
+}
+
+.titlebar button,
+.titlebar input,
+.titlebar select,
+.titlebar .titlebar-controls {
+  -webkit-app-region: no-drag;
+}
+
+.titlebar-controls {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* --------------------------------------------------------------------------
+   3. Toolbar
+   -------------------------------------------------------------------------- */
+
+.toolbar {
+  padding: 6px 8px;
+  background-color: #2a2a2a;
+  border-bottom: 1px solid #1a1a1a;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  z-index: 90;
+}
+
+.toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-right: 8px;
+  margin-right: 8px;
+  border-right: 1px solid #3a3a3a;
+}
+
+.toolbar-group:last-child {
+  border-right: none;
+  margin-right: 0;
+  padding-right: 0;
+}
+
+.toolbar-label {
+  font-size: 11px;
+  color: #888;
+  margin-right: 4px;
+  white-space: nowrap;
+}
+
+.toolbar-separator {
+  width: 1px;
+  height: 20px;
+  background: #3a3a3a;
+  margin: 0 4px;
+}
+
+/* --------------------------------------------------------------------------
+   4. Buttons
+   -------------------------------------------------------------------------- */
+
+button {
+  background-color: #3a3a3a;
+  color: #e0e0e0;
+  border: 1px solid #4a4a4a;
+  padding: 6px 12px;
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background-color 0.12s ease, border-color 0.12s ease;
+  white-space: nowrap;
+  line-height: 1.2;
+}
+
+button:hover {
+  background-color: #4a4a4a;
+  border-color: #5a5a5a;
+}
+
+button:active {
+  background-color: #5a5a5a;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+button:disabled:hover {
+  background-color: #3a3a3a;
+  border-color: #4a4a4a;
+}
+
+button:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 1px;
+}
+
+/* Primary buttons */
+.btn-primary {
+  background-color: #2563eb;
+  border-color: #1d4ed8;
+  color: #fff;
+}
+
+.btn-primary:hover {
+  background-color: #3b82f6;
+  border-color: #2563eb;
+}
+
+.btn-primary:active {
+  background-color: #1d4ed8;
+}
+
+/* Transport buttons */
+.transport-btn {
+  width: 40px;
+  height: 32px;
+  padding: 4px;
+  font-size: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.transport-btn.playing {
+  background-color: #16a34a;
+  border-color: #15803d;
+  color: #fff;
+}
+
+.transport-btn.playing:hover {
+  background-color: #22c55e;
+}
+
+.transport-btn.recording {
+  background-color: #dc2626;
+  border-color: #b91c1c;
+  color: #fff;
+}
+
+.transport-btn.recording:hover {
+  background-color: #ef4444;
+}
+
+/* Loop button */
+.loop-btn.loop-active {
+  background-color: #7c3aed;
+  border-color: #6d28d9;
+  color: #fff;
+}
+
+.loop-btn.loop-active:hover {
+  background-color: #8b5cf6;
+}
+
+/* Small / compact buttons */
+.btn-sm {
+  padding: 3px 8px;
+  font-size: 11px;
+  border-radius: 3px;
+}
+
+.btn-icon {
+  padding: 4px 6px;
+  font-size: 14px;
+  line-height: 1;
+}
+
+/* --------------------------------------------------------------------------
+   5. Main Content Area
+   -------------------------------------------------------------------------- */
+
+.main-content {
+  flex: 1;
+  display: flex;
+  flex-direction: row;
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* --------------------------------------------------------------------------
+   6. Left Sidebar - File Queue
+   -------------------------------------------------------------------------- */
+
+.sidebar-left {
+  width: 200px;
+  min-width: 200px;
+  background-color: #222;
+  border-right: 1px solid #1a1a1a;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.sidebar-header {
+  padding: 8px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-bottom: 1px solid #1a1a1a;
+  flex-shrink: 0;
+}
+
+.file-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.file-list-item {
+  display: flex;
+  align-items: center;
+  padding: 6px 10px;
+  cursor: pointer;
+  transition: background-color 0.1s ease;
+  gap: 6px;
+  font-size: 12px;
+  color: #ccc;
+  position: relative;
+}
+
+.file-list-item:hover {
+  background-color: #2a2a2a;
+}
+
+.file-list-item.active {
+  background-color: #2563eb22;
+  color: #e0e0e0;
+  border-left: 2px solid #2563eb;
+}
+
+.file-list-item .file-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-list-item .file-delete {
+  display: none;
+  background: none;
+  border: none;
+  color: #666;
+  font-size: 14px;
+  padding: 0 2px;
+  cursor: pointer;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.file-list-item:hover .file-delete {
+  display: block;
+}
+
+.file-list-item .file-delete:hover {
+  color: #ef4444;
+}
+
+.file-list-empty {
+  padding: 16px 10px;
+  font-size: 11px;
+  color: #666;
+  text-align: center;
+  font-style: italic;
+}
+
+/* --------------------------------------------------------------------------
+   7. Waveform / Editor Area
+   -------------------------------------------------------------------------- */
+
+.editor-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+  min-width: 0;
+}
+
+/* Cue point canvas area */
+.cuepoint-container {
+  height: 30px;
+  min-height: 30px;
+  position: relative;
+  background-color: #1e1e1e;
+  border-bottom: 1px solid #333;
+  flex-shrink: 0;
+}
+
+/* Main waveform area */
+.waveform-container {
+  flex: 1;
+  position: relative;
+  background-color: #1a1a1a;
+  min-height: 0;
+}
+
+/* Spectrogram area */
+.spectrogram-container {
+  height: 150px;
+  min-height: 100px;
+  position: relative;
+  background-color: #111;
+  border-top: 1px solid #333;
+  flex-shrink: 0;
+}
+
+/* Overview (mini-map) waveform */
+.overview-container {
+  height: 40px;
+  min-height: 40px;
+  position: relative;
+  background-color: #1e1e1e;
+  border-top: 1px solid #333;
+  flex-shrink: 0;
+}
+
+/* Timeline / ruler */
+.timeline-container {
+  height: 24px;
+  min-height: 24px;
+  position: relative;
+  background-color: #222;
+  border-bottom: 1px solid #333;
+  flex-shrink: 0;
+}
+
+/* Canvas elements in their containers */
+.cuepoint-container canvas,
+.waveform-container canvas,
+.spectrogram-container canvas,
+.overview-container canvas,
+.timeline-container canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* Playhead indicator */
+.playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background-color: #f0f0f0;
+  pointer-events: none;
+  z-index: 10;
+}
+
+.playhead::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -4px;
+  width: 9px;
+  height: 6px;
+  background-color: #f0f0f0;
+  clip-path: polygon(0 0, 100% 0, 50% 100%);
+}
+
+/* --------------------------------------------------------------------------
+   8. Right Sidebar - Stats & Metering
+   -------------------------------------------------------------------------- */
+
+.sidebar-right {
+  width: 250px;
+  min-width: 250px;
+  background-color: #222;
+  border-left: 1px solid #1a1a1a;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  padding: 12px;
+  gap: 16px;
+}
+
+.sidebar-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sidebar-section-header {
+  font-size: 11px;
+  font-weight: 600;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding-bottom: 4px;
+  border-bottom: 1px solid #333;
+}
+
+/* Meter values with color states */
+.meter-value {
+  font-size: 13px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: #10b981;
+}
+
+.meter-value.warning {
+  color: #f59e0b;
+}
+
+.meter-value.danger {
+  color: #ef4444;
+}
+
+/* Peak meter bar */
+.peak-meter {
+  height: 6px;
+  background-color: #333;
+  border-radius: 3px;
+  overflow: hidden;
+  position: relative;
+}
+
+.peak-meter-bar {
+  height: 100%;
+  background: linear-gradient(90deg, #10b981, #22c55e);
+  border-radius: 3px;
+  transition: width 0.08s linear;
+  width: 0%;
+}
+
+.peak-meter-bar.warning {
+  background: linear-gradient(90deg, #10b981, #f59e0b);
+}
+
+.peak-meter-bar.danger {
+  background: linear-gradient(90deg, #10b981, #f59e0b, #ef4444);
+}
+
+/* Stat rows */
+.stat-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 3px 0;
+  font-size: 12px;
+}
+
+.stat-label {
+  color: #888;
+}
+
+.stat-value {
+  color: #ccc;
+  font-variant-numeric: tabular-nums;
+}
+
+/* FFT size select */
+.fft-select,
+.sidebar-right select {
+  background-color: #333;
+  color: #e0e0e0;
+  border: 1px solid #4a4a4a;
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  width: 100%;
+}
+
+.fft-select:hover,
+.sidebar-right select:hover {
+  border-color: #5a5a5a;
+}
+
+.fft-select:focus,
+.sidebar-right select:focus {
+  outline: none;
+  border-color: #2563eb;
+}
+
+/* Volume slider in sidebar */
+.volume-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  background: #444;
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+
+.volume-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  background: #e0e0e0;
+  border-radius: 50%;
+  cursor: pointer;
+  border: none;
+  transition: background-color 0.1s;
+}
+
+.volume-slider::-webkit-slider-thumb:hover {
+  background: #fff;
+}
+
+.volume-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  background: #e0e0e0;
+  border-radius: 50%;
+  cursor: pointer;
+  border: none;
+}
+
+/* --------------------------------------------------------------------------
+   9. Mixer Panel
+   -------------------------------------------------------------------------- */
+
+.mixer {
+  height: 200px;
+  min-height: 120px;
+  background-color: #222;
+  border-top: 1px solid #1a1a1a;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.mixer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px;
+  background-color: #2a2a2a;
+  border-bottom: 1px solid #1a1a1a;
+  flex-shrink: 0;
+}
+
+.mixer-header-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.mixer-channels {
+  display: flex;
+  flex: 1;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.mixer-strip {
+  width: 80px;
+  min-width: 80px;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid #1a1a1a;
+  background-color: #262626;
+  flex-shrink: 0;
+}
+
+.mixer-strip:last-child {
+  border-right: none;
+}
+
+.mixer-strip-header {
+  padding: 4px 6px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.mixer-strip-name {
+  font-size: 10px;
+  font-weight: 600;
+  color: #ccc;
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Plugin insert slots */
+.mixer-strip-plugins {
+  padding: 2px 4px;
+  flex-shrink: 0;
+  max-height: 60px;
+  overflow-y: auto;
+}
+
+.mixer-plugin-slot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background-color: #333;
+  border-radius: 2px;
+  padding: 2px 4px;
+  margin-bottom: 2px;
+  font-size: 9px;
+  color: #aaa;
+}
+
+.mixer-plugin-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mixer-plugin-remove {
+  background: none;
+  border: none;
+  color: #666;
+  font-size: 12px;
+  padding: 0 2px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.mixer-plugin-remove:hover {
+  color: #ef4444;
+  background: none;
+}
+
+.mixer-plugin-add {
+  width: 100%;
+  padding: 2px 4px;
+  font-size: 9px;
+  background: none;
+  border: 1px dashed #444;
+  color: #666;
+  border-radius: 2px;
+  cursor: pointer;
+  margin-top: 2px;
+}
+
+.mixer-plugin-add:hover {
+  border-color: #666;
+  color: #999;
+  background: none;
+}
+
+/* Fader section */
+.mixer-strip-fader {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  gap: 2px;
+  min-height: 0;
+}
+
+.mixer-fader {
+  -webkit-appearance: none;
+  appearance: none;
+  writing-mode: vertical-lr;
+  direction: rtl;
+  width: 4px;
+  height: 100%;
+  min-height: 40px;
+  background: #444;
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+
+.mixer-fader::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 20px;
+  height: 8px;
+  background: linear-gradient(180deg, #ddd, #aaa);
+  border-radius: 2px;
+  cursor: pointer;
+  border: 1px solid #888;
+}
+
+.mixer-fader::-webkit-slider-thumb:hover {
+  background: linear-gradient(180deg, #fff, #ccc);
+}
+
+.mixer-fader::-moz-range-thumb {
+  width: 20px;
+  height: 8px;
+  background: linear-gradient(180deg, #ddd, #aaa);
+  border-radius: 2px;
+  cursor: pointer;
+  border: 1px solid #888;
+}
+
+.mixer-vol-value,
+.master-volume-value {
+  font-size: 9px;
+  color: #999;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+/* Mute / Solo buttons */
+.mixer-strip-buttons {
+  display: flex;
+  gap: 2px;
+  padding: 4px;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.mixer-mute,
+.mixer-solo {
+  width: 28px;
+  height: 20px;
+  padding: 0;
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mixer-mute {
+  color: #999;
+}
+
+.mixer-mute.active {
+  background-color: #dc2626;
+  border-color: #b91c1c;
+  color: #fff;
+}
+
+.mixer-mute.active:hover {
+  background-color: #ef4444;
+}
+
+.mixer-solo {
+  color: #999;
+}
+
+.mixer-solo.active {
+  background-color: #ca8a04;
+  border-color: #a16207;
+  color: #fff;
+}
+
+.mixer-solo.active:hover {
+  background-color: #eab308;
+}
+
+/* Meter bars in mixer strips */
+.mixer-strip-meter {
+  height: 60px;
+  padding: 4px 8px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.mixer-meter-bar {
+  width: 8px;
+  height: 0%;
+  background-color: #10b981;
+  border-radius: 1px;
+  transition: height 0.06s linear;
+  min-height: 0;
+}
+
+/* Master strip */
+.mixer-master {
+  width: 100px;
+  min-width: 100px;
+  background-color: #2a2a2a;
+}
+
+.mixer-master .mixer-strip-meter {
+  display: flex;
+  gap: 4px;
+}
+
+.master-meter-bar {
+  width: 10px;
+}
+
+.mixer-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  color: #555;
+  font-size: 12px;
+  font-style: italic;
+}
+
+/* Mixer resize handle */
+.mixer-resize-handle {
+  height: 3px;
+  cursor: ns-resize;
+  background: transparent;
+  transition: background-color 0.15s;
+}
+
+.mixer-resize-handle:hover {
+  background-color: #2563eb;
+}
+
+/* --------------------------------------------------------------------------
+   10. Status Bar
+   -------------------------------------------------------------------------- */
+
+.status-bar {
+  height: 24px;
+  min-height: 24px;
+  background-color: #2a2a2a;
+  border-top: 1px solid #1a1a1a;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  font-size: 11px;
+  color: #888;
+  gap: 16px;
+  z-index: 90;
+  flex-shrink: 0;
+}
+
+.status-bar-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.status-bar-item .status-label {
+  color: #666;
+}
+
+.status-bar-item .status-value {
+  color: #aaa;
+  font-variant-numeric: tabular-nums;
+}
+
+.status-bar-spacer {
+  flex: 1;
+}
+
+/* --------------------------------------------------------------------------
+   11. Selection Info Overlay
+   -------------------------------------------------------------------------- */
+
+.selection-info {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  background-color: rgba(0, 0, 0, 0.75);
+  color: #e0e0e0;
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  z-index: 20;
+  white-space: nowrap;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+/* --------------------------------------------------------------------------
+   12. Drag Overlay
+   -------------------------------------------------------------------------- */
+
+.drag-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(37, 99, 235, 0.08);
+  border: 2px dashed #2563eb;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  pointer-events: none;
+}
+
+.drag-overlay.visible {
+  display: flex;
+}
+
+.drag-overlay-text {
+  font-size: 18px;
+  font-weight: 600;
+  color: #2563eb;
+  background: rgba(0, 0, 0, 0.6);
+  padding: 16px 32px;
+  border-radius: 8px;
+}
+
+/* --------------------------------------------------------------------------
+   13. Modal Overlay
+   -------------------------------------------------------------------------- */
+
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 500;
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
+
+.modal {
+  background-color: #2a2a2a;
+  border: 1px solid #3a3a3a;
+  border-radius: 8px;
+  padding: 24px;
+  max-width: 400px;
+  width: 90%;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4);
+}
+
+.modal-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #e0e0e0;
+  margin-bottom: 16px;
+}
+
+.modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.modal-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.modal-row label {
+  font-size: 12px;
+  color: #888;
+  font-weight: 500;
+}
+
+.modal-row input,
+.modal-row select,
+.modal-row textarea {
+  background-color: #333;
+  color: #e0e0e0;
+  border: 1px solid #4a4a4a;
+  border-radius: 4px;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.modal-row input:focus,
+.modal-row select:focus,
+.modal-row textarea:focus {
+  border-color: #2563eb;
+}
+
+.modal-row input::placeholder {
+  color: #666;
+}
+
+.modal-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+/* --------------------------------------------------------------------------
+   14. Plugin Browser Modal
+   -------------------------------------------------------------------------- */
+
+.plugin-browser-modal .modal {
+  max-width: 600px;
+}
+
+.plugin-browser-modal .modal-body {
+  max-height: 60vh;
+}
+
+.plugin-search {
+  background-color: #333;
+  color: #e0e0e0;
+  border: 1px solid #4a4a4a;
+  border-radius: 4px;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-family: inherit;
+  width: 100%;
+  outline: none;
+}
+
+.plugin-search:focus {
+  border-color: #2563eb;
+}
+
+.plugin-search::placeholder {
+  color: #666;
+}
+
+.plugin-list {
+  max-height: 400px;
+  overflow-y: auto;
+  border: 1px solid #3a3a3a;
+  border-radius: 4px;
+  background-color: #1e1e1e;
+}
+
+.plugin-item {
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: background-color 0.1s;
+  border-bottom: 1px solid #2a2a2a;
+  gap: 12px;
+}
+
+.plugin-item:last-child {
+  border-bottom: none;
+}
+
+.plugin-item:hover {
+  background-color: #2a2a2a;
+}
+
+.plugin-item.selected {
+  background-color: #2563eb22;
+}
+
+.plugin-item-name {
+  flex: 1;
+  font-size: 13px;
+  color: #e0e0e0;
+  font-weight: 500;
+}
+
+.plugin-item-format {
+  font-size: 10px;
+  color: #888;
+  background-color: #333;
+  padding: 2px 6px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  flex-shrink: 0;
+}
+
+.plugin-item-category {
+  font-size: 11px;
+  color: #666;
+  flex-shrink: 0;
+  min-width: 80px;
+  text-align: right;
+}
+
+.plugin-list-empty {
+  padding: 24px;
+  text-align: center;
+  font-size: 12px;
+  color: #666;
+  font-style: italic;
+}
+
+/* --------------------------------------------------------------------------
+   15. Cue Point Input
+   -------------------------------------------------------------------------- */
+
+.cuepoint-input {
+  position: absolute;
+  z-index: 30;
+  background-color: #333;
+  color: #e0e0e0;
+  border: 1px solid #2563eb;
+  border-radius: 3px;
+  padding: 2px 6px;
+  font-size: 11px;
+  font-family: inherit;
+  outline: none;
+  width: 100px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+.cuepoint-input:focus {
+  border-color: #3b82f6;
+}
+
+/* --------------------------------------------------------------------------
+   16. Scrollbar Styling
+   -------------------------------------------------------------------------- */
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #1a1a1a;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: #3a3a3a;
+  border-radius: 4px;
+  border: 2px solid #1a1a1a;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: #4a4a4a;
+}
+
+::-webkit-scrollbar-corner {
+  background: #1a1a1a;
+}
+
+/* Firefox scrollbar */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #3a3a3a #1a1a1a;
+}
+
+/* --------------------------------------------------------------------------
+   17. Canvas Elements
+   -------------------------------------------------------------------------- */
+
+canvas {
+  display: block;
+}
+
+/* --------------------------------------------------------------------------
+   18. Utility Classes
+   -------------------------------------------------------------------------- */
+
+.hidden {
+  display: none !important;
+}
+
+.flex-1 {
+  flex: 1;
+}
+
+.text-muted {
+  color: #888;
+}
+
+.text-sm {
+  font-size: 11px;
+}
+
+.text-mono {
+  font-family: 'SF Mono', 'Monaco', 'Menlo', 'Courier New', monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.gap-4 {
+  gap: 4px;
+}
+
+.gap-8 {
+  gap: 8px;
+}
+
+/* --------------------------------------------------------------------------
+   19. Inputs & Form Controls
+   -------------------------------------------------------------------------- */
+
+input[type="text"],
+input[type="number"],
+input[type="search"] {
+  background-color: #333;
+  color: #e0e0e0;
+  border: 1px solid #4a4a4a;
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+input[type="text"]:focus,
+input[type="number"]:focus,
+input[type="search"]:focus {
+  border-color: #2563eb;
+}
+
+input[type="text"]::placeholder,
+input[type="number"]::placeholder,
+input[type="search"]::placeholder {
+  color: #666;
+}
+
+select {
+  background-color: #333;
+  color: #e0e0e0;
+  border: 1px solid #4a4a4a;
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  outline: none;
+}
+
+select:focus {
+  border-color: #2563eb;
+}
+
+/* Range inputs (horizontal) */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  background: #444;
+  border-radius: 2px;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  background: #ccc;
+  border-radius: 50%;
+  margin-top: -4px;
+  border: none;
+}
+
+input[type="range"]::-webkit-slider-thumb:hover {
+  background: #fff;
+}
+
+input[type="range"]::-moz-range-track {
+  height: 4px;
+  background: #444;
+  border-radius: 2px;
+  border: none;
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  background: #ccc;
+  border-radius: 50%;
+  border: none;
+}
+
+/* --------------------------------------------------------------------------
+   20. Tooltips
+   -------------------------------------------------------------------------- */
+
+[data-tooltip] {
+  position: relative;
+}
+
+[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background-color: #1a1a1a;
+  color: #ccc;
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s;
+  z-index: 200;
+  border: 1px solid #3a3a3a;
+}
+
+[data-tooltip]:hover::after {
+  opacity: 1;
+}
+
+/* --------------------------------------------------------------------------
+   21. Context Menu
+   -------------------------------------------------------------------------- */
+
+.context-menu {
+  position: fixed;
+  background-color: #2a2a2a;
+  border: 1px solid #3a3a3a;
+  border-radius: 6px;
+  padding: 4px 0;
+  min-width: 180px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  z-index: 600;
+}
+
+.context-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  font-size: 13px;
+  color: #e0e0e0;
+  cursor: pointer;
+  transition: background-color 0.08s;
+}
+
+.context-menu-item:hover {
+  background-color: #2563eb;
+  color: #fff;
+}
+
+.context-menu-item.disabled {
+  color: #555;
+  cursor: not-allowed;
+}
+
+.context-menu-item.disabled:hover {
+  background-color: transparent;
+  color: #555;
+}
+
+.context-menu-shortcut {
+  font-size: 11px;
+  color: #666;
+  margin-left: 24px;
+}
+
+.context-menu-item:hover .context-menu-shortcut {
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.context-menu-separator {
+  height: 1px;
+  background-color: #3a3a3a;
+  margin: 4px 0;
+}
+
+/* --------------------------------------------------------------------------
+   22. Responsive Adjustments
+   -------------------------------------------------------------------------- */
+
+@media (max-width: 1200px) {
+  .sidebar-right {
+    width: 200px;
+    min-width: 200px;
+  }
+}
+
+@media (max-width: 960px) {
+  .sidebar-left {
+    width: 160px;
+    min-width: 160px;
+  }
+
+  .sidebar-right {
+    width: 180px;
+    min-width: 180px;
+  }
+}
+
+@media (max-width: 768px) {
+  .sidebar-left {
+    display: none;
+  }
+
+  .sidebar-right {
+    display: none;
+  }
+
+  .mixer-strip {
+    width: 64px;
+    min-width: 64px;
+  }
+
+  .mixer-master {
+    width: 80px;
+    min-width: 80px;
+  }
+}
+
+@media (max-width: 600px) {
+  .toolbar {
+    padding: 4px 6px;
+  }
+
+  .toolbar-group {
+    padding-right: 4px;
+    margin-right: 4px;
+  }
+
+  .titlebar {
+    padding-left: 12px;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   23. Animations & Transitions
+   -------------------------------------------------------------------------- */
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.modal-overlay {
+  animation: fade-in 0.15s ease;
+}
+
+.modal {
+  animation: slide-up 0.2s ease;
+}
+
+/* --------------------------------------------------------------------------
+   24. Loading / Progress States
+   -------------------------------------------------------------------------- */
+
+.loading-spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid #3a3a3a;
+  border-top-color: #2563eb;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.progress-bar {
+  height: 4px;
+  background-color: #333;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background-color: #2563eb;
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+/* --------------------------------------------------------------------------
+   25. Print / Accessibility
+   -------------------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@media print {
+  .titlebar,
+  .toolbar,
+  .status-bar,
+  .mixer,
+  .sidebar-left,
+  .sidebar-right {
+    display: none !important;
+  }
+
+  body {
+    background: #fff;
+    color: #000;
+  }
+}
