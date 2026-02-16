@@ -2,59 +2,20 @@
   "name": "fieldcorder-daw",
   "version": "1.0.0",
   "description": "Lightweight DAW for multi-channel environmental recording editing with VST/AU support",
-  "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build && tsc -p tsconfig.electron.json",
+    "build": "tsc && vite build",
+    "build:frontend": "tsc && vite build",
     "preview": "vite preview",
-    "electron:dev": "concurrently \"vite\" \"tsc -p tsconfig.electron.json --watch\" \"VITE_DEV_SERVER_URL=http://localhost:5173 electron .\"",
-    "electron:build": "npm run build && npm run native:build && electron-builder",
-    "native:build": "cmake-js compile --directory native --runtime electron --runtime-version 28.1.0 --arch arm64",
-    "native:rebuild": "cmake-js rebuild --directory native --runtime electron --runtime-version 28.1.0 --arch arm64",
-    "start": "electron .",
-    "postinstall": "electron-builder install-app-deps"
-  },
-  "build": {
-    "appId": "com.fieldcorder.daw",
-    "productName": "FieldCorder",
-    "mac": {
-      "category": "public.app-category.music",
-      "target": [
-        "dmg",
-        "zip"
-      ],
-      "icon": "resources/icon.icns",
-      "hardenedRuntime": true,
-      "entitlements": "resources/entitlements.plist",
-      "entitlementsInherit": "resources/entitlements.plist",
-      "extendInfo": {
-        "NSMicrophoneUsageDescription": "FieldCorder needs microphone access for audio recording."
-      }
-    },
-    "files": [
-      "dist/**/*",
-      "dist-electron/**/*",
-      "native/build/Release/**/*"
-    ],
-    "extraResources": [
-      {
-        "from": "native/build/Release",
-        "to": "native",
-        "filter": [
-          "*.node"
-        ]
-      }
-    ]
+    "tauri:dev": "cargo tauri dev",
+    "tauri:build": "cargo tauri build"
   },
   "dependencies": {
-    "electron-store": "^8.1.0"
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2.6.0"
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
-    "cmake-js": "^8.0.0",
-    "concurrently": "^8.2.2",
-    "electron": "^28.1.0",
-    "electron-builder": "^24.9.1",
     "typescript": "^5.3.3",
     "vite": "^5.0.12"
   },

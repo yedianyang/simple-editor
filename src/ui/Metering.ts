@@ -49,17 +49,25 @@ export class Metering {
   setAudioBuffer(buffer: AudioBuffer | null): void {
     this.audioBuffer = buffer;
     if (buffer) {
-      this.calculateFileStats(buffer);
-      this.prepareRealtimeLUFS(buffer);
+      // Defer heavy calculations so UI renders immediately
+      this.reset();
+      requestAnimationFrame(async () => {
+        // Verify buffer is still the current one (user may have loaded another)
+        if (this.audioBuffer !== buffer) return;
+        await this.prepareRealtimeLUFSAsync(buffer);
+        if (this.audioBuffer !== buffer) return;
+        this.calculateFileStatsAsync(buffer);
+      });
     } else {
       this.reset();
     }
   }
 
-  prepareRealtimeLUFS(audioBuffer: AudioBuffer): void {
+  private async prepareRealtimeLUFSAsync(audioBuffer: AudioBuffer): Promise<void> {
     const numChannels = audioBuffer.numberOfChannels;
     const sampleRate = audioBuffer.sampleRate;
     const coeffs = this.getKWeightingCoeffs(sampleRate);
+    const yieldToUI = () => new Promise<void>(resolve => setTimeout(resolve, 0));
 
     this.lufsState.kWeightedChannels = [];
     this.lufsState.sampleRate = sampleRate;
@@ -68,56 +76,169 @@ export class Metering {
     for (let c = 0; c < numChannels; c++) {
       const data = audioBuffer.getChannelData(c);
       const afterShelf = this.applyBiquad(data, coeffs.shelf);
+      await yieldToUI();
+      if (this.audioBuffer !== audioBuffer) return;
       const kWeighted = this.applyBiquad(afterShelf, coeffs.highpass);
+      await yieldToUI();
+      if (this.audioBuffer !== audioBuffer) return;
       this.lufsState.kWeightedChannels.push(kWeighted);
     }
   }
 
-  calculateFileStats(audioBuffer: AudioBuffer): void {
+  prepareRealtimeLUFS(audioBuffer: AudioBuffer): void {
+    this.prepareRealtimeLUFSAsync(audioBuffer);
+  }
+
+  /**
+   * Async chunked file stats calculation.
+   * Processes in chunks to avoid blocking the UI thread.
+   */
+  private async calculateFileStatsAsync(audioBuffer: AudioBuffer): Promise<void> {
     const numChannels = audioBuffer.numberOfChannels;
     const length = audioBuffer.length;
     const sampleRate = audioBuffer.sampleRate;
+    const CHUNK_SIZE = 200000; // Process 200k samples per chunk
 
-    // RMS Peak
+    // Helper: yield to the event loop periodically
+    const yieldToUI = () => new Promise<void>(resolve => setTimeout(resolve, 0));
+
+    // --- True Peak (sample peak only, skip expensive inter-sample) ---
+    let truePeakLinear = 0;
+    for (let c = 0; c < numChannels; c++) {
+      const data = audioBuffer.getChannelData(c);
+      for (let offset = 0; offset < length; offset += CHUNK_SIZE) {
+        const end = Math.min(offset + CHUNK_SIZE, length);
+        for (let i = offset; i < end; i++) {
+          const abs = Math.abs(data[i]);
+          if (abs > truePeakLinear) truePeakLinear = abs;
+        }
+        if (end < length) await yieldToUI();
+        if (this.audioBuffer !== audioBuffer) return; // Buffer changed, abort
+      }
+    }
+
+    // Inter-sample true peak: process in chunks
+    for (let c = 0; c < numChannels; c++) {
+      const data = audioBuffer.getChannelData(c);
+      for (let offset = 1; offset < length - 2; offset += CHUNK_SIZE) {
+        const end = Math.min(offset + CHUNK_SIZE, length - 2);
+        for (let i = offset; i < end; i++) {
+          for (let phase = 1; phase <= 3; phase++) {
+            const t = phase / 4;
+            const s0 = data[i - 1], s1 = data[i], s2 = data[i + 1], s3 = data[i + 2];
+            const interSample = s1 + 0.5 * t * (s2 - s0 + t * (2 * s0 - 5 * s1 + 4 * s2 - s3 + t * (3 * (s1 - s2) + s3 - s0)));
+            const absInter = Math.abs(interSample);
+            if (absInter > truePeakLinear) truePeakLinear = absInter;
+          }
+        }
+        if (end < length - 2) await yieldToUI();
+        if (this.audioBuffer !== audioBuffer) return;
+      }
+    }
+    const truePeak = truePeakLinear > 0 ? 20 * Math.log10(truePeakLinear) : -Infinity;
+
+    // --- RMS Peak ---
     const windowSize = Math.floor(sampleRate * 0.3);
+    const hopSize = Math.floor(windowSize / 4);
     let rmsPeakLinear = 0;
     for (let c = 0; c < numChannels; c++) {
       const data = audioBuffer.getChannelData(c);
-      for (let i = 0; i < length - windowSize; i += Math.floor(windowSize / 4)) {
+      let windowsProcessed = 0;
+      for (let i = 0; i < length - windowSize; i += hopSize) {
         let sum = 0;
         for (let j = 0; j < windowSize; j++) {
           sum += data[i + j] * data[i + j];
         }
         const rms = Math.sqrt(sum / windowSize);
         if (rms > rmsPeakLinear) rmsPeakLinear = rms;
+        windowsProcessed++;
+        if (windowsProcessed % 100 === 0) {
+          await yieldToUI();
+          if (this.audioBuffer !== audioBuffer) return;
+        }
       }
     }
     const rmsPeak = rmsPeakLinear > 0 ? 20 * Math.log10(rmsPeakLinear) : -Infinity;
 
-    // True Peak with 4x oversampling
-    let truePeakLinear = 0;
-    for (let c = 0; c < numChannels; c++) {
-      const data = audioBuffer.getChannelData(c);
-      for (let i = 0; i < length; i++) {
-        const abs = Math.abs(data[i]);
-        if (abs > truePeakLinear) truePeakLinear = abs;
-      }
-      for (let i = 1; i < length - 2; i++) {
-        for (let phase = 1; phase <= 3; phase++) {
-          const t = phase / 4;
-          const s0 = data[i - 1], s1 = data[i], s2 = data[i + 1], s3 = data[i + 2];
-          const interSample = s1 + 0.5 * t * (s2 - s0 + t * (2 * s0 - 5 * s1 + 4 * s2 - s3 + t * (3 * (s1 - s2) + s3 - s0)));
-          const absInter = Math.abs(interSample);
-          if (absInter > truePeakLinear) truePeakLinear = absInter;
-        }
-      }
-    }
-    const truePeak = truePeakLinear > 0 ? 20 * Math.log10(truePeakLinear) : -Infinity;
-
-    const lufs = this.calculateLUFS(audioBuffer);
+    // --- LUFS ---
+    const lufs = await this.calculateLUFSAsync(audioBuffer);
+    if (this.audioBuffer !== audioBuffer) return;
 
     this.fileStats = { rmsPeak, truePeak, lufs };
     this.updateFileStatsDisplay();
+  }
+
+  /**
+   * Async LUFS calculation with chunked processing.
+   */
+  private async calculateLUFSAsync(audioBuffer: AudioBuffer): Promise<number> {
+    const numChannels = audioBuffer.numberOfChannels;
+    const length = audioBuffer.length;
+    const sampleRate = audioBuffer.sampleRate;
+    const coeffs = this.getKWeightingCoeffs(sampleRate);
+
+    const yieldToUI = () => new Promise<void>(resolve => setTimeout(resolve, 0));
+
+    const kWeightedChannels: Float32Array[] = [];
+    for (let c = 0; c < numChannels; c++) {
+      const data = audioBuffer.getChannelData(c);
+      const afterShelf = this.applyBiquad(data, coeffs.shelf);
+      await yieldToUI();
+      if (this.audioBuffer !== audioBuffer) return -Infinity;
+      const kWeighted = this.applyBiquad(afterShelf, coeffs.highpass);
+      await yieldToUI();
+      if (this.audioBuffer !== audioBuffer) return -Infinity;
+      kWeightedChannels.push(kWeighted);
+    }
+
+    const weights = CHANNEL_WEIGHTS[numChannels] || Array(numChannels).fill(1.0);
+    const blockSize = Math.floor(sampleRate * 0.4);
+    const hopSize = Math.floor(sampleRate * 0.1);
+    const blocks: number[] = [];
+
+    let blocksProcessed = 0;
+    for (let start = 0; start + blockSize <= length; start += hopSize) {
+      let blockSum = 0;
+      for (let c = 0; c < numChannels; c++) {
+        const weight = weights[c];
+        if (weight === 0) continue;
+        const kWeighted = kWeightedChannels[c];
+        let channelSum = 0;
+        for (let i = 0; i < blockSize; i++) {
+          const sample = kWeighted[start + i];
+          channelSum += sample * sample;
+        }
+        blockSum += weight * (channelSum / blockSize);
+      }
+      blocks.push(blockSum);
+      blocksProcessed++;
+      if (blocksProcessed % 50 === 0) {
+        await yieldToUI();
+        if (this.audioBuffer !== audioBuffer) return -Infinity;
+      }
+    }
+
+    if (blocks.length === 0) return -Infinity;
+
+    const blockLoudness = blocks.map(ms => ms > 0 ? -0.691 + 10 * Math.log10(ms) : -Infinity);
+
+    const absoluteGated = blocks.filter((_, i) => blockLoudness[i] > -70);
+    if (absoluteGated.length === 0) return -Infinity;
+
+    const absoluteMean = absoluteGated.reduce((a, b) => a + b, 0) / absoluteGated.length;
+    const ungatedLoudness = absoluteMean > 0 ? -0.691 + 10 * Math.log10(absoluteMean) : -Infinity;
+
+    const relativeThreshold = ungatedLoudness - 10;
+    const relativeGated = blocks.filter((_, i) => blockLoudness[i] > relativeThreshold);
+    if (relativeGated.length === 0) return -Infinity;
+
+    const finalMean = relativeGated.reduce((a, b) => a + b, 0) / relativeGated.length;
+    return finalMean > 0 ? -0.691 + 10 * Math.log10(finalMean) : -Infinity;
+  }
+
+  /** @deprecated Use calculateFileStatsAsync instead */
+  calculateFileStats(audioBuffer: AudioBuffer): void {
+    this.calculateFileStatsAsync(audioBuffer);
   }
 
   getKWeightingCoeffs(sampleRate: number) {

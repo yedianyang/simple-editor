@@ -115,11 +115,11 @@ export class PluginHost {
    * Falls back to filesystem scanning via Electron menu handler.
    */
   async scanNativePlugins(): Promise<void> {
-    if (!window.electronAPI) return;
+    if (!window.appAPI) return;
 
     try {
-      const result = await window.electronAPI.scanPlugins();
-      if (result && !result.error && Array.isArray(result)) {
+      const result = await window.appAPI.scanPlugins();
+      if (Array.isArray(result) && result.length > 0) {
         const plugins: PluginInfo[] = result.map((p: any) => ({
           id: p.id,
           name: p.name,
@@ -147,10 +147,10 @@ export class PluginHost {
     }
 
     // For VST3/AU, try native loading via Electron
-    if (window.electronAPI) {
+    if (window.appAPI) {
       // Use plugin id (AU identifier) or path for loading
       const loadId = pluginInfo.id || pluginInfo.path;
-      const result = await window.electronAPI.loadPlugin(loadId);
+      const result = await window.appAPI.loadPlugin(loadId);
       if (result && !result.error) {
         const parameters: PluginParameter[] = (result.parameters || []).map((p: any) => ({
           id: p.id,
@@ -393,9 +393,9 @@ export class PluginHost {
     }
 
     // Update native plugin
-    if (instance.pluginInfo.format !== 'WebAudio' && window.electronAPI) {
+    if (instance.pluginInfo.format !== 'WebAudio' && window.appAPI) {
       const nativeId = (instance as any)._nativeId || instanceId;
-      window.electronAPI.setPluginParameter(nativeId, paramId, value);
+      window.appAPI.setPluginParameter(nativeId, paramId, value);
     }
   }
 
@@ -500,9 +500,9 @@ export class PluginHost {
       try { instance.audioNode.disconnect(); } catch {}
     }
 
-    if (instance.pluginInfo.format !== 'WebAudio' && window.electronAPI) {
+    if (instance.pluginInfo.format !== 'WebAudio' && window.appAPI) {
       const nativeId = (instance as any)._nativeId || instanceId;
-      window.electronAPI.unloadPlugin(nativeId);
+      window.appAPI.unloadPlugin(nativeId);
     }
 
     this.instances.delete(instanceId);

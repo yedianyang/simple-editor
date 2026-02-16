@@ -14,6 +14,10 @@ export class WaveformRenderer {
   selectionEnd: number | null = null;
   playheadPosition = 0;
   peaks: Float32Array[] = []; // Per-channel peaks
+  // Pre-computed multi-resolution peak cache for large files
+  private peakCache: { channelPeaks: Float32Array[]; blockSize: number } | null = null;
+  private static readonly PEAK_CACHE_BLOCK_SIZE = 256; // samples per cached peak block
+  private peakCacheBuildId = 0; // generation counter to prevent stale builds overwriting new ones
   isDragging = false;
   dragStartX = 0;
   dragStartSample = 0;
@@ -48,11 +52,15 @@ export class WaveformRenderer {
   resize(): void {
     const rect = this.canvas.parentElement!.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
-    this.canvas.width = rect.width * dpr;
-    this.canvas.height = rect.height * dpr;
-    this.ctx.scale(dpr, dpr);
     this.width = rect.width;
     this.height = rect.height;
+    // Set buffer size for crisp rendering at device pixel ratio
+    this.canvas.width = Math.round(rect.width * dpr);
+    this.canvas.height = Math.round(rect.height * dpr);
+    // Explicitly pin CSS size so offsetX/getBoundingClientRect stay in CSS-pixel space
+    this.canvas.style.width = rect.width + 'px';
+    this.canvas.style.height = rect.height + 'px';
+    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     this.render();
   }
 
@@ -82,11 +90,18 @@ export class WaveformRenderer {
     if (this.onSelectionChange) this.onSelectionChange();
   }
 
+  /** Convert clientX to canvas-local CSS pixel coordinate. */
+  private clientToLocalX(e: MouseEvent): number {
+    const rect = this.canvas.getBoundingClientRect();
+    return e.clientX - rect.left;
+  }
+
   onMouseDown(e: MouseEvent): void {
     if (!this.audioBuffer) return;
+    const x = this.clientToLocalX(e);
     this.isDragging = true;
-    this.dragStartX = e.offsetX;
-    this.dragStartSample = this.pixelToSample(e.offsetX);
+    this.dragStartX = x;
+    this.dragStartSample = this.pixelToSample(x);
     this.hasDragged = false;
 
     this.playheadPosition = this.dragStartSample;
@@ -99,7 +114,7 @@ export class WaveformRenderer {
 
   onMouseMove(e: MouseEvent): void {
     if (!this.isDragging || !this.audioBuffer) return;
-    const x = e.offsetX;
+    const x = this.clientToLocalX(e);
     const dragDistance = Math.abs(x - this.dragStartX);
 
     if (dragDistance > 5) {
@@ -150,7 +165,7 @@ export class WaveformRenderer {
       if (this.onScrollChange) this.onScrollChange();
     } else if (Math.abs(e.deltaY) > 0) {
       const zoomFactor = e.deltaY > 0 ? 1.1 : 0.9;
-      const mouseX = e.offsetX;
+      const mouseX = this.clientToLocalX(e);
       const sampleAtMouse = this.pixelToSample(mouseX);
 
       this.samplesPerPixel = Math.max(1, Math.min(
@@ -172,13 +187,66 @@ export class WaveformRenderer {
     this.selectionEnd = null;
     this.scrollOffset = 0;
     this.playheadPosition = 0;
+    this.peakCache = null;
+    this.peaks = [];
     if (this.onSelectionUpdate) this.onSelectionUpdate(null, null);
     if (buffer) {
-      this.zoomFit();
+      // Render empty waveform / loading state immediately
+      this.render();
+      // Build peak cache asynchronously, then finalize
+      this.buildPeakCacheAsync(buffer).then(() => {
+        // Only finalize if this buffer is still current
+        if (this.audioBuffer === buffer) {
+          this.zoomFit();
+        }
+      });
     } else {
-      this.peaks = [];
       this.render();
     }
+  }
+
+  /**
+   * Pre-compute a peak cache at fixed block size (async, non-blocking).
+   * Yields to the main thread every 1000 blocks to prevent UI freezes
+   * on large files (e.g. 86M samples).
+   */
+  private async buildPeakCacheAsync(buffer: AudioBuffer): Promise<void> {
+    const buildId = ++this.peakCacheBuildId;
+    const blockSize = WaveformRenderer.PEAK_CACHE_BLOCK_SIZE;
+    const numChannels = buffer.numberOfChannels;
+    const channelPeaks: Float32Array[] = [];
+
+    for (let c = 0; c < numChannels; c++) {
+      const data = buffer.getChannelData(c);
+      const numBlocks = Math.ceil(data.length / blockSize);
+      // Store min and max per block: [min0, max0, min1, max1, ...]
+      const peaks = new Float32Array(numBlocks * 2);
+
+      for (let b = 0; b < numBlocks; b++) {
+        const start = b * blockSize;
+        const end = Math.min(start + blockSize, data.length);
+        let min = 0, max = 0;
+        for (let j = start; j < end; j++) {
+          const v = data[j];
+          if (v < min) min = v;
+          if (v > max) max = v;
+        }
+        peaks[b * 2] = min;
+        peaks[b * 2 + 1] = max;
+
+        // Yield every 1000 blocks to keep UI responsive
+        if (b % 1000 === 999) {
+          await new Promise<void>(r => setTimeout(r, 0));
+          // Abort if a newer buffer has been set
+          if (this.peakCacheBuildId !== buildId) return;
+        }
+      }
+      channelPeaks.push(peaks);
+    }
+
+    // Final staleness check before writing cache
+    if (this.peakCacheBuildId !== buildId) return;
+    this.peakCache = { channelPeaks, blockSize };
   }
 
   zoomFit(): void {
@@ -232,25 +300,53 @@ export class WaveformRenderer {
     const numPeaks = Math.ceil(this.width);
     this.peaks = [];
 
+    // Use peak cache when zoomed out enough (samplesPerPixel >= blockSize)
+    const useCache = this.peakCache && this.samplesPerPixel >= this.peakCache.blockSize;
+
     for (let c = 0; c < numChannels; c++) {
-      const channelData = this.audioBuffer.getChannelData(c);
       const peaks = new Float32Array(numPeaks * 2);
 
-      for (let i = 0; i < numPeaks; i++) {
-        const startSample = Math.floor(this.scrollOffset + i * this.samplesPerPixel);
-        const endSample = Math.floor(startSample + this.samplesPerPixel);
+      if (useCache && this.peakCache) {
+        const cache = this.peakCache.channelPeaks[c];
+        const blockSize = this.peakCache.blockSize;
 
-        let min = 0, max = 0;
-        for (let j = startSample; j < endSample && j < channelData.length; j++) {
-          if (j >= 0) {
-            const value = channelData[j];
-            if (value < min) min = value;
-            if (value > max) max = value;
+        for (let i = 0; i < numPeaks; i++) {
+          const startSample = Math.floor(this.scrollOffset + i * this.samplesPerPixel);
+          const endSample = Math.floor(startSample + this.samplesPerPixel);
+
+          const startBlock = Math.max(0, Math.floor(startSample / blockSize));
+          const endBlock = Math.min(Math.ceil(endSample / blockSize), cache.length / 2);
+
+          let min = 0, max = 0;
+          for (let b = startBlock; b < endBlock; b++) {
+            const bMin = cache[b * 2];
+            const bMax = cache[b * 2 + 1];
+            if (bMin < min) min = bMin;
+            if (bMax > max) max = bMax;
           }
+          peaks[i * 2] = min;
+          peaks[i * 2 + 1] = max;
         }
-        peaks[i * 2] = min;
-        peaks[i * 2 + 1] = max;
+      } else {
+        // Direct sample access for zoomed-in view
+        const channelData = this.audioBuffer.getChannelData(c);
+        for (let i = 0; i < numPeaks; i++) {
+          const startSample = Math.floor(this.scrollOffset + i * this.samplesPerPixel);
+          const endSample = Math.floor(startSample + this.samplesPerPixel);
+
+          let min = 0, max = 0;
+          for (let j = startSample; j < endSample && j < channelData.length; j++) {
+            if (j >= 0) {
+              const value = channelData[j];
+              if (value < min) min = value;
+              if (value > max) max = value;
+            }
+          }
+          peaks[i * 2] = min;
+          peaks[i * 2 + 1] = max;
+        }
       }
+
       this.peaks.push(peaks);
     }
   }

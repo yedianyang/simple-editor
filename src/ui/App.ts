@@ -61,7 +61,7 @@ export class App {
     this.setupEventListeners();
     this.setupCuePointCallbacks();
     this.setupDragAndDrop();
-    this.setupElectronListeners();
+    this.setupNativeListeners();
     this.updateUI();
   }
 
@@ -121,10 +121,7 @@ export class App {
     document.getElementById('gainConfirmBtn')!.addEventListener('click', () => this.applyGain());
 
     // Plugin browser
-    const pluginBrowserClose = document.getElementById('pluginBrowserClose');
-    if (pluginBrowserClose) {
-      pluginBrowserClose.addEventListener('click', () => this.hideModal('pluginBrowserModal'));
-    }
+    document.getElementById('pluginBrowserCancelBtn')!.addEventListener('click', () => this.hideModal('pluginBrowserModal'));
 
     // Keyboard
     document.addEventListener('keydown', (e) => this.handleKeyboard(e));
@@ -300,24 +297,26 @@ export class App {
     }, false);
 
     waveformContainer.addEventListener('drop', (e) => {
+      console.log('[DROP] Drop event received');
       dragOverlay.classList.remove('visible');
       const dt = (e as DragEvent).dataTransfer;
-      if (!dt) return;
+      if (!dt) { console.log('[DROP] No dataTransfer'); return; }
       const files = Array.from(dt.files).filter(f => {
         const ext = f.name.toLowerCase();
         return ext.endsWith('.wav') || ext.endsWith('.aif') || ext.endsWith('.aiff') ||
                ext.endsWith('.flac') || ext.endsWith('.mp3') || ext.endsWith('.ogg');
       });
+      console.log(`[DROP] ${files.length} audio files found, sizes: ${files.map(f => (f.size/1024/1024).toFixed(1) + 'MB').join(', ')}`);
       if (files.length > 0) {
         this.addFilesToQueue(files);
       }
     }, false);
   }
 
-  setupElectronListeners(): void {
-    if (!window.electronAPI) return;
+  setupNativeListeners(): void {
+    if (!window.appAPI) return;
 
-    window.electronAPI.onImportFiles(async (filePaths) => {
+    window.appAPI.onImportFiles(async (filePaths) => {
       for (const filePath of filePaths) {
         const name = filePath.split('/').pop() || filePath;
         const fileObj = { name, path: filePath };
@@ -329,11 +328,11 @@ export class App {
       }
     });
 
-    window.electronAPI.onProjectLoad((data) => {
+    window.appAPI.onProjectLoad((data) => {
       this.loadProjectFromString(data);
     });
 
-    window.electronAPI.onPluginsScanResult((plugins) => {
+    window.appAPI.onPluginsScanResult((plugins) => {
       if (this.pluginHost) {
         this.pluginHost.addScannedPlugins(plugins);
       }
@@ -360,13 +359,14 @@ export class App {
       'zoom-out': () => this.waveformRenderer.zoomOut(),
       'zoom-fit': () => this.waveformRenderer.zoomFit(),
       'toggle-mixer': () => this.mixer.toggle(),
+      'toggle-plugin-browser': () => this.togglePluginBrowser(),
     };
 
     for (const [action, handler] of Object.entries(menuActions)) {
-      window.electronAPI.onMenuAction(action, handler);
+      window.appAPI.onMenuAction(action, handler);
     }
 
-    window.electronAPI.onMenuAction('channel-layout', (numChannels: number) => {
+    window.appAPI.onMenuAction('channel-layout', (numChannels: number) => {
       this.changeChannelLayout(numChannels);
     });
   }
@@ -392,6 +392,10 @@ export class App {
         case 'n':
           e.preventDefault();
           if (e.shiftKey && this.audioEngine.audioBuffer) this.showNormalizeModal();
+          return;
+        case 'b':
+          e.preventDefault();
+          this.togglePluginBrowser();
           return;
       }
     }
@@ -431,67 +435,108 @@ export class App {
 
   async importFile(file: File, fileId: number | null = null): Promise<void> {
     try {
+      this.showLoadingIndicator(file.name);
       this.fileName = file.name;
+      console.log(`[IMPORT-FILE] Step 1: Reading File object (${(file.size / 1024 / 1024).toFixed(1)} MB)...`);
       const arrayBuffer = await FileHandler.importFile(file);
+      console.log(`[IMPORT-FILE] Step 2: File read complete. Decoding...`);
       const audioBuffer = await this.audioEngine.loadAudio(arrayBuffer);
+      console.log('[IMPORT-FILE] Step 3: Decode complete. Loading UI...');
       this.onAudioLoaded(audioBuffer, fileId);
+      console.log('[IMPORT-FILE] Step 4: Done.');
     } catch (err: any) {
+      console.error('Import error:', err);
+      this.hideLoadingIndicator();
       alert('Error loading audio file: ' + err.message);
     }
   }
 
   async loadFileFromPath(filePath: string, fileId: number): Promise<void> {
     try {
-      this.fileName = filePath.split('/').pop() || 'Untitled';
-      const arrayBuffer = await FileHandler.importFilePath(filePath);
-      const audioBuffer = await this.audioEngine.loadAudio(arrayBuffer);
+      const name = filePath.split('/').pop() || 'Untitled';
+      this.showLoadingIndicator(name);
+      this.fileName = name;
+      console.log('[IMPORT] Step 1: Reading file...');
+      const result = await FileHandler.importFilePath(filePath);
+
+      let audioBuffer: AudioBuffer;
+      if (result instanceof ArrayBuffer) {
+        // Non-WAV: raw bytes need decodeAudioData
+        console.log(`[IMPORT] Step 2: File read complete (${(result.byteLength / 1024 / 1024).toFixed(1)} MB). Decoding...`);
+        audioBuffer = await this.audioEngine.loadAudio(result);
+      } else {
+        // WAV: already parsed by Rust — create AudioBuffer directly
+        const dataMB = (result.num_samples * result.channels * 4 / (1024 * 1024)).toFixed(1);
+        console.log(`[IMPORT] Step 2: Rust WAV parse complete (${result.channels}ch, ${result.sample_rate}Hz, ${dataMB} MB). Loading...`);
+        audioBuffer = await this.audioEngine.loadFromParsedData(result);
+      }
+
+      console.log('[IMPORT] Step 3: Audio loaded. Loading UI...');
       this.onAudioLoaded(audioBuffer, fileId);
+      console.log('[IMPORT] Step 4: Done.');
     } catch (err: any) {
+      console.error('Import error:', err);
+      this.hideLoadingIndicator();
       alert('Error loading audio file: ' + err.message);
     }
   }
 
+  private showLoadingIndicator(fileName: string): void {
+    const el = document.getElementById('fileInfo');
+    if (el) el.textContent = `Loading ${fileName}...`;
+  }
+
+  private hideLoadingIndicator(): void {
+    const el = document.getElementById('fileInfo');
+    if (el) el.textContent = this.fileName || 'No file loaded';
+  }
+
   private onAudioLoaded(audioBuffer: AudioBuffer, fileId: number | null): void {
-    if (!this.audioEditor) {
-      this.audioEditor = new AudioEditor(this.audioEngine.audioContext!);
-    }
-    if (!this.pluginHost) {
-      this.pluginHost = new PluginHost(this.audioEngine.audioContext!);
-      this.mixer.pluginHost = this.pluginHost;
-    }
-
-    this.undoManager.setAudioContext(this.audioEngine.audioContext!);
-    this.undoManager.clear();
-
-    this.waveformRenderer.setAudioBuffer(audioBuffer);
-    this.spectrogramRenderer.setAudioBuffer(audioBuffer);
-    this.spectrogramRenderer.setAnalyserNode(this.audioEngine.getAnalyserNode());
-    this.spectrogramRenderer.setSamplesPerPixel(this.waveformRenderer.samplesPerPixel);
-    this.metering.setAudioBuffer(audioBuffer);
-    this.metering.setAnalyserNode(this.audioEngine.getAnalyserNode());
-
-    this.cuePointManager.clear();
-    this.cuePointRenderer.setAudioBuffer(audioBuffer);
-    this.cuePointRenderer.setSamplesPerPixel(this.waveformRenderer.samplesPerPixel);
-    this.cuePointRenderer.setScrollOffset(this.waveformRenderer.scrollOffset);
-
-    // Setup mixer for channel count
-    this.mixer.setupChannels(audioBuffer.numberOfChannels);
-
-    if (fileId) {
-      const savedCuePoints = this.fileQueue.getCuePoints(fileId);
-      if (savedCuePoints && savedCuePoints.length > 0) {
-        this.cuePointManager.fromJSON(savedCuePoints);
-        this.cuePointRenderer.render();
+    try {
+      if (!this.audioEditor) {
+        this.audioEditor = new AudioEditor(this.audioEngine.audioContext!);
       }
-      this.fileQueue.setActive(fileId);
-      this.renderFileList();
-    }
+      if (!this.pluginHost) {
+        this.pluginHost = new PluginHost(this.audioEngine.audioContext!);
+        this.mixer.pluginHost = this.pluginHost;
+      }
 
-    this.updateUI();
-    this.updateFileInfo();
-    this.updateZoomInfo();
-    this.updateChannelInfo();
+      this.undoManager.setAudioContext(this.audioEngine.audioContext!);
+      this.undoManager.clear();
+
+      this.waveformRenderer.setAudioBuffer(audioBuffer);
+      this.spectrogramRenderer.setAudioBuffer(audioBuffer);
+      this.spectrogramRenderer.setAnalyserNode(this.audioEngine.getAnalyserNode());
+      this.spectrogramRenderer.setSamplesPerPixel(this.waveformRenderer.samplesPerPixel);
+      this.metering.setAudioBuffer(audioBuffer);
+      this.metering.setAnalyserNode(this.audioEngine.getAnalyserNode());
+
+      this.cuePointManager.clear();
+      this.cuePointRenderer.setAudioBuffer(audioBuffer);
+      this.cuePointRenderer.setSamplesPerPixel(this.waveformRenderer.samplesPerPixel);
+      this.cuePointRenderer.setScrollOffset(this.waveformRenderer.scrollOffset);
+
+      // Setup mixer for channel count
+      this.mixer.setupChannels(audioBuffer.numberOfChannels);
+
+      if (fileId) {
+        const savedCuePoints = this.fileQueue.getCuePoints(fileId);
+        if (savedCuePoints && savedCuePoints.length > 0) {
+          this.cuePointManager.fromJSON(savedCuePoints);
+          this.cuePointRenderer.render();
+        }
+        this.fileQueue.setActive(fileId);
+        this.renderFileList();
+      }
+
+      this.updateUI();
+      this.updateFileInfo();
+      this.updateZoomInfo();
+      this.updateChannelInfo();
+    } catch (err: any) {
+      console.error('Error in onAudioLoaded:', err);
+      alert('Error displaying audio: ' + err.message);
+    }
   }
 
   addFilesToQueue(files: Array<File | { name: string; path: string }>): void {
@@ -500,11 +545,23 @@ export class App {
 
     if (!this.audioEngine.audioBuffer && files.length > 0) {
       const firstFile = files[0];
-      if (firstFile instanceof File) {
-        this.importFile(firstFile, ids[0]);
-      } else {
-        this.loadFileFromPath(firstFile.path, ids[0]);
-      }
+      this.loadQueuedFile(firstFile, ids[0]);
+    }
+  }
+
+  /**
+   * Load a file using the best available method.
+   * Tauri File objects have a `.path` property — use Rust parser for WAV files.
+   */
+  private loadQueuedFile(file: File | { name: string; path: string }, fileId: number): void {
+    const nativePath = (file as any).path as string | undefined;
+
+    if (nativePath) {
+      // Native path available (Tauri/Electron) — use Rust WAV parser path
+      this.loadFileFromPath(nativePath, fileId);
+    } else if (file instanceof File) {
+      // Pure browser fallback — FileReader + decodeAudioData
+      this.importFile(file, fileId);
     }
   }
 
@@ -516,11 +573,7 @@ export class App {
 
     const file = this.fileQueue.getFile(fileId);
     if (file) {
-      if (file instanceof File) {
-        this.importFile(file, fileId);
-      } else {
-        this.loadFileFromPath(file.path, fileId);
-      }
+      this.loadQueuedFile(file, fileId);
     }
   }
 
@@ -595,7 +648,15 @@ export class App {
       const endTime = selection.end / this.audioEngine.audioBuffer.sampleRate;
       this.audioEngine.playSelection(startTime, endTime);
     } else if (this.audioEngine.isPaused) {
-      this.audioEngine.resume();
+      // If user clicked to move playhead while paused, play from new position
+      const pausedSample = Math.floor(this.audioEngine.getCurrentTime() * this.audioEngine.audioBuffer.sampleRate);
+      if (Math.abs(this.waveformRenderer.playheadPosition - pausedSample) > 1) {
+        this.audioEngine.stop();
+        const startTime = this.waveformRenderer.playheadPosition / this.audioEngine.audioBuffer.sampleRate;
+        this.audioEngine.play(startTime);
+      } else {
+        this.audioEngine.resume();
+      }
     } else {
       let startSample = this.waveformRenderer.playheadPosition;
       const totalSamples = this.audioEngine.audioBuffer.length;
@@ -885,32 +946,57 @@ export class App {
 
   // ==================== Plugins ====================
 
-  showPluginBrowser(channelIndex: number): void {
+  togglePluginBrowser(): void {
     const modal = document.getElementById('pluginBrowserModal');
-    if (!modal || !this.pluginHost) return;
+    if (!modal) return;
+    if (modal.classList.contains('visible')) {
+      this.hideModal('pluginBrowserModal');
+    } else {
+      this.showPluginBrowser(null);
+    }
+  }
+
+  showPluginBrowser(channelIndex: number | null): void {
+    const modal = document.getElementById('pluginBrowserModal');
+    if (!modal) return;
+
+    // Ensure pluginHost exists for browsing (create with a temporary context if needed)
+    if (!this.pluginHost && this.audioEngine.audioContext) {
+      this.pluginHost = new PluginHost(this.audioEngine.audioContext);
+      this.mixer.pluginHost = this.pluginHost;
+    }
 
     const pluginList = document.getElementById('pluginList')!;
-    const plugins = this.pluginHost.getAvailablePlugins();
+    const insertBtn = document.getElementById('pluginBrowserInsertBtn') as HTMLButtonElement;
+    const plugins = this.pluginHost ? this.pluginHost.getAvailablePlugins() : [];
 
     pluginList.innerHTML = '';
-    plugins.forEach(plugin => {
-      const item = document.createElement('div');
-      item.className = 'plugin-item';
-      item.innerHTML = `
-        <span class="plugin-name">${plugin.name}</span>
-        <span class="plugin-format">${plugin.format}</span>
-        <span class="plugin-category">${plugin.category || ''}</span>
-      `;
-      item.addEventListener('click', async () => {
-        try {
-          await this.mixer.addPlugin(channelIndex, plugin);
-          this.hideModal('pluginBrowserModal');
-        } catch (err: any) {
-          alert('Error loading plugin: ' + err.message);
+
+    if (plugins.length === 0) {
+      pluginList.innerHTML = '<div style="padding: 24px; text-align: center; color: #666; font-style: italic;">No plugins available. Load an audio file to use built-in effects.</div>';
+      if (insertBtn) insertBtn.disabled = true;
+    } else {
+      plugins.forEach(plugin => {
+        const item = document.createElement('div');
+        item.className = 'plugin-item';
+        item.innerHTML = `
+          <span class="plugin-item-name">${plugin.name}</span>
+          <span class="plugin-item-format">${plugin.format}</span>
+          <span class="plugin-item-category">${plugin.category || ''}</span>
+        `;
+        if (channelIndex !== null) {
+          item.addEventListener('click', async () => {
+            try {
+              await this.mixer.addPlugin(channelIndex, plugin);
+              this.hideModal('pluginBrowserModal');
+            } catch (err: any) {
+              alert('Error loading plugin: ' + err.message);
+            }
+          });
         }
+        pluginList.appendChild(item);
       });
-      pluginList.appendChild(item);
-    });
+    }
 
     // Search filter
     const searchInput = document.getElementById('pluginSearch') as HTMLInputElement;
@@ -919,7 +1005,7 @@ export class App {
       searchInput.oninput = () => {
         const query = searchInput.value.toLowerCase();
         pluginList.querySelectorAll('.plugin-item').forEach(item => {
-          const name = item.querySelector('.plugin-name')?.textContent?.toLowerCase() || '';
+          const name = item.querySelector('.plugin-item-name')?.textContent?.toLowerCase() || '';
           (item as HTMLElement).style.display = name.includes(query) ? '' : 'none';
         });
       };

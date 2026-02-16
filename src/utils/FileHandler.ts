@@ -1,4 +1,5 @@
 import { ExportMetadata } from '../core/types';
+import type { ParsedAudioData } from './TauriAPI';
 
 /**
  * Multi-channel audio file import/export handler.
@@ -16,14 +17,25 @@ export class FileHandler {
   }
 
   /**
-   * Import file from native file path (Electron).
+   * Import file from native file path via Rust WAV decoder.
+   * Returns pre-parsed Float32 PCM data — skips decodeAudioData entirely.
+   * Falls back to localfile:// protocol + ArrayBuffer for non-WAV formats.
    */
-  static async importFilePath(filePath: string): Promise<ArrayBuffer> {
-    if (window.electronAPI) {
-      const buffer = await window.electronAPI.readFile(filePath);
-      return (buffer as any).buffer || buffer;
+  static async importFilePath(filePath: string): Promise<ParsedAudioData | ArrayBuffer> {
+    if (!window.appAPI) {
+      throw new Error('Native API not available');
     }
-    throw new Error('File path import requires Electron');
+
+    const ext = filePath.toLowerCase().split('.').pop();
+    const isWav = ext === 'wav' || ext === 'wave';
+
+    if (isWav) {
+      // Use Rust WAV parser — returns parsed Float32 PCM directly
+      return window.appAPI.readLargeAudioFile(filePath);
+    }
+
+    // Non-WAV formats: read raw bytes, let decodeAudioData handle it
+    return window.appAPI.readLargeFile(filePath);
   }
 
   // TPDF Dithering

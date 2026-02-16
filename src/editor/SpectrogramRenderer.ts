@@ -34,11 +34,13 @@ export class SpectrogramRenderer {
   resize(): void {
     const rect = this.canvas.parentElement!.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
-    this.canvas.width = rect.width * dpr;
-    this.canvas.height = rect.height * dpr;
-    this.ctx.scale(dpr, dpr);
     this.width = rect.width;
     this.height = rect.height;
+    this.canvas.width = Math.round(rect.width * dpr);
+    this.canvas.height = Math.round(rect.height * dpr);
+    this.canvas.style.width = rect.width + 'px';
+    this.canvas.style.height = rect.height + 'px';
+    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     this.render();
   }
 
@@ -325,18 +327,47 @@ export class SpectrogramRenderer {
 
   computeFFT(samples: Float32Array): Float32Array {
     const n = samples.length;
-    const spectrum = new Float32Array(n / 2);
+    // Radix-2 Cooley-Tukey FFT — O(N log N) instead of O(N²)
+    const real = new Float32Array(n);
+    const imag = new Float32Array(n);
 
-    for (let k = 0; k < n / 2; k++) {
-      let real = 0, imag = 0;
-      for (let t = 0; t < n; t++) {
-        const angle = 2 * Math.PI * k * t / n;
-        real += samples[t] * Math.cos(angle);
-        imag -= samples[t] * Math.sin(angle);
+    // Bit-reversal permutation
+    for (let i = 0; i < n; i++) {
+      let j = 0;
+      let x = i;
+      for (let bit = 1; bit < n; bit <<= 1) {
+        j = (j << 1) | (x & 1);
+        x >>= 1;
       }
-      spectrum[k] = Math.sqrt(real * real + imag * imag) / n;
+      real[j] = samples[i];
     }
 
+    // Butterfly computation
+    for (let size = 2; size <= n; size *= 2) {
+      const halfSize = size / 2;
+      const angleStep = -2 * Math.PI / size;
+      for (let i = 0; i < n; i += size) {
+        for (let j = 0; j < halfSize; j++) {
+          const angle = angleStep * j;
+          const cos = Math.cos(angle);
+          const sin = Math.sin(angle);
+          const idx1 = i + j;
+          const idx2 = i + j + halfSize;
+          const tReal = real[idx2] * cos - imag[idx2] * sin;
+          const tImag = real[idx2] * sin + imag[idx2] * cos;
+          real[idx2] = real[idx1] - tReal;
+          imag[idx2] = imag[idx1] - tImag;
+          real[idx1] += tReal;
+          imag[idx1] += tImag;
+        }
+      }
+    }
+
+    // Compute magnitude spectrum (first half only)
+    const spectrum = new Float32Array(n / 2);
+    for (let k = 0; k < n / 2; k++) {
+      spectrum[k] = Math.sqrt(real[k] * real[k] + imag[k] * imag[k]) / n;
+    }
     return spectrum;
   }
 }

@@ -250,28 +250,11 @@ export function formatTime(seconds: number): string {
   return `${mins}:${secs.padStart(5, '0')}`;
 }
 
-// Declare electron API on window
+// Declare app API on window (Tauri backend)
+import type { AppAPI } from '../utils/TauriAPI';
+
 declare global {
   interface Window {
-    electronAPI?: {
-      readFile: (path: string) => Promise<Buffer>;
-      writeFile: (path: string, data: Buffer) => Promise<void>;
-      readFileText: (path: string) => Promise<string>;
-      showSaveDialog: (options: any) => Promise<any>;
-      showOpenDialog: (options: any) => Promise<any>;
-      scanPlugins: () => Promise<any>;
-      loadPlugin: (pluginPath: string) => Promise<any>;
-      processAudio: (pluginId: string, audioData: Float32Array[], sampleRate: number) => Promise<any>;
-      getPluginParameters: (pluginId: string) => Promise<any>;
-      setPluginParameter: (pluginId: string, paramId: number, value: number) => Promise<any>;
-      unloadPlugin: (pluginId: string) => Promise<any>;
-      getAudioDevices: () => Promise<any>;
-      onImportFiles: (callback: (filePaths: string[]) => void) => void;
-      onProjectLoad: (callback: (data: string) => void) => void;
-      onPluginsScanResult: (callback: (plugins: any[]) => void) => void;
-      onPluginsAddPath: (callback: (path: string) => void) => void;
-      onMenuAction: (action: string, callback: (...args: any[]) => void) => void;
-      platform: string;
-    };
+    appAPI?: AppAPI;
   }
 }

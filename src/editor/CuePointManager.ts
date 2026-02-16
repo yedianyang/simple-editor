@@ -158,12 +158,19 @@ export class CuePointRenderer {
   resize(): void {
     const rect = this.canvas.parentElement!.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
-    this.canvas.width = rect.width * dpr;
-    this.canvas.height = rect.height * dpr;
-    this.ctx.scale(dpr, dpr);
     this.width = rect.width;
     this.height = rect.height;
+    this.canvas.width = Math.round(rect.width * dpr);
+    this.canvas.height = Math.round(rect.height * dpr);
+    this.canvas.style.width = rect.width + 'px';
+    this.canvas.style.height = rect.height + 'px';
+    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     this.render();
+  }
+
+  private clientToLocalX(e: MouseEvent): number {
+    const rect = this.canvas.getBoundingClientRect();
+    return e.clientX - rect.left;
   }
 
   setupInteraction(): void {
@@ -195,7 +202,7 @@ export class CuePointRenderer {
 
   onMouseDown(e: MouseEvent): void {
     if (!this.audioBuffer) return;
-    const x = e.offsetX;
+    const x = this.clientToLocalX(e);
     const cuePoint = this.getCuePointAtPixel(x);
 
     if ((e.metaKey || e.ctrlKey) && cuePoint) {
@@ -222,7 +229,7 @@ export class CuePointRenderer {
 
   onMouseMove(e: MouseEvent): void {
     if (!this.audioBuffer) return;
-    const x = e.offsetX;
+    const x = this.clientToLocalX(e);
 
     if (this.draggingCuePoint) {
       if (Math.abs(x - this.dragStartX) > 5) {
@@ -262,7 +269,7 @@ export class CuePointRenderer {
 
   onDoubleClick(e: MouseEvent): void {
     if (!this.audioBuffer) return;
-    const x = e.offsetX;
+    const x = this.clientToLocalX(e);
     const clickedCuePoint = this.getCuePointAtPixel(x);
 
     if (clickedCuePoint) {

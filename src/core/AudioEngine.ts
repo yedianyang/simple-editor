@@ -243,9 +243,178 @@ export class AudioEngine {
   async loadAudio(arrayBuffer: ArrayBuffer): Promise<AudioBuffer> {
     await this.init();
     this.stop();
-    this.audioBuffer = await this.audioContext!.decodeAudioData(arrayBuffer);
+
+    const sizeMB = (arrayBuffer.byteLength / (1024 * 1024)).toFixed(1);
+    console.log(`Decoding audio: ${sizeMB} MB`);
+
+    // For large WAV files (>100MB), manually parse to avoid decodeAudioData's
+    // intermediate memory overhead which causes OOM crashes.
+    // decodeAudioData holds: source ArrayBuffer + internal decode buffers + output AudioBuffer
+    // Manual parsing holds: source ArrayBuffer + output AudioBuffer + one small chunk buffer
+    if (arrayBuffer.byteLength > 100 * 1024 * 1024 && this.isWAVFile(arrayBuffer)) {
+      console.log('Large WAV detected — using manual parser to reduce memory');
+      try {
+        this.audioBuffer = await this.parseWAVManual(arrayBuffer);
+      } catch (err) {
+        throw new Error(
+          `Failed to parse WAV (${sizeMB} MB). ` +
+          (err instanceof Error ? err.message : 'Unknown error')
+        );
+      }
+    } else {
+      try {
+        this.audioBuffer = await this.audioContext!.decodeAudioData(arrayBuffer);
+      } catch (err) {
+        throw new Error(
+          `Failed to decode audio (${sizeMB} MB). ` +
+          (arrayBuffer.byteLength > 200 * 1024 * 1024
+            ? 'The file may be too large for the available memory.'
+            : 'The file format may not be supported.') +
+          (err instanceof Error ? ' ' + err.message : '')
+        );
+      }
+    }
+
+    const bufferMB = (this.audioBuffer.length * this.audioBuffer.numberOfChannels * 4 / (1024 * 1024)).toFixed(1);
+    console.log(`Audio decoded: ${this.audioBuffer.numberOfChannels}ch, ${this.audioBuffer.sampleRate}Hz, ${this.audioBuffer.length} samples (${bufferMB} MB)`);
+
     this.setupChannelRouting(this.audioBuffer.numberOfChannels);
     return this.audioBuffer;
+  }
+
+  /**
+   * Load audio from pre-parsed PCM data (from Rust WAV decoder).
+   * Skips decodeAudioData entirely — no OOM risk for large files.
+   * Flat samples layout: [ch0_all, ch1_all, ...]
+   */
+  async loadFromParsedData(data: { sample_rate: number; channels: number; num_samples: number; samples: Float32Array }): Promise<AudioBuffer> {
+    await this.init();
+    this.stop();
+
+    const { sample_rate, channels, num_samples, samples } = data;
+
+    console.log(`Loading parsed audio: ${channels}ch, ${sample_rate}Hz, ${num_samples} samples`);
+
+    this.audioBuffer = this.audioContext!.createBuffer(channels, num_samples, sample_rate);
+
+    // Slice the flat samples array into per-channel data and copy
+    for (let ch = 0; ch < channels; ch++) {
+      const offset = ch * num_samples;
+      const channelData = samples.slice(offset, offset + num_samples);
+      this.audioBuffer.copyToChannel(channelData, ch);
+    }
+
+    const bufferMB = (num_samples * channels * 4 / (1024 * 1024)).toFixed(1);
+    console.log(`Audio loaded: ${channels}ch, ${sample_rate}Hz, ${num_samples} samples (${bufferMB} MB)`);
+
+    this.setupChannelRouting(channels);
+    return this.audioBuffer;
+  }
+
+  private isWAVFile(arrayBuffer: ArrayBuffer): boolean {
+    if (arrayBuffer.byteLength < 12) return false;
+    const view = new DataView(arrayBuffer);
+    return (
+      view.getUint32(0) === 0x52494646 && // 'RIFF'
+      view.getUint32(8) === 0x57415645    // 'WAVE'
+    );
+  }
+
+  /**
+   * Manually parse WAV file and create AudioBuffer.
+   * Avoids decodeAudioData's intermediate buffers that cause OOM on large files.
+   * Processes in 500K-sample chunks with async yields to keep UI responsive.
+   *
+   * Memory during parse: ArrayBuffer(304MB) + AudioBuffer(691MB) + chunk(2MB) ≈ 997MB
+   * vs decodeAudioData:  ArrayBuffer(304MB) + internals(???) + AudioBuffer(691MB) > 1.5GB
+   */
+  private async parseWAVManual(arrayBuffer: ArrayBuffer): Promise<AudioBuffer> {
+    const view = new DataView(arrayBuffer);
+
+    // Walk RIFF chunks to find 'fmt ' and 'data'
+    let formatCode = 0, numChannels = 0, sampleRate = 0, bitsPerSample = 0;
+    let dataOffset = -1, dataSize = 0;
+
+    let offset = 12; // skip RIFF header + 'WAVE'
+    while (offset < arrayBuffer.byteLength - 8) {
+      const chunkId =
+        String.fromCharCode(view.getUint8(offset)) +
+        String.fromCharCode(view.getUint8(offset + 1)) +
+        String.fromCharCode(view.getUint8(offset + 2)) +
+        String.fromCharCode(view.getUint8(offset + 3));
+      const chunkSize = view.getUint32(offset + 4, true);
+
+      if (chunkId === 'fmt ') {
+        formatCode = view.getUint16(offset + 8, true);
+        numChannels = view.getUint16(offset + 10, true);
+        sampleRate = view.getUint32(offset + 12, true);
+        bitsPerSample = view.getUint16(offset + 22, true);
+      } else if (chunkId === 'data') {
+        dataOffset = offset + 8;
+        dataSize = chunkSize;
+      }
+
+      // Chunks are word-aligned
+      offset += 8 + chunkSize + (chunkSize % 2);
+      if (formatCode > 0 && dataOffset >= 0) break;
+    }
+
+    if (formatCode === 0) throw new Error('Missing fmt chunk');
+    if (dataOffset < 0) throw new Error('Missing data chunk');
+    if (formatCode !== 1 && formatCode !== 3) {
+      throw new Error(`Unsupported WAV format code ${formatCode} (only PCM=1 and IEEE float=3)`);
+    }
+
+    const bytesPerSample = bitsPerSample / 8;
+    const blockAlign = numChannels * bytesPerSample;
+    const numSamples = Math.floor(dataSize / blockAlign);
+
+    console.log(`WAV manual parse: ${numChannels}ch, ${sampleRate}Hz, ${bitsPerSample}bit, ${numSamples} samples`);
+
+    const audioBuffer = this.audioContext!.createBuffer(numChannels, numSamples, sampleRate);
+
+    // Process one channel at a time in chunks to minimize peak memory.
+    // Each chunk is 500K samples (2MB Float32), yielding between chunks.
+    const CHUNK = 500_000;
+
+    for (let ch = 0; ch < numChannels; ch++) {
+      for (let start = 0; start < numSamples; start += CHUNK) {
+        const end = Math.min(start + CHUNK, numSamples);
+        const len = end - start;
+        const chunk = new Float32Array(len);
+
+        if (formatCode === 3 && bitsPerSample === 32) {
+          for (let i = 0; i < len; i++) {
+            chunk[i] = view.getFloat32(dataOffset + (start + i) * blockAlign + ch * 4, true);
+          }
+        } else if (bitsPerSample === 16) {
+          for (let i = 0; i < len; i++) {
+            chunk[i] = view.getInt16(dataOffset + (start + i) * blockAlign + ch * 2, true) / 32768;
+          }
+        } else if (bitsPerSample === 24) {
+          for (let i = 0; i < len; i++) {
+            const off = dataOffset + (start + i) * blockAlign + ch * 3;
+            const b0 = view.getUint8(off);
+            const b1 = view.getUint8(off + 1);
+            const b2 = view.getUint8(off + 2);
+            let s = (b2 << 16) | (b1 << 8) | b0;
+            if (b2 & 0x80) s -= 0x1000000; // sign extend 24→32
+            chunk[i] = s / 8388608;
+          }
+        } else if (bitsPerSample === 32) {
+          for (let i = 0; i < len; i++) {
+            chunk[i] = view.getInt32(dataOffset + (start + i) * blockAlign + ch * 4, true) / 2147483648;
+          }
+        }
+
+        audioBuffer.copyToChannel(chunk, ch, start);
+
+        // Yield to keep UI responsive
+        await new Promise<void>(r => setTimeout(r, 0));
+      }
+    }
+
+    return audioBuffer;
   }
 
   play(startOffset = 0): void {

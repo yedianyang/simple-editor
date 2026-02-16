@@ -12,7 +12,7 @@ export class Mixer {
   pluginHost: PluginHost;
   channels: ChannelStripState[] = [];
   masterVolume = 0; // dB
-  visible = true;
+  visible = false;
 
   // Callbacks
   onPluginInsertRequest: ((channelIndex: number) => void) | null = null;
