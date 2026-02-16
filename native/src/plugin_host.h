@@ -5,6 +5,10 @@
 #include <map>
 #include <memory>
 
+#ifdef __APPLE__
+#include <AudioToolbox/AudioToolbox.h>
+#endif
+
 namespace FieldCorder {
 
 struct ParameterInfo {
@@ -24,26 +28,38 @@ struct LoadResult {
     std::vector<ParameterInfo> parameters;
 };
 
+struct ScanResultItem {
+    std::string id;       // "aufx:bpas:appl" (type:subtype:manufacturer)
+    std::string name;     // "AUBandpass"
+    std::string category; // "effect", "instrument", "generator", "music-effect"
+    std::string format;   // "AudioUnit"
+    std::string vendor;   // Manufacturer name
+};
+
 /**
- * Plugin Host for VST3 and AudioUnit plugins.
+ * Plugin Host for AudioUnit plugins on macOS.
  *
- * On macOS, AudioUnit plugins are loaded via the AudioToolbox framework.
- * VST3 plugins require the VST3 SDK to be available at build time.
- *
- * This is a skeleton implementation. Full VST3/AU hosting requires:
- * - VST3 SDK for VST3 plugins (https://github.com/steinbergmedia/vst3sdk)
- * - AudioToolbox/AudioUnit frameworks for AU plugins (included in macOS SDK)
+ * Uses AudioToolbox framework to scan, load, and process AU plugins.
+ * Audio processing uses AudioUnitRender for sample-accurate plugin processing.
  */
 class PluginHost {
 public:
     PluginHost();
     ~PluginHost();
 
-    LoadResult loadPlugin(const std::string& path);
+    // Scan system for installed AudioUnit plugins
+    std::vector<ScanResultItem> scanAudioUnits();
+
+    // Load a plugin by its AU identifier (e.g. "aufx:bpas:appl")
+    LoadResult loadPlugin(const std::string& pluginIdentifier);
     void unloadPlugin(const std::string& pluginId);
 
     std::vector<ParameterInfo> getParameters(const std::string& pluginId);
     void setParameter(const std::string& pluginId, int paramId, double value);
+
+    // Configure audio format before processing
+    bool configureAudio(const std::string& pluginId, double sampleRate,
+                        int numChannels, int maxFrames);
 
     // Process audio through a loaded plugin
     void processAudio(const std::string& pluginId,
@@ -55,8 +71,20 @@ private:
     std::map<std::string, std::unique_ptr<PluginInstance>> instances_;
     int nextId_ = 1;
 
-    LoadResult loadAudioUnit(const std::string& path);
+    LoadResult loadAudioUnit(const std::string& identifier);
     LoadResult loadVST3(const std::string& path);
+
+#ifdef __APPLE__
+    // Parse AU identifier string "type:subtype:manufacturer" into component description
+    static bool parseAUIdentifier(const std::string& identifier,
+                                  AudioComponentDescription& desc);
+    // Convert OSType to 4-char string
+    static std::string fourCCToString(UInt32 value);
+    // Convert 4-char string to OSType
+    static UInt32 stringToFourCC(const std::string& str);
+    // Query parameters from an AU instance
+    static std::vector<ParameterInfo> queryAUParameters(AudioComponentInstance instance);
+#endif
 };
 
 } // namespace FieldCorder

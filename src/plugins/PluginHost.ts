@@ -98,13 +98,41 @@ export class PluginHost {
   }
 
   addScannedPlugins(plugins: PluginInfo[]): void {
-    // Remove duplicates by path
-    const existing = new Set(this.availablePlugins.map(p => p.path));
+    // Remove duplicates by id or path
+    const existingIds = new Set(this.availablePlugins.map(p => p.id));
+    const existingPaths = new Set(this.availablePlugins.map(p => p.path));
     for (const plugin of plugins) {
-      if (!existing.has(plugin.path)) {
+      if (!existingIds.has(plugin.id) && !existingPaths.has(plugin.path)) {
         this.availablePlugins.push(plugin);
-        existing.add(plugin.path);
+        existingIds.add(plugin.id);
+        existingPaths.add(plugin.path);
       }
+    }
+  }
+
+  /**
+   * Scan for native AU plugins using the native addon.
+   * Falls back to filesystem scanning via Electron menu handler.
+   */
+  async scanNativePlugins(): Promise<void> {
+    if (!window.electronAPI) return;
+
+    try {
+      const result = await window.electronAPI.scanPlugins();
+      if (result && !result.error && Array.isArray(result)) {
+        const plugins: PluginInfo[] = result.map((p: any) => ({
+          id: p.id,
+          name: p.name,
+          path: p.id,  // AU identifier used as path
+          type: (p.category === 'instrument' ? 'instrument' : 'effect') as 'effect' | 'instrument',
+          format: p.format as 'AudioUnit',
+          category: p.category,
+          vendor: p.vendor,
+        }));
+        this.addScannedPlugins(plugins);
+      }
+    } catch (err) {
+      console.warn('Native plugin scan failed:', err);
     }
   }
 
@@ -120,16 +148,38 @@ export class PluginHost {
 
     // For VST3/AU, try native loading via Electron
     if (window.electronAPI) {
-      const result = await window.electronAPI.loadPlugin(pluginInfo.path);
+      // Use plugin id (AU identifier) or path for loading
+      const loadId = pluginInfo.id || pluginInfo.path;
+      const result = await window.electronAPI.loadPlugin(loadId);
       if (result && !result.error) {
+        const parameters: PluginParameter[] = (result.parameters || []).map((p: any) => ({
+          id: p.id,
+          name: p.name,
+          value: p.value,
+          min: p.min,
+          max: p.max,
+          defaultValue: p.defaultValue,
+          unit: p.unit || '',
+        }));
+
         const instance: PluginInstance = {
           id: instanceId,
-          pluginInfo,
-          parameters: result.parameters || [],
+          pluginInfo: {
+            ...pluginInfo,
+            parameters,
+          },
+          parameters,
           bypassed: false,
         };
+
+        // Store the native plugin ID for parameter/process calls
+        (instance as any)._nativeId = result.id;
+
         this.instances.set(instanceId, instance);
         return instance;
+      }
+      if (result?.error) {
+        throw new Error(`Plugin load error: ${result.error}`);
       }
     }
 
@@ -344,7 +394,8 @@ export class PluginHost {
 
     // Update native plugin
     if (instance.pluginInfo.format !== 'WebAudio' && window.electronAPI) {
-      window.electronAPI.setPluginParameter(instanceId, paramId, value);
+      const nativeId = (instance as any)._nativeId || instanceId;
+      window.electronAPI.setPluginParameter(nativeId, paramId, value);
     }
   }
 
@@ -450,7 +501,8 @@ export class PluginHost {
     }
 
     if (instance.pluginInfo.format !== 'WebAudio' && window.electronAPI) {
-      window.electronAPI.unloadPlugin(instanceId);
+      const nativeId = (instance as any)._nativeId || instanceId;
+      window.electronAPI.unloadPlugin(nativeId);
     }
 
     this.instances.delete(instanceId);

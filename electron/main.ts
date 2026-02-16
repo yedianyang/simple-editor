@@ -44,8 +44,22 @@ function createWindow() {
   });
 
   // Load the app
-  if (process.env.VITE_DEV_SERVER_URL) {
-    mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
+  const isDev = !app.isPackaged;
+  if (isDev) {
+    const devUrl = process.env.VITE_DEV_SERVER_URL || 'http://localhost:5173';
+    // Retry loading until Vite dev server is ready
+    const loadDevUrl = async () => {
+      try {
+        await mainWindow!.loadURL(devUrl);
+      } catch {
+        // Vite server not ready yet, retry after a short delay
+        await new Promise(resolve => setTimeout(resolve, 500));
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          await loadDevUrl();
+        }
+      }
+    };
+    loadDevUrl();
     mainWindow.webContents.openDevTools();
   } else {
     mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
@@ -382,19 +396,35 @@ async function handleLoadProject() {
 async function handleScanPlugins() {
   if (!mainWindow) return;
 
+  const plugins: Array<{ id?: string; name: string; path: string; type: string; format: string; category?: string; vendor?: string }> = [];
+
+  // Try native scanning first (uses AudioComponentFindNext for AU)
+  if (pluginHostNative && pluginHostNative.scanPlugins) {
+    try {
+      const nativePlugins = pluginHostNative.scanPlugins();
+      for (const np of nativePlugins) {
+        plugins.push({
+          id: np.id,         // AU identifier: "aufx:bpas:appl"
+          name: np.name,
+          path: np.id,       // Use identifier as path for AU plugins
+          type: np.category || 'effect',
+          format: np.format,
+          category: np.category,
+          vendor: np.vendor,
+        });
+      }
+      console.log(`Native scan found ${nativePlugins.length} AudioUnit plugins`);
+    } catch (e) {
+      console.warn('Native plugin scan failed:', e);
+    }
+  }
+
+  // Also scan filesystem for VST3 bundles
   const vstPaths = [
     path.join(app.getPath('home'), 'Library', 'Audio', 'Plug-Ins', 'VST3'),
     '/Library/Audio/Plug-Ins/VST3',
   ];
 
-  const auPaths = [
-    path.join(app.getPath('home'), 'Library', 'Audio', 'Plug-Ins', 'Components'),
-    '/Library/Audio/Plug-Ins/Components',
-  ];
-
-  const plugins: Array<{ name: string; path: string; type: string; format: string }> = [];
-
-  // Scan VST3 plugins
   for (const vstPath of vstPaths) {
     try {
       if (fs.existsSync(vstPath)) {
@@ -415,24 +445,31 @@ async function handleScanPlugins() {
     }
   }
 
-  // Scan AU plugins
-  for (const auPath of auPaths) {
-    try {
-      if (fs.existsSync(auPath)) {
-        const entries = fs.readdirSync(auPath);
-        for (const entry of entries) {
-          if (entry.endsWith('.component')) {
-            plugins.push({
-              name: entry.replace('.component', ''),
-              path: path.join(auPath, entry),
-              type: 'effect',
-              format: 'AudioUnit',
-            });
+  // Fallback: scan AU filesystem paths if native scan didn't find any
+  if (!plugins.some(p => p.format === 'AudioUnit')) {
+    const auPaths = [
+      path.join(app.getPath('home'), 'Library', 'Audio', 'Plug-Ins', 'Components'),
+      '/Library/Audio/Plug-Ins/Components',
+    ];
+
+    for (const auPath of auPaths) {
+      try {
+        if (fs.existsSync(auPath)) {
+          const entries = fs.readdirSync(auPath);
+          for (const entry of entries) {
+            if (entry.endsWith('.component')) {
+              plugins.push({
+                name: entry.replace('.component', ''),
+                path: path.join(auPath, entry),
+                type: 'effect',
+                format: 'AudioUnit',
+              });
+            }
           }
         }
+      } catch (e) {
+        console.warn('Error scanning AU path:', auPath, e);
       }
-    } catch (e) {
-      console.warn('Error scanning AU path:', auPath, e);
     }
   }
 
@@ -473,6 +510,17 @@ ipcMain.handle('fs:write-file', async (_, filePath: string, data: Buffer) => {
 
 ipcMain.handle('fs:read-file-text', async (_, filePath: string) => {
   return fs.readFileSync(filePath, 'utf-8');
+});
+
+ipcMain.handle('plugin:scan', async () => {
+  if (pluginHostNative && pluginHostNative.scanPlugins) {
+    try {
+      return pluginHostNative.scanPlugins();
+    } catch (e: any) {
+      return { error: e.message };
+    }
+  }
+  return { error: 'Native plugin host not available' };
 });
 
 ipcMain.handle('plugin:load', async (_, pluginPath: string) => {

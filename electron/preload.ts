@@ -11,6 +11,7 @@ export interface ElectronAPI {
   showOpenDialog: (options: any) => Promise<any>;
 
   // Plugin system
+  scanPlugins: () => Promise<any>;
   loadPlugin: (pluginPath: string) => Promise<any>;
   processAudio: (pluginId: string, audioData: Float32Array[], sampleRate: number) => Promise<any>;
   getPluginParameters: (pluginId: string) => Promise<any>;
@@ -42,6 +43,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   showOpenDialog: (options: any) => ipcRenderer.invoke('dialog:open-file', options),
 
   // Plugin system
+  scanPlugins: () => ipcRenderer.invoke('plugin:scan'),
   loadPlugin: (pluginPath: string) => ipcRenderer.invoke('plugin:load', pluginPath),
   processAudio: (pluginId: string, audioData: Float32Array[], sampleRate: number) =>
     ipcRenderer.invoke('plugin:process', pluginId, audioData, sampleRate),

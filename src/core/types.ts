@@ -259,6 +259,7 @@ declare global {
       readFileText: (path: string) => Promise<string>;
       showSaveDialog: (options: any) => Promise<any>;
       showOpenDialog: (options: any) => Promise<any>;
+      scanPlugins: () => Promise<any>;
       loadPlugin: (pluginPath: string) => Promise<any>;
       processAudio: (pluginId: string, audioData: Float32Array[], sampleRate: number) => Promise<any>;
       getPluginParameters: (pluginId: string) => Promise<any>;
