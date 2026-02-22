@@ -13,6 +13,8 @@ export class WaveformRenderer {
   selectionStart: number | null = null;
   selectionEnd: number | null = null;
   playheadPosition = 0;
+  /** When true, render() is a no-op. Used in timeline mode where TimelineRenderer owns the canvas. */
+  disabled = false;
   peaks: Float32Array[] = []; // Per-channel peaks
   // Pre-computed multi-resolution peak cache for large files
   private peakCache: { channelPeaks: Float32Array[]; blockSize: number } | null = null;
@@ -424,6 +426,8 @@ export class WaveformRenderer {
   }
 
   render(): void {
+    if (this.disabled) return;
+
     const ctx = this.ctx;
     const width = this.width;
     const height = this.height;

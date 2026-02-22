@@ -708,6 +708,7 @@ export class App {
       // ---- Timeline multi-track setup ----
       if (this.timelineRenderer) {
         this.useTimeline = true;
+        this.waveformRenderer.disabled = true;
         this.bufferPool.clear();
         this.timelineModel.createTimeline(audioBuffer.sampleRate);
         this.timelineUndoManager.clear();
@@ -741,6 +742,7 @@ export class App {
         }
       } else {
         this.useTimeline = false;
+        this.waveformRenderer.disabled = false;
         // Legacy channel-mode mixer
         this.mixer.setupChannels(audioBuffer.numberOfChannels);
 
@@ -833,6 +835,7 @@ export class App {
       }
       this.bufferPool.clear();
       this.useTimeline = false;
+      this.waveformRenderer.disabled = false;
       this.fileName = null;
       this.updateUI();
       this.updateFileInfo();
