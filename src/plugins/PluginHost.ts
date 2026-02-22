@@ -213,7 +213,7 @@ export class PluginHost {
         mid.connect(high);
 
         audioNode = low;
-        // Store reference to get output node
+        (audioNode as any)._midNode = mid;
         (audioNode as any)._outputNode = high;
 
         parameters = [
@@ -283,6 +283,7 @@ export class PluginHost {
       }
 
       case 'builtin:delay': {
+        const input = this.audioContext.createGain();
         const delay = this.audioContext.createDelay(5.0);
         delay.delayTime.value = 0.25;
         const feedback = this.audioContext.createGain();
@@ -293,16 +294,19 @@ export class PluginHost {
         dry.gain.value = 0.7;
         const merger = this.audioContext.createGain();
 
-        // dry -> merger
-        // delay -> wet -> merger
+        // input -> dry -> merger
+        // input -> delay -> wet -> merger
         // delay -> feedback -> delay
+        input.connect(dry);
+        input.connect(delay);
         delay.connect(wet);
         delay.connect(feedback);
         feedback.connect(delay);
         wet.connect(merger);
         dry.connect(merger);
 
-        audioNode = dry; // Input goes to both dry and delay
+        audioNode = input;
+        (audioNode as any)._dryNode = dry;
         (audioNode as any)._delayNode = delay;
         (audioNode as any)._feedbackNode = feedback;
         (audioNode as any)._wetNode = wet;
@@ -318,6 +322,7 @@ export class PluginHost {
 
       case 'builtin:reverb': {
         // Simple reverb using convolution
+        const input = this.audioContext.createGain();
         const convolver = this.audioContext.createConvolver();
         const wet = this.audioContext.createGain();
         wet.gain.value = 0.3;
@@ -325,6 +330,10 @@ export class PluginHost {
         dry.gain.value = 0.7;
         const merger = this.audioContext.createGain();
 
+        // input -> dry -> merger
+        // input -> convolver -> wet -> merger
+        input.connect(dry);
+        input.connect(convolver);
         convolver.connect(wet);
         wet.connect(merger);
         dry.connect(merger);
@@ -332,7 +341,8 @@ export class PluginHost {
         // Generate impulse response
         this.generateReverbIR(convolver, 2.0, 0.5);
 
-        audioNode = dry;
+        audioNode = input;
+        (audioNode as any)._dryNode = dry;
         (audioNode as any)._convolverNode = convolver;
         (audioNode as any)._wetNode = wet;
         (audioNode as any)._outputNode = merger;
@@ -405,10 +415,14 @@ export class PluginHost {
 
     switch (instance.pluginInfo.id) {
       case 'builtin:eq3': {
-        // Low/Mid/High EQ
-        const nodes = [node, node._midNode, node._outputNode];
+        // node = low, _midNode = mid, _outputNode = high
         if (paramId === 0) node.frequency.value = value;
         else if (paramId === 1) node.gain.value = value;
+        else if (paramId === 2 && node._midNode) node._midNode.frequency.value = value;
+        else if (paramId === 3 && node._midNode) node._midNode.gain.value = value;
+        else if (paramId === 4 && node._midNode) node._midNode.Q.value = value;
+        else if (paramId === 5 && node._outputNode) node._outputNode.frequency.value = value;
+        else if (paramId === 6 && node._outputNode) node._outputNode.gain.value = value;
         break;
       }
       case 'builtin:hpf':
@@ -437,7 +451,7 @@ export class PluginHost {
         else if (paramId === 1 && node._feedbackNode) node._feedbackNode.gain.value = value;
         else if (paramId === 2 && node._wetNode) {
           node._wetNode.gain.value = value;
-          node.gain.value = 1 - value;
+          if (node._dryNode) node._dryNode.gain.value = 1 - value;
         }
         break;
       }
@@ -447,7 +461,7 @@ export class PluginHost {
         }
         else if (paramId === 1 && node._wetNode) {
           node._wetNode.gain.value = value;
-          node.gain.value = 1 - value;
+          if (node._dryNode) node._dryNode.gain.value = 1 - value;
         }
         else if (paramId === 2 && node._convolverNode) {
           this.generateReverbIR(node._convolverNode, instance.parameters[0]?.value || 2.0, value);
