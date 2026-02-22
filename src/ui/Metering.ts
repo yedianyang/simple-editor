@@ -6,7 +6,8 @@ import { CHANNEL_WEIGHTS } from '../core/types';
  */
 export class Metering {
   peakValue: HTMLElement;
-  peakBar: HTMLElement;
+  peakBarL: HTMLElement;
+  peakBarR: HTMLElement;
   rmsPeakValue: HTMLElement;
   truePeakValue: HTMLElement;
   lufsValue: HTMLElement;
@@ -33,7 +34,8 @@ export class Metering {
 
   constructor() {
     this.peakValue = document.getElementById('peakValue')!;
-    this.peakBar = document.getElementById('peakBar')!;
+    this.peakBarL = document.getElementById('peakBarL')!;
+    this.peakBarR = document.getElementById('peakBarR')!;
     this.rmsPeakValue = document.getElementById('rmsPeakValue')!;
     this.truePeakValue = document.getElementById('truePeakValue')!;
     this.lufsValue = document.getElementById('lufsValue')!;
@@ -475,7 +477,9 @@ export class Metering {
   updatePeakDisplay(peakDb: number): void {
     this.peakValue.textContent = isFinite(peakDb) ? peakDb.toFixed(1) : '-∞';
     this.peakValue.className = 'meter-value' + this.getColorClass(peakDb);
-    this.peakBar.style.width = this.dbToPercent(peakDb) + '%';
+    const width = this.dbToPercent(peakDb) + '%';
+    this.peakBarL.style.width = width;
+    this.peakBarR.style.width = width;
   }
 
   getColorClass(db: number): string {
