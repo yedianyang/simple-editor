@@ -367,6 +367,25 @@ export class AudioEngine {
         numChannels = view.getUint16(offset + 10, true);
         sampleRate = view.getUint32(offset + 12, true);
         bitsPerSample = view.getUint16(offset + 22, true);
+
+        // WAVE_FORMAT_EXTENSIBLE (0xFFFE): extract actual format from SubFormat GUID
+        if (formatCode === 0xFFFE) {
+          const fmtStart = offset + 8;
+          if (fmtStart + 40 > arrayBuffer.byteLength) {
+            throw new Error('Truncated WAVEFORMATEXTENSIBLE chunk');
+          }
+          const validBits = view.getUint16(fmtStart + 18, true);
+          if (validBits > 0) bitsPerSample = validBits;
+          // SubFormat GUID at byte 24: first two bytes encode the format code
+          const subFormatCode = view.getUint16(fmtStart + 24, true);
+          if (subFormatCode === 1) {
+            formatCode = 1; // PCM
+          } else if (subFormatCode === 3) {
+            formatCode = 3; // IEEE Float
+          } else {
+            throw new Error(`Unsupported WAVEFORMATEXTENSIBLE SubFormat code ${subFormatCode}`);
+          }
+        }
       } else if (chunkId === 'data') {
         dataOffset = offset + 8;
         dataSize = chunkSize;
