@@ -24,6 +24,7 @@ import {
   TrimClipCommand,
 } from '../utils/TimelineUndoManager';
 import type { AudioFileInfo } from '../utils/TauriAPI';
+import { getCurrentWebview } from '@tauri-apps/api/webview';
 
 /**
  * Main application controller for FieldCorder DAW.
@@ -444,8 +445,10 @@ export class App {
     }, false);
 
     waveformContainer.addEventListener('drop', (e) => {
-      console.log('[DROP] Drop event received');
       dragOverlay.classList.remove('visible');
+      // In Tauri, file drops are handled by onDragDropEvent in setupNativeListeners
+      if (window.appAPI) return;
+      console.log('[DROP] Drop event received');
       const dt = (e as DragEvent).dataTransfer;
       if (!dt) { console.log('[DROP] No dataTransfer'); return; }
       const files = Array.from(dt.files).filter(f => {
@@ -489,6 +492,35 @@ export class App {
       }
     }));
 
+    // Tauri native drag-and-drop (WKWebView does not populate dataTransfer.files)
+    const webview = getCurrentWebview();
+    collect(webview.onDragDropEvent((event) => {
+      const dragOverlay = document.getElementById('dragOverlay');
+      if (event.payload.type === 'enter' || event.payload.type === 'over') {
+        dragOverlay?.classList.add('visible');
+      } else if (event.payload.type === 'leave') {
+        dragOverlay?.classList.remove('visible');
+      } else if (event.payload.type === 'drop') {
+        dragOverlay?.classList.remove('visible');
+        const paths = event.payload.paths.filter((p: string) => {
+          const ext = p.toLowerCase();
+          return ext.endsWith('.wav') || ext.endsWith('.aif') || ext.endsWith('.aiff') ||
+                 ext.endsWith('.flac') || ext.endsWith('.mp3') || ext.endsWith('.ogg');
+        });
+        if (paths.length > 0) {
+          for (const filePath of paths) {
+            const name = filePath.split('/').pop() || filePath;
+            const fileObj = { name, path: filePath };
+            const id = this.fileQueue.addFile(fileObj);
+            this.renderFileList();
+            if (!this.audioEngine.audioBuffer) {
+              this.loadFileFromPath(filePath, id);
+            }
+          }
+        }
+      }
+    }));
+
     // Menu actions
     const menuActions: Record<string, () => void> = {
       'export': () => this.showExportModal(),
@@ -511,6 +543,38 @@ export class App {
       'zoom-fit': () => this.zoomFit(),
       'toggle-mixer': () => this.mixer.toggle(),
       'toggle-plugin-browser': () => this.togglePluginBrowser(),
+      'import': async () => {
+        const paths = await window.appAPI!.showOpenDialog({
+          title: 'Import Audio',
+          multiple: true,
+          filters: [{ name: 'Audio Files', extensions: ['wav', 'aif', 'aiff', 'flac', 'mp3', 'ogg'] }],
+        });
+        if (paths) {
+          for (const filePath of paths) {
+            const name = filePath.split('/').pop() || filePath;
+            const fileObj = { name, path: filePath };
+            const id = this.fileQueue.addFile(fileObj);
+            this.renderFileList();
+            if (!this.audioEngine.audioBuffer) {
+              await this.loadFileFromPath(filePath, id);
+            }
+          }
+        }
+      },
+      'import-folder': async () => {
+        const folderPath = await window.appAPI!.openFolderDialog();
+        if (folderPath) {
+          const audioFiles = await window.appAPI!.scanFolder(folderPath);
+          for (const info of audioFiles) {
+            const fileObj = { name: info.name, path: info.path };
+            const id = this.fileQueue.addFile(fileObj);
+            this.renderFileList();
+            if (!this.audioEngine.audioBuffer) {
+              await this.loadFileFromPath(info.path, id);
+            }
+          }
+        }
+      },
     };
 
     for (const [action, handler] of Object.entries(menuActions)) {
