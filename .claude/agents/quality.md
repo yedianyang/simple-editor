@@ -1,7 +1,7 @@
 ---
 name: quality
 description: QA & code review for FieldCorder. TypeScript and Rust testing, audio logic validation, code review.
-model: claude-sonnet-4-5
+model: claude-sonnet-4-6
 permissionMode: bypassPermissions
 tools:
   - Read

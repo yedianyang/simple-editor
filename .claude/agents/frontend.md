@@ -1,7 +1,7 @@
 ---
 name: frontend
 description: Frontend developer for FieldCorder. TypeScript audio UI — waveform editor, spectrogram, mixer, file queue, CSS styles.
-model: claude-sonnet-4-5
+model: claude-sonnet-4-6
 permissionMode: bypassPermissions
 ---
 

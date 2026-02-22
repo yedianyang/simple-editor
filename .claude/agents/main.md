@@ -1,7 +1,7 @@
 ---
 name: main
 description: Team Lead for FieldCorder. Coordinates teammates, manages tasks, tracks progress. NEVER writes code directly.
-model: claude-opus-4-5
+model: claude-opus-4-6
 permissionMode: bypassPermissions
 ---
 

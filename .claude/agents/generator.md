@@ -1,7 +1,7 @@
 ---
 name: generator
 description: Core developer for FieldCorder. Rust (Tauri 2.x commands, WAV parsing, file I/O) + TypeScript audio engine and core utilities.
-model: claude-sonnet-4-5
+model: claude-sonnet-4-6
 permissionMode: bypassPermissions
 ---
 

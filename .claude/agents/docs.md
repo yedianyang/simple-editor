@@ -1,7 +1,7 @@
 ---
 name: docs
 description: Documentation & research for FieldCorder. User guide, API docs, DAW/audio technology research, Mac App Store distribution.
-model: claude-sonnet-4-5
+model: claude-sonnet-4-6
 permissionMode: acceptEdits
 tools:
   - Read
