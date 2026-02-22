@@ -19,6 +19,7 @@ export class UndoManager {
   saveState(audioBuffer: AudioBuffer): void {
     if (!audioBuffer) return;
     const clone = this.cloneBuffer(audioBuffer);
+    if (!clone) return;
     this.undoStack.push(clone);
     this.redoStack = [];
     if (this.undoStack.length > this.maxStates) {
@@ -37,7 +38,8 @@ export class UndoManager {
   undo(currentBuffer: AudioBuffer): AudioBuffer | null {
     if (!this.canUndo()) return null;
     if (currentBuffer) {
-      this.redoStack.push(this.cloneBuffer(currentBuffer));
+      const clone = this.cloneBuffer(currentBuffer);
+      if (clone) this.redoStack.push(clone);
     }
     return this.undoStack.pop()!;
   }
@@ -45,14 +47,15 @@ export class UndoManager {
   redo(currentBuffer: AudioBuffer): AudioBuffer | null {
     if (!this.canRedo()) return null;
     if (currentBuffer) {
-      this.undoStack.push(this.cloneBuffer(currentBuffer));
+      const clone = this.cloneBuffer(currentBuffer);
+      if (clone) this.undoStack.push(clone);
     }
     return this.redoStack.pop()!;
   }
 
-  cloneBuffer(audioBuffer: AudioBuffer): AudioBuffer {
+  cloneBuffer(audioBuffer: AudioBuffer): AudioBuffer | null {
     if (!this.audioContext) {
-      throw new Error('UndoManager: audioContext is null — call setAudioContext() before saving state');
+      return null;
     }
     const clone = this.audioContext.createBuffer(
       audioBuffer.numberOfChannels,
