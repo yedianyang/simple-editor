@@ -164,6 +164,21 @@ Teammate: 编码 → tsc/cargo 验证 → git commit → TaskUpdate(status=compl
 Lead: TaskList → 检查进度 → 分配下一个 / SendMessage 反馈
 ```
 
+### 文档更新规则（强制）
+
+功能完成后，Lead **必须判断**是否需要触发文档更新：
+
+| 完成的工作 | Lead 必须做 |
+|-----------|------------|
+| 新增功能 | SendMessage → docs 更新 user-guide.md + api.md |
+| Tauri 命令名变更 | SendMessage → docs 更新 api.md |
+| 用户可见行为变化 | SendMessage → docs 更新 user-guide.md |
+| Bug 修复（行为不变） | 无需更新文档（可在 lessons-learned.md 记录） |
+| 代码重构（行为不变） | 无需更新文档 |
+
+**docs 任务必须在 quality 测试通过后才能开始。**
+不符合上表条件时，Lead 可跳过文档步骤，但须在 TaskList 注明"无需文档更新"。
+
 ### 通讯规范
 
 - **SendMessage(type=message)** — 点对点
