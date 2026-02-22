@@ -41,11 +41,13 @@ export class AudioEngine {
 
   // Multi-track routing nodes
   trackGainNodes: Map<string, GainNode> = new Map();
+  trackCrossfaderNodes: Map<string, GainNode> = new Map();
   trackPanNodes: Map<string, StereoPannerNode> = new Map();
   trackAnalysers: Map<string, AnalyserNode> = new Map();
   trackInsertInputs: Map<string, GainNode> = new Map();
   trackInsertOutputs: Map<string, GainNode> = new Map();
   scheduledSources: AudioBufferSourceNode[] = [];
+  private activeSourceCount = 0;
   faderLaw: FaderLaw = 'equalPower';
 
   // Crossfader
@@ -581,6 +583,11 @@ export class AudioEngine {
       const gain = this.audioContext.createGain();
       gain.gain.value = this.applyFaderLaw(track.volume);
 
+      // Separate crossfader gain node — applyCrossfader() controls this,
+      // so track volume and crossfader don't overwrite each other.
+      const crossfaderGain = this.audioContext.createGain();
+      crossfaderGain.gain.value = 1.0;
+
       const insertIn = this.audioContext.createGain();
       insertIn.gain.value = 1.0;
       const insertOut = this.audioContext.createGain();
@@ -593,14 +600,16 @@ export class AudioEngine {
       analyser.fftSize = 1024;
       analyser.smoothingTimeConstant = 0.8;
 
-      // Chain: gain -> insertIn -> insertOut -> pan -> analyser -> master
-      gain.connect(insertIn);
+      // Chain: gain -> crossfaderGain -> insertIn -> insertOut -> pan -> analyser -> master
+      gain.connect(crossfaderGain);
+      crossfaderGain.connect(insertIn);
       insertIn.connect(insertOut);
       insertOut.connect(pan);
       pan.connect(analyser);
       analyser.connect(this.masterGainNode);
 
       this.trackGainNodes.set(track.id, gain);
+      this.trackCrossfaderNodes.set(track.id, crossfaderGain);
       this.trackInsertInputs.set(track.id, insertIn);
       this.trackInsertOutputs.set(track.id, insertOut);
       this.trackPanNodes.set(track.id, pan);
@@ -678,6 +687,26 @@ export class AudioEngine {
         source.start(scheduledTime, sourceOffsetSec, duration);
         this.scheduledSources.push(source);
       }
+    }
+
+    // Track active source count for end-of-playback detection (M7)
+    this.activeSourceCount = this.scheduledSources.length;
+
+    if (this.activeSourceCount === 0) {
+      // Nothing to play
+      this.isPlaying = false;
+      return;
+    }
+
+    for (const source of this.scheduledSources) {
+      source.onended = () => {
+        this.activeSourceCount--;
+        if (this.activeSourceCount <= 0 && this.isPlaying && !this.isPaused) {
+          this.isPlaying = false;
+          cancelAnimationFrame(this.animationFrame);
+          if (this.onPlaybackEnd) this.onPlaybackEnd();
+        }
+      };
     }
 
     this.startTime = now - startTimeSec;
@@ -776,8 +805,8 @@ export class AudioEngine {
   private applyCrossfader(): void {
     if (!this.crossfaderTrackA || !this.crossfaderTrackB) return;
 
-    const nodeA = this.trackGainNodes.get(this.crossfaderTrackA);
-    const nodeB = this.trackGainNodes.get(this.crossfaderTrackB);
+    const nodeA = this.trackCrossfaderNodes.get(this.crossfaderTrackA);
+    const nodeB = this.trackCrossfaderNodes.get(this.crossfaderTrackB);
     if (!nodeA || !nodeB) return;
 
     const pos = this.crossfaderPosition;
@@ -800,15 +829,37 @@ export class AudioEngine {
 
   cleanupTrackNodes(): void {
     for (const [, node] of this.trackGainNodes) node.disconnect();
+    for (const [, node] of this.trackCrossfaderNodes) node.disconnect();
     for (const [, node] of this.trackPanNodes) node.disconnect();
     for (const [, node] of this.trackAnalysers) node.disconnect();
     for (const [, node] of this.trackInsertInputs) node.disconnect();
     for (const [, node] of this.trackInsertOutputs) node.disconnect();
 
     this.trackGainNodes.clear();
+    this.trackCrossfaderNodes.clear();
     this.trackPanNodes.clear();
     this.trackAnalysers.clear();
     this.trackInsertInputs.clear();
     this.trackInsertOutputs.clear();
+  }
+
+  async destroy(): Promise<void> {
+    this.stop();
+    this.stopTimeline();
+    this.cleanupChannelNodes();
+    this.cleanupTrackNodes();
+    if (this.analyserNode) {
+      this.analyserNode.disconnect();
+      this.analyserNode = null;
+    }
+    if (this.masterGainNode) {
+      this.masterGainNode.disconnect();
+      this.masterGainNode = null;
+    }
+    if (this.audioContext) {
+      await this.audioContext.close();
+      this.audioContext = null;
+    }
+    this.audioBuffer = null;
   }
 }
