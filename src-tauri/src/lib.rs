@@ -121,8 +121,9 @@ struct AudioFileData {
 
 /// Read and parse a WAV file, returning PCM data as per-channel Float32 vectors.
 /// This runs in Rust to avoid OOM from browser's decodeAudioData on 300MB+ files.
-/// Supports: PCM 16-bit, 24-bit, 32-bit, and IEEE Float 32-bit.
+/// Supports: PCM 16-bit, 24-bit, 32-bit, IEEE Float 32-bit, and WAVE_FORMAT_EXTENSIBLE.
 #[tauri::command]
+#[allow(clippy::needless_range_loop)]
 async fn read_audio_file(path: String) -> Result<AudioFileData, String> {
     let data = fs::read(&path).map_err(|e| format!("Failed to read '{}': {}", path, e))?;
 
@@ -134,6 +135,16 @@ async fn read_audio_file(path: String) -> Result<AudioFileData, String> {
     if &data[0..4] != b"RIFF" || &data[8..12] != b"WAVE" {
         return Err("Not a valid WAV file (missing RIFF/WAVE header)".into());
     }
+
+    // KSDATAFORMAT_SUBTYPE GUIDs for WAVE_FORMAT_EXTENSIBLE
+    const SUBFORMAT_PCM: [u8; 16] = [
+        0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00,
+        0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71,
+    ];
+    const SUBFORMAT_IEEE_FLOAT: [u8; 16] = [
+        0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00,
+        0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71,
+    ];
 
     // Walk RIFF chunks to find 'fmt ' and 'data'
     let mut format_code: u16 = 0;
@@ -166,6 +177,32 @@ async fn read_audio_file(path: String) -> Result<AudioFileData, String> {
                 data[offset + 15],
             ]);
             bits_per_sample = u16::from_le_bytes([data[offset + 22], data[offset + 23]]);
+
+            // WAVE_FORMAT_EXTENSIBLE (0xFFFE): extract actual format from SubFormat GUID
+            if format_code == 0xFFFE {
+                let fmt_start = offset + 8;
+                // Need at least 40 bytes: 18 base + 2 cbSize + 2 validBits + 4 channelMask + 16 subFormat
+                if fmt_start + 40 > data.len() {
+                    return Err("Truncated WAVEFORMATEXTENSIBLE chunk".into());
+                }
+                // Valid bits per sample at offset 18
+                let valid_bits = u16::from_le_bytes([data[fmt_start + 18], data[fmt_start + 19]]);
+                if valid_bits > 0 {
+                    bits_per_sample = valid_bits;
+                }
+                // SubFormat GUID at offset 24
+                let sub_format = &data[fmt_start + 24..fmt_start + 40];
+                if sub_format == SUBFORMAT_PCM {
+                    format_code = 1; // PCM
+                } else if sub_format == SUBFORMAT_IEEE_FLOAT {
+                    format_code = 3; // IEEE Float
+                } else {
+                    return Err(format!(
+                        "Unsupported WAVEFORMATEXTENSIBLE SubFormat: {:02x?}",
+                        sub_format
+                    ));
+                }
+            }
         } else if chunk_id == b"data" {
             data_offset = offset + 8;
             data_size = chunk_size;
