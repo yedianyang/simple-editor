@@ -71,12 +71,14 @@ export class ProjectManager {
   }
 
   static arrayBufferToBase64(buffer: ArrayBuffer): string {
-    let binary = '';
     const bytes = new Uint8Array(buffer);
-    for (let i = 0; i < bytes.byteLength; i++) {
-      binary += String.fromCharCode(bytes[i]);
+    const chunkSize = 8192;
+    const chunks: string[] = [];
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      const slice = bytes.subarray(i, Math.min(i + chunkSize, bytes.length));
+      chunks.push(String.fromCharCode(...slice));
     }
-    return btoa(binary);
+    return btoa(chunks.join(''));
   }
 
   static base64ToArrayBuffer(base64: string): ArrayBuffer {

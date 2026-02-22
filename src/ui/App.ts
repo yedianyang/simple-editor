@@ -57,6 +57,10 @@ export class App {
   /** true when operating in multi-track timeline mode (vs legacy single-buffer). */
   private useTimeline = false;
 
+  // ---- Cleanup ----
+  private unlistenFns: Array<() => void> = [];
+  private boundKeydown: (e: KeyboardEvent) => void;
+
   // ---- File Browser state ----
   private folderPath: string | null = null;
   private folderFiles: AudioFileInfo[] = [];
@@ -70,6 +74,7 @@ export class App {
     this.spectrogramRenderer = new SpectrogramRenderer(document.getElementById('spectrogramCanvas') as HTMLCanvasElement);
     this.undoManager = new UndoManager(null);
     this.metering = new Metering();
+    this.boundKeydown = (e: KeyboardEvent) => this.handleKeyboard(e);
     this.fileQueue = new FileQueue();
 
     this.cuePointManager = new CuePointManager();
@@ -251,7 +256,7 @@ export class App {
     document.getElementById('pluginBrowserCancelBtn')!.addEventListener('click', () => this.hideModal('pluginBrowserModal'));
 
     // Keyboard
-    document.addEventListener('keydown', (e) => this.handleKeyboard(e));
+    document.addEventListener('keydown', this.boundKeydown);
 
     // FFT size
     document.getElementById('fftSize')!.addEventListener('change', (e) => {
@@ -458,7 +463,11 @@ export class App {
   setupNativeListeners(): void {
     if (!window.appAPI) return;
 
-    window.appAPI.onImportFiles(async (filePaths) => {
+    const collect = (p: Promise<() => void>) => {
+      p.then(fn => this.unlistenFns.push(fn));
+    };
+
+    collect(window.appAPI.onImportFiles(async (filePaths) => {
       for (const filePath of filePaths) {
         const name = filePath.split('/').pop() || filePath;
         const fileObj = { name, path: filePath };
@@ -468,17 +477,17 @@ export class App {
           await this.loadFileFromPath(filePath, id);
         }
       }
-    });
+    }));
 
-    window.appAPI.onProjectLoad((data) => {
+    collect(window.appAPI.onProjectLoad((data) => {
       this.loadProjectFromString(data);
-    });
+    }));
 
-    window.appAPI.onPluginsScanResult((plugins) => {
+    collect(window.appAPI.onPluginsScanResult((plugins) => {
       if (this.pluginHost) {
         this.pluginHost.addScannedPlugins(plugins);
       }
-    });
+    }));
 
     // Menu actions
     const menuActions: Record<string, () => void> = {
@@ -505,12 +514,12 @@ export class App {
     };
 
     for (const [action, handler] of Object.entries(menuActions)) {
-      window.appAPI.onMenuAction(action, handler);
+      collect(window.appAPI.onMenuAction(action, handler));
     }
 
-    window.appAPI.onMenuAction('channel-layout', (numChannels: number) => {
+    collect(window.appAPI.onMenuAction('channel-layout', (numChannels: number) => {
       this.changeChannelLayout(numChannels);
-    });
+    }));
   }
 
   handleKeyboard(e: KeyboardEvent): void {
@@ -1723,5 +1732,20 @@ export class App {
         `<div class="channel-info-item"><span style="color: ${['#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899'][i]}">\u25CF</span> ${name}</div>`
       ).join('');
     }
+  }
+
+  // ==================== Cleanup ====================
+
+  async destroy(): Promise<void> {
+    this.stopRealtimeAnalysis();
+    cancelAnimationFrame(this.meterAnimationFrame);
+    document.removeEventListener('keydown', this.boundKeydown);
+    for (const unlisten of this.unlistenFns) {
+      unlisten();
+    }
+    this.unlistenFns = [];
+    this.waveformRenderer.destroy();
+    this.spectrogramRenderer.destroy();
+    await this.audioEngine.destroy();
   }
 }

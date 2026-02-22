@@ -18,6 +18,7 @@ export class SpectrogramRenderer {
   smoothedSpectrum: Float32Array | null = null;
   width = 0;
   height = 0;
+  private resizeObserver: ResizeObserver | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -27,9 +28,18 @@ export class SpectrogramRenderer {
 
   setupResize(): void {
     if (!this.canvas.parentElement) return;
-    const resizeObserver = new ResizeObserver(() => this.resize());
-    resizeObserver.observe(this.canvas.parentElement);
+    this.resizeObserver = new ResizeObserver(() => this.resize());
+    this.resizeObserver.observe(this.canvas.parentElement);
     this.resize();
+  }
+
+  destroy(): void {
+    this.stopRealtime();
+    this.resizeObserver?.disconnect();
+    this.resizeObserver = null;
+    this.audioBuffer = null;
+    this.analyserNode = null;
+    this.smoothedSpectrum = null;
   }
 
   resize(): void {
@@ -329,6 +339,9 @@ export class SpectrogramRenderer {
 
   computeFFT(samples: Float32Array): Float32Array {
     const n = samples.length;
+    if (n === 0 || (n & (n - 1)) !== 0) {
+      throw new Error(`FFT size must be a power of 2, got ${n}`);
+    }
     // Radix-2 Cooley-Tukey FFT — O(N log N) instead of O(N²)
     const real = new Float32Array(n);
     const imag = new Float32Array(n);

@@ -29,6 +29,14 @@ export class WaveformRenderer {
   showAllChannels = true;
   soloViewChannel = -1; // -1 = show all
 
+  // Cleanup references
+  private resizeObserver: ResizeObserver | null = null;
+  private boundMouseDown: (e: MouseEvent) => void;
+  private boundMouseMove: (e: MouseEvent) => void;
+  private boundMouseUp: (e: MouseEvent) => void;
+  private boundDblClick: () => void;
+  private boundWheel: (e: WheelEvent) => void;
+
   // Callbacks
   onPlayheadChange: ((sample: number) => void) | null = null;
   onSelectionUpdate: ((start: number | null, end: number | null) => void) | null = null;
@@ -39,14 +47,19 @@ export class WaveformRenderer {
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d')!;
+    this.boundMouseDown = (e: MouseEvent) => this.onMouseDown(e);
+    this.boundMouseMove = (e: MouseEvent) => this.onMouseMove(e);
+    this.boundMouseUp = (e: MouseEvent) => this.onMouseUp(e);
+    this.boundDblClick = () => this.onDoubleClick();
+    this.boundWheel = (e: WheelEvent) => this.onWheel(e);
     this.setupResize();
     this.setupInteraction();
   }
 
   setupResize(): void {
     if (!this.canvas.parentElement) return;
-    const resizeObserver = new ResizeObserver(() => this.resize());
-    resizeObserver.observe(this.canvas.parentElement);
+    this.resizeObserver = new ResizeObserver(() => this.resize());
+    this.resizeObserver.observe(this.canvas.parentElement);
     this.resize();
   }
 
@@ -67,12 +80,26 @@ export class WaveformRenderer {
   }
 
   setupInteraction(): void {
-    this.canvas.addEventListener('mousedown', (e) => this.onMouseDown(e));
-    this.canvas.addEventListener('mousemove', (e) => this.onMouseMove(e));
-    this.canvas.addEventListener('mouseup', (e) => this.onMouseUp(e));
-    this.canvas.addEventListener('mouseleave', (e) => this.onMouseUp(e));
-    this.canvas.addEventListener('dblclick', () => this.onDoubleClick());
-    this.canvas.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
+    this.canvas.addEventListener('mousedown', this.boundMouseDown);
+    this.canvas.addEventListener('mousemove', this.boundMouseMove);
+    this.canvas.addEventListener('mouseup', this.boundMouseUp);
+    this.canvas.addEventListener('mouseleave', this.boundMouseUp);
+    this.canvas.addEventListener('dblclick', this.boundDblClick);
+    this.canvas.addEventListener('wheel', this.boundWheel, { passive: false });
+  }
+
+  destroy(): void {
+    this.resizeObserver?.disconnect();
+    this.resizeObserver = null;
+    this.canvas.removeEventListener('mousedown', this.boundMouseDown);
+    this.canvas.removeEventListener('mousemove', this.boundMouseMove);
+    this.canvas.removeEventListener('mouseup', this.boundMouseUp);
+    this.canvas.removeEventListener('mouseleave', this.boundMouseUp);
+    this.canvas.removeEventListener('dblclick', this.boundDblClick);
+    this.canvas.removeEventListener('wheel', this.boundWheel);
+    this.audioBuffer = null;
+    this.peakCache = null;
+    this.peaks = [];
   }
 
   onDoubleClick(): void {
