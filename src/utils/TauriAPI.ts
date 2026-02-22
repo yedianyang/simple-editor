@@ -94,7 +94,7 @@ export function createTauriAPI(): AppAPI {
 
     async writeFile(path: string, data: ArrayBuffer): Promise<void> {
       const contents = Array.from(new Uint8Array(data));
-      await invoke('write_file_bytes', { path, contents });
+      await invoke('write_file', { path, contents });
     },
 
     async readFileText(path: string): Promise<string> {
@@ -108,7 +108,7 @@ export function createTauriAPI(): AppAPI {
         channels: number;
         num_samples: number;
         samples: number[];
-      }>('read_large_audio_file', { path });
+      }>('read_audio_file', { path });
       return {
         sample_rate: result.sample_rate,
         channels: result.channels,
