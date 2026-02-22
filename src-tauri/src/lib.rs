@@ -282,6 +282,84 @@ async fn read_audio_file(path: String) -> Result<AudioFileData, String> {
     })
 }
 
+// ── Folder Scanning ───────────────────────────────────────────────
+
+#[derive(serde::Serialize)]
+struct AudioFileInfo {
+    path: String,
+    name: String,
+    size: u64,
+    extension: String,
+}
+
+const AUDIO_EXTENSIONS: &[&str] = &["wav", "aif", "aiff", "flac", "mp3", "ogg", "m4a"];
+
+/// Scan a directory for audio files. Returns entries sorted by name.
+#[tauri::command]
+async fn scan_folder(path: String) -> Result<Vec<AudioFileInfo>, String> {
+    let dir = PathBuf::from(&path);
+    if !dir.is_dir() {
+        return Err(format!("'{}' is not a directory", path));
+    }
+
+    let entries = fs::read_dir(&dir)
+        .map_err(|e| format!("Failed to read directory '{}': {}", path, e))?;
+
+    let mut files: Vec<AudioFileInfo> = Vec::new();
+
+    for entry in entries.flatten() {
+        let entry_path = entry.path();
+        if !entry_path.is_file() {
+            continue;
+        }
+        let ext = entry_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+
+        if !AUDIO_EXTENSIONS.contains(&ext.as_str()) {
+            continue;
+        }
+
+        let name = entry_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+
+        files.push(AudioFileInfo {
+            path: entry_path.to_string_lossy().to_string(),
+            name,
+            size,
+            extension: ext,
+        });
+    }
+
+    files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(files)
+}
+
+/// Open a folder picker dialog. Returns selected path or empty string.
+#[tauri::command]
+async fn open_folder_dialog(app: tauri::AppHandle) -> Result<String, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let result = app
+        .dialog()
+        .file()
+        .set_title("Select Audio Folder")
+        .blocking_pick_folder();
+
+    match result {
+        Some(path) => Ok(path.as_path()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default()),
+        None => Ok(String::new()),
+    }
+}
+
 // ── Menu Setup ────────────────────────────────────────────────────
 
 fn setup_menu(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
@@ -440,6 +518,8 @@ pub fn run() {
             write_file,
             file_info,
             read_audio_file,
+            scan_folder,
+            open_folder_dialog,
         ])
         .register_asynchronous_uri_scheme_protocol("localfile", |_ctx, request, responder| {
             std::thread::spawn(move || {

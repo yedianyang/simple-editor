@@ -250,6 +250,58 @@ export function formatTime(seconds: number): string {
   return `${mins}:${secs.padStart(5, '0')}`;
 }
 
+// ==================== Timeline / Multi-Track ====================
+
+export interface PooledBuffer {
+  id: string;
+  buffer: AudioBuffer;
+  sampleRate: number;
+  length: number;
+  sourceFileName: string;
+  sourceChannelIndex: number;
+  refCount: number;
+}
+
+export interface Clip {
+  id: string;
+  bufferId: string;
+  name: string;
+  timelineOffset: number;
+  sourceStart: number;
+  sourceEnd: number;
+  duration: number;
+  gainDb: number;
+  fadeInSamples: number;
+  fadeOutSamples: number;
+  muted: boolean;
+}
+
+export interface Track {
+  id: string;
+  name: string;
+  color: string;
+  clips: Clip[];
+  volume: number;
+  pan: number;
+  mute: boolean;
+  solo: boolean;
+  channelIndex: number;
+}
+
+export interface Timeline {
+  sampleRate: number;
+  totalLength: number;
+  tracks: Track[];
+  playheadSample: number;
+  selectionStart: number | null;
+  selectionEnd: number | null;
+  selectedClipIds: string[];
+  samplesPerPixel: number;
+  scrollOffset: number;
+}
+
+export type FaderLaw = 'equalPower' | 'equalGain';
+
 // Declare app API on window (Tauri backend)
 import type { AppAPI } from '../utils/TauriAPI';
 

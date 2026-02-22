@@ -1,4 +1,5 @@
-import { ChannelLayout, CHANNEL_NAMES } from './types';
+import { ChannelLayout, CHANNEL_NAMES, Track, FaderLaw, Timeline } from './types';
+import { BufferPool } from './BufferPool';
 
 /**
  * Multi-channel Audio Engine for FieldCorder DAW.
@@ -37,6 +38,21 @@ export class AudioEngine {
   channelLayout: ChannelLayout = ChannelLayout.STEREO;
   soloChannels: Set<number> = new Set();
   muteChannels: Set<number> = new Set();
+
+  // Multi-track routing nodes
+  trackGainNodes: Map<string, GainNode> = new Map();
+  trackPanNodes: Map<string, StereoPannerNode> = new Map();
+  trackAnalysers: Map<string, AnalyserNode> = new Map();
+  trackInsertInputs: Map<string, GainNode> = new Map();
+  trackInsertOutputs: Map<string, GainNode> = new Map();
+  scheduledSources: AudioBufferSourceNode[] = [];
+  faderLaw: FaderLaw = 'equalPower';
+
+  // Crossfader
+  crossfaderPosition = 0;
+  crossfaderTrackA: string | null = null;
+  crossfaderTrackB: string | null = null;
+  crossfaderLaw: FaderLaw = 'equalPower';
 
   async init(): Promise<void> {
     if (!this.audioContext) {
@@ -550,5 +566,249 @@ export class AudioEngine {
     if (!this.audioBuffer) return [];
     const numChannels = this.audioBuffer.numberOfChannels;
     return CHANNEL_NAMES[numChannels] || Array.from({ length: numChannels }, (_, i) => `Ch ${i + 1}`);
+  }
+
+  // ==================== Multi-Track Routing ====================
+
+  /**
+   * Create per-track audio routing: gain -> insertIn -> insertOut -> pan -> analyser -> master.
+   */
+  setupTrackRouting(tracks: Track[]): void {
+    if (!this.audioContext || !this.masterGainNode) return;
+    this.cleanupTrackNodes();
+
+    for (const track of tracks) {
+      const gain = this.audioContext.createGain();
+      gain.gain.value = this.applyFaderLaw(track.volume);
+
+      const insertIn = this.audioContext.createGain();
+      insertIn.gain.value = 1.0;
+      const insertOut = this.audioContext.createGain();
+      insertOut.gain.value = 1.0;
+
+      const pan = this.audioContext.createStereoPanner();
+      pan.pan.value = track.pan;
+
+      const analyser = this.audioContext.createAnalyser();
+      analyser.fftSize = 1024;
+      analyser.smoothingTimeConstant = 0.8;
+
+      // Chain: gain -> insertIn -> insertOut -> pan -> analyser -> master
+      gain.connect(insertIn);
+      insertIn.connect(insertOut);
+      insertOut.connect(pan);
+      pan.connect(analyser);
+      analyser.connect(this.masterGainNode);
+
+      this.trackGainNodes.set(track.id, gain);
+      this.trackInsertInputs.set(track.id, insertIn);
+      this.trackInsertOutputs.set(track.id, insertOut);
+      this.trackPanNodes.set(track.id, pan);
+      this.trackAnalysers.set(track.id, analyser);
+    }
+  }
+
+  /**
+   * Schedule playback of all clips on the timeline from startSample.
+   */
+  playTimeline(timeline: Timeline, bufferPool: BufferPool, startSample = 0): void {
+    if (!this.audioContext || !this.masterGainNode) return;
+    this.stopTimeline();
+
+    const startTimeSec = startSample / timeline.sampleRate;
+    const now = this.audioContext.currentTime;
+
+    // Determine solo state
+    const soloTrackIds = new Set<string>();
+    for (const track of timeline.tracks) {
+      if (track.solo) soloTrackIds.add(track.id);
+    }
+    const hasSolo = soloTrackIds.size > 0;
+
+    for (const track of timeline.tracks) {
+      const gainNode = this.trackGainNodes.get(track.id);
+      if (!gainNode) continue;
+
+      // Mute/solo logic
+      const shouldPlay = hasSolo
+        ? soloTrackIds.has(track.id) && !track.mute
+        : !track.mute;
+
+      if (!shouldPlay) continue;
+
+      for (const clip of track.clips) {
+        if (clip.muted) continue;
+
+        const pooled = bufferPool.getBuffer(clip.bufferId);
+        if (!pooled) continue;
+
+        const clipStartSample = clip.timelineOffset;
+        const clipEndSample = clip.timelineOffset + clip.duration;
+
+        // Skip clips entirely before the start position
+        if (clipEndSample <= startSample) continue;
+
+        const source = this.audioContext.createBufferSource();
+        source.buffer = pooled.buffer;
+
+        // Apply per-clip gain
+        if (clip.gainDb !== 0) {
+          const clipGain = this.audioContext.createGain();
+          clipGain.gain.value = Math.pow(10, clip.gainDb / 20);
+          source.connect(clipGain);
+          clipGain.connect(gainNode);
+        } else {
+          source.connect(gainNode);
+        }
+
+        // Calculate start offset within the source buffer and schedule time
+        let sourceOffset = clip.sourceStart;
+        let scheduledTime = now + (clipStartSample - startSample) / timeline.sampleRate;
+        let duration = clip.duration / timeline.sampleRate;
+
+        // If the clip starts before our playback position, offset into it
+        if (clipStartSample < startSample) {
+          const skipSamples = startSample - clipStartSample;
+          sourceOffset += skipSamples;
+          duration -= skipSamples / timeline.sampleRate;
+          scheduledTime = now;
+        }
+
+        const sourceOffsetSec = sourceOffset / timeline.sampleRate;
+        source.start(scheduledTime, sourceOffsetSec, duration);
+        this.scheduledSources.push(source);
+      }
+    }
+
+    this.startTime = now - startTimeSec;
+    this.isPlaying = true;
+    this.isPaused = false;
+    this.updatePosition();
+  }
+
+  stopTimeline(): void {
+    for (const source of this.scheduledSources) {
+      try { source.stop(); } catch (_) {}
+      source.disconnect();
+    }
+    this.scheduledSources = [];
+    this.isPlaying = false;
+    this.isPaused = false;
+    cancelAnimationFrame(this.animationFrame);
+  }
+
+  setTrackVolume(trackId: string, db: number): void {
+    const node = this.trackGainNodes.get(trackId);
+    if (node) node.gain.value = this.applyFaderLaw(db);
+  }
+
+  setTrackPan(trackId: string, pan: number): void {
+    const node = this.trackPanNodes.get(trackId);
+    if (node) node.pan.value = Math.max(-1, Math.min(1, pan));
+  }
+
+  setTrackMute(trackId: string, mute: boolean): void {
+    const insertOut = this.trackInsertOutputs.get(trackId);
+    if (insertOut) insertOut.gain.value = mute ? 0 : 1;
+  }
+
+  setTrackSolo(trackId: string, solo: boolean): void {
+    // Solo is handled at playback scheduling time; for live update,
+    // mute all non-solo tracks' insert outputs.
+    const soloIds = new Set<string>();
+    // We don't have direct access to the timeline here,
+    // so we toggle the specific track and let the caller manage group state.
+    // For immediate feedback, toggle the insert output.
+    const insertOut = this.trackInsertOutputs.get(trackId);
+    if (!insertOut) return;
+
+    if (solo) {
+      // Mute all other tracks, unmute this one
+      for (const [id, out] of this.trackInsertOutputs) {
+        out.gain.value = id === trackId ? 1 : 0;
+      }
+    } else {
+      // Unmute all tracks (caller should re-apply proper solo state)
+      for (const [, out] of this.trackInsertOutputs) {
+        out.gain.value = 1;
+      }
+    }
+  }
+
+  getTrackAnalyser(trackId: string): AnalyserNode | null {
+    return this.trackAnalysers.get(trackId) ?? null;
+  }
+
+  // ==================== Fader Law ====================
+
+  setFaderLaw(law: FaderLaw): void {
+    this.faderLaw = law;
+  }
+
+  /**
+   * Convert dB to linear gain using the selected fader law.
+   * Equal Power: gain = 10^(dB/20) (standard dB conversion)
+   * Equal Gain:  gain = 10^(dB/20) (same formula, different crossfade behaviour)
+   * The fader law distinction matters primarily for crossfading.
+   */
+  applyFaderLaw(dbValue: number): number {
+    return Math.pow(10, dbValue / 20);
+  }
+
+  // ==================== Crossfader ====================
+
+  setCrossfader(trackA: string, trackB: string): void {
+    this.crossfaderTrackA = trackA;
+    this.crossfaderTrackB = trackB;
+    this.applyCrossfader();
+  }
+
+  setCrossfaderPosition(position: number): void {
+    this.crossfaderPosition = Math.max(-1, Math.min(1, position));
+    this.applyCrossfader();
+  }
+
+  setCrossfaderLaw(law: FaderLaw): void {
+    this.crossfaderLaw = law;
+    this.applyCrossfader();
+  }
+
+  private applyCrossfader(): void {
+    if (!this.crossfaderTrackA || !this.crossfaderTrackB) return;
+
+    const nodeA = this.trackGainNodes.get(this.crossfaderTrackA);
+    const nodeB = this.trackGainNodes.get(this.crossfaderTrackB);
+    if (!nodeA || !nodeB) return;
+
+    const pos = this.crossfaderPosition;
+    const norm = (pos + 1) / 2; // 0..1 where 0 = full A, 1 = full B
+
+    let gainA: number, gainB: number;
+
+    if (this.crossfaderLaw === 'equalPower') {
+      gainA = Math.cos(norm * Math.PI / 2);
+      gainB = Math.sin(norm * Math.PI / 2);
+    } else {
+      // Equal Gain: linear
+      gainA = 1 - norm;
+      gainB = norm;
+    }
+
+    nodeA.gain.value = gainA;
+    nodeB.gain.value = gainB;
+  }
+
+  cleanupTrackNodes(): void {
+    for (const [, node] of this.trackGainNodes) node.disconnect();
+    for (const [, node] of this.trackPanNodes) node.disconnect();
+    for (const [, node] of this.trackAnalysers) node.disconnect();
+    for (const [, node] of this.trackInsertInputs) node.disconnect();
+    for (const [, node] of this.trackInsertOutputs) node.disconnect();
+
+    this.trackGainNodes.clear();
+    this.trackPanNodes.clear();
+    this.trackAnalysers.clear();
+    this.trackInsertInputs.clear();
+    this.trackInsertOutputs.clear();
   }
 }

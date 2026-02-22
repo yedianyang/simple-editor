@@ -175,10 +175,10 @@
         }
 
         /* ============================
-           Left Sidebar - File Queue
+           Left Sidebar - File Browser
            ============================ */
         .left-sidebar {
-            width: 200px;
+            width: 220px;
             background-color: var(--bg-secondary);
             border-right: 1px solid var(--border-color);
             display: flex;
@@ -187,76 +187,157 @@
             flex-shrink: 0;
         }
 
-        .file-list-panel {
-            flex: 1;
+        .file-browser-header {
             display: flex;
-            flex-direction: column;
-            overflow: hidden;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 10px;
+            border-bottom: 1px solid var(--border-color);
+            flex-shrink: 0;
         }
 
-        .file-list-header {
-            padding: 8px 10px;
+        .file-browser-title {
             font-size: 11px;
+            font-weight: 600;
             color: var(--text-secondary);
             text-transform: uppercase;
-            letter-spacing: 0.5px;
-            border-bottom: 1px solid var(--border-color);
-            font-weight: 600;
+            letter-spacing: 0.05em;
         }
 
-        .file-list {
+        .file-browser-header .btn-icon {
+            padding: 2px 4px;
+            font-size: 14px;
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            cursor: pointer;
+            border-radius: 3px;
+        }
+
+        .file-browser-header .btn-icon:hover {
+            background-color: var(--bg-elevated);
+            color: var(--text-primary);
+        }
+
+        .folder-path {
+            padding: 4px 10px;
+            font-size: 10px;
+            color: var(--text-muted);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            border-bottom: 1px solid var(--border-color);
+            flex-shrink: 0;
+            direction: rtl;
+            text-align: left;
+        }
+
+        .file-browser-search {
+            margin: 6px 8px;
+            padding: 4px 8px;
+            font-size: 11px;
+            background-color: var(--bg-primary);
+            border: 1px solid var(--border-light);
+            border-radius: 4px;
+            color: var(--text-primary);
+            outline: none;
+            flex-shrink: 0;
+            font-family: inherit;
+        }
+
+        .file-browser-search:focus {
+            border-color: var(--accent-blue);
+        }
+
+        .file-browser-search::placeholder {
+            color: var(--text-muted);
+        }
+
+        .file-browser-list {
             flex: 1;
             overflow-y: auto;
             padding: 4px;
         }
 
-        .file-item {
+        .file-browser-item {
             display: flex;
             align-items: center;
-            gap: 4px;
-            padding: 6px 8px;
-            margin-bottom: 2px;
-            background-color: var(--bg-tertiary);
+            gap: 6px;
+            padding: 5px 8px;
+            margin-bottom: 1px;
             border-radius: 3px;
             cursor: pointer;
-            transition: background-color 0.15s;
+            transition: background-color 0.1s;
+            font-size: 11px;
+            color: var(--text-primary);
         }
 
-        .file-item:hover {
+        .file-browser-item:hover {
             background-color: var(--bg-elevated);
         }
 
-        .file-item.active {
-            background-color: var(--accent-blue);
+        .file-browser-item.active {
+            background-color: rgba(37, 99, 235, 0.2);
+            border-left: 2px solid var(--accent-blue);
         }
 
-        .file-name {
+        .file-browser-item .file-name {
             flex: 1;
-            font-size: 11px;
-            color: var(--text-primary);
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
         }
 
-        .file-delete {
-            background: none;
-            border: none;
-            color: var(--text-secondary);
-            cursor: pointer;
-            padding: 0;
-            width: 16px;
-            height: 16px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 14px;
-            line-height: 1;
-            transition: color 0.15s;
+        .file-status {
+            font-size: 9px;
+            font-weight: 600;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            flex-shrink: 0;
         }
 
-        .file-delete:hover {
-            color: var(--color-danger);
+        .file-status-pending {
+            background-color: #f59e0b;
+        }
+
+        .file-status-done {
+            background-color: #4ade80;
+        }
+
+        .file-status-skipped {
+            background-color: #ef4444;
+        }
+
+        .file-list-empty {
+            padding: 16px 10px;
+            font-size: 11px;
+            color: var(--text-muted);
+            text-align: center;
+            font-style: italic;
+        }
+
+        .file-browser-stats {
+            padding: 4px 10px;
+            font-size: 10px;
+            color: var(--text-muted);
+            border-top: 1px solid var(--border-color);
+            flex-shrink: 0;
+        }
+
+        .file-browser-actions {
+            display: flex;
+            gap: 4px;
+            padding: 6px 8px;
+            border-top: 1px solid var(--border-color);
+            flex-shrink: 0;
+        }
+
+        .file-browser-actions .btn-sm {
+            flex: 1;
+            padding: 4px 6px;
+            font-size: 10px;
+            border-radius: 3px;
         }
 
         /* ============================
@@ -298,6 +379,109 @@
         #waveformCanvas {
             width: 100%;
             height: 100%;
+            display: block;
+        }
+
+        /* Timeline Tracks (multi-track view) */
+        .timeline-tracks-container {
+            flex: 1;
+            display: flex;
+            min-height: 0;
+            background-color: var(--bg-primary);
+            border-top: 1px solid var(--border-color);
+        }
+
+        .timeline-tracks-container.hidden {
+            display: none;
+        }
+
+        .timeline-tracks-header {
+            width: 60px;
+            flex-shrink: 0;
+            background-color: var(--bg-secondary);
+            border-right: 1px solid var(--border-color);
+            overflow-y: auto;
+        }
+
+        .track-header {
+            height: 60px;
+            padding: 4px 6px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            gap: 2px;
+            cursor: pointer;
+        }
+
+        .track-header:hover {
+            background-color: var(--bg-tertiary);
+        }
+
+        .track-header.active {
+            background-color: rgba(37, 99, 235, 0.15);
+            border-left: 2px solid var(--accent-blue);
+        }
+
+        .track-header-name {
+            font-size: 10px;
+            font-weight: 600;
+            color: var(--text-primary);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .track-header-info {
+            font-size: 9px;
+            color: var(--text-muted);
+        }
+
+        .timeline-tracks-lanes {
+            flex: 1;
+            position: relative;
+            overflow: auto;
+            min-width: 0;
+        }
+
+        .track-lane {
+            height: 60px;
+            position: relative;
+            border-bottom: 1px solid var(--border-color);
+            background-color: var(--bg-primary);
+        }
+
+        .track-lane:nth-child(even) {
+            background-color: rgba(255, 255, 255, 0.02);
+        }
+
+        .track-clip {
+            position: absolute;
+            top: 2px;
+            bottom: 2px;
+            background-color: rgba(37, 99, 235, 0.25);
+            border: 1px solid rgba(37, 99, 235, 0.5);
+            border-radius: 3px;
+            cursor: grab;
+            overflow: hidden;
+        }
+
+        .track-clip:hover {
+            background-color: rgba(37, 99, 235, 0.35);
+        }
+
+        .track-clip-name {
+            font-size: 9px;
+            color: var(--text-primary);
+            padding: 2px 4px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .track-clip canvas {
+            width: 100%;
+            height: calc(100% - 16px);
             display: block;
         }
 
@@ -347,11 +531,35 @@
             font-size: 12px;
         }
 
+        /* Sonogram container */
+        .sonogram-container {
+            height: 200px;
+            min-height: 100px;
+            position: relative;
+            background-color: #0a0a0a;
+            border-top: 1px solid #333;
+            flex-shrink: 0;
+        }
+
+        #sonogramCanvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        .sonogram-label {
+            position: absolute;
+            top: 4px;
+            left: 8px;
+            font-size: 10px;
+            color: var(--text-muted);
+        }
+
         /* ============================
            Right Sidebar
            ============================ */
         .right-sidebar {
-            width: 250px;
+            width: 260px;
             background-color: var(--bg-secondary);
             border-left: 1px solid var(--border-color);
             display: flex;
@@ -369,110 +577,27 @@
             font-size: 10px;
             color: var(--text-secondary);
             text-transform: uppercase;
-            letter-spacing: 0.5px;
+            letter-spacing: 0.05em;
             margin-bottom: 6px;
             font-weight: 600;
         }
 
-        /* Channel info */
-        .channel-info {
-            padding: 6px 0;
-        }
-
-        .channel-info-text {
-            font-size: 11px;
+        /* File info section */
+        .file-info-name {
+            font-size: 12px;
+            font-weight: 500;
             color: var(--text-primary);
-            margin-bottom: 2px;
-        }
-
-        /* Meters panel */
-        .meters-panel {
-            padding: 8px 10px;
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
-        }
-
-        .meter {
-            display: flex;
-            flex-direction: column;
-            gap: 2px;
-        }
-
-        .meter-label {
-            font-size: 9px;
-            color: var(--text-secondary);
-            text-transform: uppercase;
-            letter-spacing: 0.3px;
-        }
-
-        .meter-value {
-            font-size: 14px;
-            font-family: 'SF Mono', SFMono-Regular, ui-monospace, Menlo, monospace;
-            font-weight: 600;
-            color: var(--color-success);
-        }
-
-        .meter-value.warning {
-            color: var(--color-warning);
-        }
-
-        .meter-value.danger {
-            color: var(--color-danger);
-        }
-
-        .meter-bar-container {
-            height: 4px;
-            background-color: var(--bg-primary);
-            border-radius: 2px;
+            white-space: nowrap;
             overflow: hidden;
+            text-overflow: ellipsis;
+            margin-bottom: 6px;
         }
 
-        .meter-bar {
-            height: 100%;
-            background: linear-gradient(to right, #4ade80, #fbbf24, #ef4444);
-            border-radius: 2px;
-            transition: width 0.05s;
-        }
-
-        .meter-unit {
-            font-size: 8px;
-            color: var(--text-muted);
-        }
-
-        /* Stats divider */
-        .stats-divider {
-            height: 1px;
-            background-color: var(--border-color);
-            margin: 4px 0;
-        }
-
-        /* Real-time LUFS section */
-        .lufs-row {
+        .file-info-details .file-stat {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 2px 0;
-            font-size: 10px;
-        }
-
-        .lufs-label {
-            color: var(--text-secondary);
-            font-size: 9px;
-        }
-
-        .lufs-value {
-            color: var(--text-primary);
-            font-family: 'SF Mono', SFMono-Regular, ui-monospace, Menlo, monospace;
-            font-size: 10px;
-        }
-
-        /* File statistics */
-        .file-stat {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 2px 0;
+            padding: 1px 0;
             font-size: 10px;
         }
 
@@ -485,6 +610,128 @@
             color: var(--text-primary);
             font-family: 'SF Mono', SFMono-Regular, ui-monospace, Menlo, monospace;
             font-size: 10px;
+        }
+
+        /* Inline Metadata */
+        .metadata-inline {
+            padding: 8px 10px;
+        }
+
+        .metadata-tab-bar {
+            display: flex;
+            gap: 2px;
+            margin-bottom: 8px;
+        }
+
+        .metadata-tab-btn {
+            flex: 1;
+            padding: 4px 8px;
+            font-size: 10px;
+            font-weight: 600;
+            background-color: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            color: var(--text-secondary);
+            cursor: pointer;
+            border-radius: 3px;
+            transition: all 0.12s;
+            text-align: center;
+        }
+
+        .metadata-tab-btn:hover {
+            background-color: var(--bg-elevated);
+            color: var(--text-primary);
+        }
+
+        .metadata-tab-btn.active {
+            background-color: var(--accent-blue);
+            border-color: var(--accent-blue);
+            color: #fff;
+        }
+
+        .metadata-tab-panel {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .metadata-tab-panel.hidden {
+            display: none;
+        }
+
+        .metadata-inline-field {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .metadata-inline-field label {
+            font-size: 9px;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+        }
+
+        .metadata-inline-field input,
+        .metadata-inline-field select {
+            width: 100%;
+            padding: 4px 6px;
+            font-size: 11px;
+            background-color: var(--bg-primary);
+            border: 1px solid var(--border-light);
+            border-radius: 3px;
+            color: var(--text-primary);
+            font-family: inherit;
+            outline: none;
+        }
+
+        .metadata-inline-field input:focus,
+        .metadata-inline-field select:focus {
+            border-color: var(--accent-blue);
+        }
+
+        .metadata-inline-field input::placeholder {
+            color: var(--text-muted);
+        }
+
+        .metadata-inline-field input[readonly] {
+            background-color: var(--bg-tertiary);
+            color: var(--text-secondary);
+        }
+
+        /* Export section */
+        .export-section {
+            padding: 8px 10px;
+        }
+
+        .export-path-row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 6px;
+        }
+
+        .export-path {
+            flex: 1;
+            font-size: 10px;
+            color: var(--text-muted);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            direction: rtl;
+            text-align: left;
+        }
+
+        .export-path-row .btn-sm {
+            flex-shrink: 0;
+            padding: 3px 8px;
+            font-size: 10px;
+        }
+
+        .export-action-btn {
+            width: 100%;
+            margin-top: 6px;
+            padding: 6px 12px;
+            font-size: 12px;
         }
 
         /* Volume control */
@@ -566,6 +813,112 @@
             background: var(--accent-blue-hover);
         }
 
+        /* Metering section */
+        .metering-section {
+            padding: 8px 10px;
+        }
+
+        .peak-meters {
+            margin-bottom: 6px;
+        }
+
+        .peak-meter-row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 3px;
+        }
+
+        .peak-meter-row .meter-label {
+            font-size: 9px;
+            color: var(--text-secondary);
+            width: 12px;
+            text-align: right;
+            flex-shrink: 0;
+        }
+
+        .peak-meter-row .meter-bar-container {
+            flex: 1;
+            height: 6px;
+            background-color: var(--bg-primary);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+
+        .meter-bar {
+            height: 100%;
+            background: linear-gradient(to right, #4ade80, #fbbf24, #ef4444);
+            border-radius: 3px;
+            transition: width 0.05s;
+        }
+
+        .peak-meter-value {
+            display: flex;
+            align-items: baseline;
+            gap: 4px;
+            padding-top: 2px;
+        }
+
+        .meter-value {
+            font-size: 13px;
+            font-family: 'SF Mono', SFMono-Regular, ui-monospace, Menlo, monospace;
+            font-weight: 600;
+            color: var(--color-success);
+        }
+
+        .meter-value.warning {
+            color: var(--color-warning);
+        }
+
+        .meter-value.danger {
+            color: var(--color-danger);
+        }
+
+        .meter-unit {
+            font-size: 8px;
+            color: var(--text-muted);
+        }
+
+        /* LUFS values */
+        .lufs-section {
+            border-top: 1px solid var(--border-color);
+            padding-top: 6px;
+            margin-bottom: 4px;
+        }
+
+        .lufs-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1px 0;
+            font-size: 10px;
+        }
+
+        .lufs-label {
+            color: var(--text-secondary);
+            font-size: 9px;
+        }
+
+        .lufs-value {
+            color: var(--text-primary);
+            font-family: 'SF Mono', SFMono-Regular, ui-monospace, Menlo, monospace;
+            font-size: 10px;
+        }
+
+        /* File-level stats */
+        .file-stats-section {
+            border-top: 1px solid var(--border-color);
+            padding-top: 4px;
+        }
+
+        .file-stats-section .file-stat {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1px 0;
+            font-size: 10px;
+        }
+
         /* ============================
            Mixer Container (bottom)
            ============================ */
@@ -573,8 +926,8 @@
             background-color: var(--bg-secondary);
             border-top: 1px solid var(--border-color);
             flex-shrink: 0;
-            overflow-x: auto;
             display: flex;
+            flex-direction: column;
         }
 
         .mixer-empty {
@@ -590,6 +943,117 @@
             gap: 1px;
             padding: 4px;
             min-height: 140px;
+            overflow-x: auto;
+        }
+
+        /* Crossfader area */
+        .mixer-crossfader-area {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            padding: 6px 12px;
+            background-color: var(--bg-tertiary);
+            border-top: 1px solid var(--border-color);
+            flex-shrink: 0;
+        }
+
+        .crossfader-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex: 1;
+        }
+
+        .crossfader-label {
+            font-size: 10px;
+            font-weight: 700;
+            color: var(--text-secondary);
+            width: 14px;
+            text-align: center;
+            flex-shrink: 0;
+        }
+
+        .crossfader-slider {
+            flex: 1;
+            height: 20px;
+            -webkit-appearance: none;
+            appearance: none;
+            background: transparent;
+            outline: none;
+            cursor: pointer;
+        }
+
+        .crossfader-slider::-webkit-slider-track {
+            width: 100%;
+            height: 4px;
+            background: var(--bg-primary);
+            border-radius: 2px;
+        }
+
+        .crossfader-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 16px;
+            height: 12px;
+            background: var(--text-primary);
+            border-radius: 2px;
+            cursor: pointer;
+            margin-top: -4px;
+        }
+
+        .crossfader-slider::-webkit-slider-thumb:hover {
+            background: #fff;
+        }
+
+        .crossfader-slider::-moz-range-track {
+            height: 4px;
+            background: var(--bg-primary);
+            border-radius: 2px;
+        }
+
+        .crossfader-slider::-moz-range-thumb {
+            width: 16px;
+            height: 12px;
+            background: var(--text-primary);
+            border-radius: 2px;
+            cursor: pointer;
+            border: none;
+        }
+
+        .crossfader-options {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            flex-shrink: 0;
+        }
+
+        .crossfader-options-label {
+            font-size: 9px;
+            color: var(--text-secondary);
+            margin-right: 2px;
+        }
+
+        .fader-law-btn {
+            padding: 3px 8px;
+            font-size: 9px;
+            font-weight: 600;
+            background-color: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            color: var(--text-secondary);
+            border-radius: 3px;
+            cursor: pointer;
+            transition: all 0.12s;
+        }
+
+        .fader-law-btn:hover {
+            background-color: var(--bg-elevated);
+            color: var(--text-primary);
+        }
+
+        .fader-law-btn.active {
+            background-color: var(--accent-blue);
+            border-color: var(--accent-blue);
+            color: #fff;
         }
 
         .mixer-strip {
@@ -1264,11 +1728,21 @@
          Main Content
          ============================ -->
     <div class="main-content">
-        <!-- Left Sidebar: File Queue -->
-        <div class="left-sidebar">
-            <div class="file-list-panel">
-                <div class="file-list-header">File Queue</div>
-                <div class="file-list" id="fileList"></div>
+        <!-- Left Sidebar: File Browser -->
+        <div class="left-sidebar" id="leftSidebar">
+            <div class="file-browser-header">
+                <span class="file-browser-title">File Browser</span>
+                <button id="openFolderBtn" class="btn-icon" title="Open Folder">&#128194;</button>
+            </div>
+            <div class="folder-path" id="folderPath" title="">No folder selected</div>
+            <input type="search" id="fileBrowserSearch" class="file-browser-search" placeholder="Search files...">
+            <div class="file-browser-list" id="fileBrowserList">
+                <div class="file-list-empty">Open a folder to browse files</div>
+            </div>
+            <div class="file-browser-stats" id="fileBrowserStats"></div>
+            <div class="file-browser-actions">
+                <button id="markAllDoneBtn" class="btn-sm" title="Mark all files as done">Mark All Done</button>
+                <button id="resetAllBtn" class="btn-sm" title="Reset all file statuses">Reset All</button>
             </div>
         </div>
 
@@ -1282,10 +1756,20 @@
                 </div>
             </div>
 
-            <!-- Waveform -->
-            <div class="waveform-container">
+            <!-- Waveform (single-file view) -->
+            <div class="waveform-container" id="waveformContainer">
                 <canvas id="waveformCanvas"></canvas>
                 <div class="selection-info" id="selectionInfo"></div>
+            </div>
+
+            <!-- Timeline Tracks (multi-track view, hidden by default) -->
+            <div class="timeline-tracks-container hidden" id="timelineTracksContainer">
+                <div class="timeline-tracks-header" id="timelineTracksHeader">
+                    <!-- Track headers rendered dynamically -->
+                </div>
+                <div class="timeline-tracks-lanes" id="timelineTracksLanes">
+                    <!-- Track clip lanes rendered dynamically -->
+                </div>
             </div>
 
             <!-- Spectrogram -->
@@ -1304,76 +1788,113 @@
                     </select>
                 </div>
             </div>
+
+            <!-- Sonogram (3D spectrogram) -->
+            <div class="sonogram-container">
+                <canvas id="sonogramCanvas"></canvas>
+                <span class="sonogram-label">Sonogram</span>
+            </div>
         </div>
 
         <!-- Right Sidebar -->
-        <div class="right-sidebar">
-            <!-- Channel Info -->
-            <div class="sidebar-section">
-                <div class="sidebar-section-header">Channel Info</div>
-                <div class="channel-info" id="channelInfo">
-                    <div class="channel-info-text">No file loaded</div>
-                </div>
-            </div>
-
-            <!-- Peak Meter -->
-            <div class="sidebar-section">
-                <div class="sidebar-section-header">Peak Meter</div>
-                <div class="meter">
-                    <span class="meter-label">Peak (RT)</span>
-                    <span class="meter-value" id="peakValue">-&#8734;</span>
-                    <span class="meter-unit">dBFS</span>
-                    <div class="meter-bar-container">
-                        <div class="meter-bar" id="peakBar" style="width: 0%"></div>
+        <div class="right-sidebar" id="rightSidebar">
+            <!-- File Info Section -->
+            <div class="sidebar-section" id="fileInfoSection">
+                <div class="sidebar-section-header">File Info</div>
+                <div class="file-info-name" id="currentFileName">No file loaded</div>
+                <div class="file-info-details">
+                    <div class="file-stat">
+                        <span class="file-stat-label">Channels:</span>
+                        <span class="file-stat-value" id="fileChannels">-</span>
+                    </div>
+                    <div class="file-stat">
+                        <span class="file-stat-label">Sample Rate:</span>
+                        <span class="file-stat-value" id="fileSampleRate">-</span>
+                    </div>
+                    <div class="file-stat">
+                        <span class="file-stat-label">Bit Depth:</span>
+                        <span class="file-stat-value" id="fileBitDepth">-</span>
+                    </div>
+                    <div class="file-stat">
+                        <span class="file-stat-label">Duration:</span>
+                        <span class="file-stat-value" id="fileDuration">-</span>
                     </div>
                 </div>
             </div>
 
-            <!-- Real-time LUFS -->
-            <div class="sidebar-section">
-                <div class="sidebar-section-header">Real-time LUFS</div>
-                <div class="lufs-row">
-                    <span class="lufs-label">Momentary:</span>
-                    <span class="lufs-value" id="lufsMomentary">-</span>
+            <!-- Inline Metadata Section (Tabs) -->
+            <div class="sidebar-section metadata-inline" id="metadataSection">
+                <div class="sidebar-section-header">Metadata</div>
+                <div class="metadata-tab-bar">
+                    <button class="metadata-tab-btn active" data-tab="ixml-inline">iXML</button>
+                    <button class="metadata-tab-btn" data-tab="ucs-inline">UCS</button>
                 </div>
-                <div class="lufs-row">
-                    <span class="lufs-label">Short-term:</span>
-                    <span class="lufs-value" id="lufsShortTerm">-</span>
+
+                <!-- iXML Inline Tab -->
+                <div class="metadata-tab-panel" id="ixmlInlinePanel" data-tab="ixml-inline">
+                    <div class="metadata-inline-field">
+                        <label>Description</label>
+                        <input type="text" id="inlineDescription" placeholder="Description...">
+                    </div>
+                    <div class="metadata-inline-field">
+                        <label>Scene</label>
+                        <input type="text" id="inlineScene" placeholder="Scene">
+                    </div>
+                    <div class="metadata-inline-field">
+                        <label>Take</label>
+                        <input type="text" id="inlineTake" placeholder="Take">
+                    </div>
+                    <div class="metadata-inline-field">
+                        <label>Tape</label>
+                        <input type="text" id="inlineTape" placeholder="Tape">
+                    </div>
+                    <div class="metadata-inline-field">
+                        <label>Note</label>
+                        <input type="text" id="inlineNote" placeholder="Notes...">
+                    </div>
                 </div>
-                <div class="lufs-row">
-                    <span class="lufs-label">Integrated:</span>
-                    <span class="lufs-value" id="lufsIntegrated">-</span>
+
+                <!-- UCS Inline Tab -->
+                <div class="metadata-tab-panel hidden" id="ucsInlinePanel" data-tab="ucs-inline">
+                    <div class="metadata-inline-field">
+                        <label>Category</label>
+                        <select id="inlineUcsCategory"><option value="">-- Category --</option></select>
+                    </div>
+                    <div class="metadata-inline-field">
+                        <label>SubCategory</label>
+                        <select id="inlineUcsSubCategory"><option value="">-- SubCategory --</option></select>
+                    </div>
+                    <div class="metadata-inline-field">
+                        <label>CatID</label>
+                        <input type="text" id="inlineCatId" readonly placeholder="(auto)">
+                    </div>
+                    <div class="metadata-inline-field">
+                        <label>FX Name</label>
+                        <input type="text" id="inlineFxName" placeholder="FX Name">
+                    </div>
+                    <div class="metadata-inline-field">
+                        <label>Creator ID</label>
+                        <input type="text" id="inlineCreatorId" placeholder="Creator ID">
+                    </div>
+                    <div class="metadata-inline-field">
+                        <label>Source ID</label>
+                        <input type="text" id="inlineSourceId" placeholder="Source ID">
+                    </div>
                 </div>
             </div>
 
-            <!-- File Stats -->
-            <div class="sidebar-section">
-                <div class="sidebar-section-header">File Stats</div>
-                <div class="file-stat">
-                    <span class="file-stat-label">RMS Peak:</span>
-                    <span class="file-stat-value" id="rmsPeakValue">-</span>
+            <!-- Export Section -->
+            <div class="sidebar-section export-section" id="exportSection">
+                <div class="sidebar-section-header">Export</div>
+                <div class="export-path-row">
+                    <span class="export-path" id="exportPath" title="">No export folder</span>
+                    <button id="exportPathBtn" class="btn-sm" title="Choose export folder">Choose Folder</button>
                 </div>
-                <div class="file-stat">
-                    <span class="file-stat-label">True Peak:</span>
-                    <span class="file-stat-value" id="truePeakValue">-</span>
+                <div class="metadata-inline-field">
+                    <label>Filename Format</label>
+                    <input type="text" id="exportFilenameFormat" placeholder="{CatID}_{FXName}_{CreatorID}">
                 </div>
-                <div class="file-stat">
-                    <span class="file-stat-label">LUFS:</span>
-                    <span class="file-stat-value" id="lufsValue">-</span>
-                </div>
-            </div>
-
-            <!-- FFT Size -->
-            <div class="sidebar-section">
-                <div class="sidebar-section-header">FFT Size</div>
-                <select id="fftSizeSidebar" class="fft-select" style="width: 100%">
-                    <option value="256">256</option>
-                    <option value="512">512</option>
-                    <option value="1024">1024</option>
-                    <option value="2048" selected>2048</option>
-                    <option value="4096">4096</option>
-                    <option value="8192">8192</option>
-                </select>
+                <button id="exportActionBtn" class="primary export-action-btn">Export</button>
             </div>
 
             <!-- Volume Control -->
@@ -1387,6 +1908,60 @@
                            min="-60" max="6" step="0.5" value="0">
                 </div>
             </div>
+
+            <!-- Metering Section -->
+            <div class="sidebar-section metering-section" id="meteringSection">
+                <div class="sidebar-section-header">Metering</div>
+                <!-- Peak Meter Bars -->
+                <div class="peak-meters">
+                    <div class="peak-meter-row">
+                        <span class="meter-label">L</span>
+                        <div class="meter-bar-container">
+                            <div class="meter-bar" id="peakBarL" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    <div class="peak-meter-row">
+                        <span class="meter-label">R</span>
+                        <div class="meter-bar-container">
+                            <div class="meter-bar" id="peakBarR" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    <div class="peak-meter-value">
+                        <span class="meter-value" id="peakValue">-&#8734;</span>
+                        <span class="meter-unit">dBFS</span>
+                    </div>
+                </div>
+                <!-- LUFS Values -->
+                <div class="lufs-section">
+                    <div class="lufs-row">
+                        <span class="lufs-label">Integrated:</span>
+                        <span class="lufs-value" id="lufsIntegrated">-</span>
+                    </div>
+                    <div class="lufs-row">
+                        <span class="lufs-label">Momentary:</span>
+                        <span class="lufs-value" id="lufsMomentary">-</span>
+                    </div>
+                    <div class="lufs-row">
+                        <span class="lufs-label">Short-term:</span>
+                        <span class="lufs-value" id="lufsShortTerm">-</span>
+                    </div>
+                    <div class="lufs-row">
+                        <span class="lufs-label">True Peak:</span>
+                        <span class="lufs-value" id="truePeakValue">-</span>
+                    </div>
+                </div>
+                <!-- File-level stats -->
+                <div class="file-stats-section">
+                    <div class="file-stat">
+                        <span class="file-stat-label">RMS Peak:</span>
+                        <span class="file-stat-value" id="rmsPeakValue">-</span>
+                    </div>
+                    <div class="file-stat">
+                        <span class="file-stat-label">LUFS (file):</span>
+                        <span class="file-stat-value" id="lufsValue">-</span>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -1394,7 +1969,23 @@
          Bottom: Mixer Container
          ============================ -->
     <div class="mixer-container" id="mixerContainer" style="display:none;">
-        <div class="mixer-empty">No audio loaded</div>
+        <div class="mixer-channels" id="mixerChannels">
+            <div class="mixer-empty">No audio loaded</div>
+        </div>
+        <div class="mixer-crossfader-area" id="mixerCrossfaderArea">
+            <div class="crossfader-row">
+                <span class="crossfader-label">A</span>
+                <input type="range" id="crossfader" class="crossfader-slider"
+                       min="0" max="100" step="1" value="50">
+                <span class="crossfader-label">B</span>
+            </div>
+            <div class="crossfader-options">
+                <span class="crossfader-options-label">Fader Law:</span>
+                <button class="fader-law-btn active" data-law="linear" id="faderLawLinear">Linear</button>
+                <button class="fader-law-btn" data-law="equal-power" id="faderLawEqPower">Equal Power</button>
+                <button class="fader-law-btn" data-law="cut" id="faderLawCut">Cut</button>
+            </div>
+        </div>
     </div>
 
     <!-- ============================

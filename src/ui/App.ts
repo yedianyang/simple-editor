@@ -4,6 +4,8 @@ import { AudioEditor } from '../editor/AudioEditor';
 import { WaveformRenderer } from '../editor/WaveformRenderer';
 import { SpectrogramRenderer } from '../editor/SpectrogramRenderer';
 import { CuePointManager, CuePointRenderer } from '../editor/CuePointManager';
+import { TimelineRenderer } from '../editor/TimelineRenderer';
+import { SonogramRenderer } from '../editor/SonogramRenderer';
 import { Mixer } from '../mixer/Mixer';
 import { PluginHost } from '../plugins/PluginHost';
 import { Metering } from './Metering';
@@ -12,6 +14,16 @@ import { FileQueue } from './FileQueue';
 import { ProjectManager } from './ProjectManager';
 import { UndoManager } from '../utils/UndoManager';
 import { FileHandler } from '../utils/FileHandler';
+import { BufferPool } from '../core/BufferPool';
+import { TimelineModel } from '../core/TimelineModel';
+import {
+  TimelineUndoManager,
+  MoveClipCommand,
+  SplitClipCommand,
+  DeleteClipCommand,
+  TrimClipCommand,
+} from '../utils/TimelineUndoManager';
+import type { AudioFileInfo } from '../utils/TauriAPI';
 
 /**
  * Main application controller for FieldCorder DAW.
@@ -36,6 +48,22 @@ export class App {
   private pendingExportMetadata: ExportMetadata | null = null;
   private pendingUCSFilename: string | null = null;
 
+  // ---- Timeline / Multi-track ----
+  timelineModel: TimelineModel;
+  bufferPool: BufferPool;
+  timelineRenderer: TimelineRenderer | null = null;
+  sonogramRenderer: SonogramRenderer | null = null;
+  timelineUndoManager: TimelineUndoManager;
+  /** true when operating in multi-track timeline mode (vs legacy single-buffer). */
+  private useTimeline = false;
+
+  // ---- File Browser state ----
+  private folderPath: string | null = null;
+  private folderFiles: AudioFileInfo[] = [];
+  /** Track per-file workflow status: 'pending' | 'done' | 'skip' */
+  private fileStatuses: Map<string, 'pending' | 'done' | 'skip'> = new Map();
+  private searchFilter = '';
+
   constructor() {
     this.audioEngine = new AudioEngine();
     this.waveformRenderer = new WaveformRenderer(document.getElementById('waveformCanvas') as HTMLCanvasElement);
@@ -58,11 +86,110 @@ export class App {
 
     this.metadataManager = new MetadataManager();
 
+    // Timeline / multi-track
+    this.timelineModel = new TimelineModel();
+    this.bufferPool = new BufferPool();
+    this.timelineUndoManager = new TimelineUndoManager();
+
+    // Timeline renderer shares the waveform canvas (replaces waveform view in timeline mode)
+    const waveformCanvas = document.getElementById('waveformCanvas') as HTMLCanvasElement | null;
+    if (waveformCanvas) {
+      this.timelineRenderer = new TimelineRenderer(waveformCanvas);
+      this.setupTimelineCallbacks();
+    }
+
+    // Sonogram renderer (optional canvas)
+    const sonogramCanvas = document.getElementById('sonogramCanvas') as HTMLCanvasElement | null;
+    if (sonogramCanvas) {
+      this.sonogramRenderer = new SonogramRenderer(sonogramCanvas);
+    }
+
     this.setupEventListeners();
     this.setupCuePointCallbacks();
     this.setupDragAndDrop();
     this.setupNativeListeners();
+    this.setupFileBrowser();
+    this.setupInlineMetadata();
+    this.setupExportSection();
     this.updateUI();
+  }
+
+  // ==================== Timeline Callbacks ====================
+
+  private setupTimelineCallbacks(): void {
+    if (!this.timelineRenderer) return;
+
+    this.timelineRenderer.onPlayheadChange = (sample) => {
+      this.timelineModel.timeline.playheadSample = sample;
+      if (this.sonogramRenderer) {
+        this.sonogramRenderer.setPlayheadPosition(sample);
+      }
+      const sr = this.timelineModel.timeline.sampleRate;
+      this.updatePositionInfo(sample / sr);
+    };
+
+    this.timelineRenderer.onClipSelect = (_clipId, _trackId) => {
+      this.updateUI();
+    };
+
+    this.timelineRenderer.onClipMove = (clipId, trackId, newOffset) => {
+      this.timelineUndoManager.push(
+        new MoveClipCommand(this.timelineModel, trackId, clipId, newOffset),
+      );
+      this.timelineRenderer?.render();
+    };
+
+    this.timelineRenderer.onClipTrim = (clipId, trackId, edge, newValue) => {
+      this.timelineUndoManager.push(
+        new TrimClipCommand(this.timelineModel, trackId, clipId, edge, newValue),
+      );
+      this.timelineRenderer?.clearPeakCaches();
+      this.timelineRenderer?.render();
+    };
+
+    this.timelineRenderer.onClipSplit = (trackId, clipId, splitSample) => {
+      this.timelineUndoManager.push(
+        new SplitClipCommand(this.timelineModel, trackId, clipId, splitSample),
+      );
+      this.timelineRenderer?.render();
+    };
+
+    this.timelineRenderer.onClipDelete = (trackId, clipId) => {
+      this.timelineUndoManager.push(
+        new DeleteClipCommand(this.timelineModel, trackId, clipId),
+      );
+      this.timelineRenderer?.render();
+    };
+
+    this.timelineRenderer.onTrackMuteToggle = (trackId) => {
+      const track = this.timelineModel.timeline.tracks.find(t => t.id === trackId);
+      if (track) {
+        track.mute = !track.mute;
+        this.mixer.setTrackMute(trackId, track.mute);
+      }
+    };
+
+    this.timelineRenderer.onTrackSoloToggle = (trackId) => {
+      const track = this.timelineModel.timeline.tracks.find(t => t.id === trackId);
+      if (track) {
+        track.solo = !track.solo;
+        this.mixer.setTrackSolo(trackId, track.solo);
+      }
+    };
+
+    this.timelineRenderer.onZoomChange = () => {
+      if (this.sonogramRenderer && this.timelineRenderer) {
+        this.sonogramRenderer.setSamplesPerPixel(this.timelineRenderer.samplesPerPixel);
+        this.sonogramRenderer.setScrollOffset(this.timelineRenderer.scrollOffsetX);
+      }
+      this.updateZoomInfo();
+    };
+
+    this.timelineRenderer.onScrollChange = () => {
+      if (this.sonogramRenderer && this.timelineRenderer) {
+        this.sonogramRenderer.setScrollOffset(this.timelineRenderer.scrollOffsetX);
+      }
+    };
   }
 
   setupEventListeners(): void {
@@ -98,9 +225,9 @@ export class App {
     document.getElementById('loopBtn')!.addEventListener('click', () => this.toggleLoop());
 
     // Zoom
-    document.getElementById('zoomInBtn')!.addEventListener('click', () => this.waveformRenderer.zoomIn());
-    document.getElementById('zoomOutBtn')!.addEventListener('click', () => this.waveformRenderer.zoomOut());
-    document.getElementById('zoomFitBtn')!.addEventListener('click', () => this.waveformRenderer.zoomFit());
+    document.getElementById('zoomInBtn')!.addEventListener('click', () => this.zoomIn());
+    document.getElementById('zoomOutBtn')!.addEventListener('click', () => this.zoomOut());
+    document.getElementById('zoomFitBtn')!.addEventListener('click', () => this.zoomFit());
 
     // Edit
     document.getElementById('undoBtn')!.addEventListener('click', () => this.undo());
@@ -161,21 +288,36 @@ export class App {
       this.spectrogramRenderer.setScrollOffset(this.waveformRenderer.scrollOffset);
       this.cuePointRenderer.setSamplesPerPixel(this.waveformRenderer.samplesPerPixel);
       this.cuePointRenderer.setScrollOffset(this.waveformRenderer.scrollOffset);
+      if (this.sonogramRenderer) {
+        this.sonogramRenderer.setSamplesPerPixel(this.waveformRenderer.samplesPerPixel);
+        this.sonogramRenderer.setScrollOffset(this.waveformRenderer.scrollOffset);
+      }
     };
     this.waveformRenderer.onScrollChange = () => {
       this.spectrogramRenderer.setScrollOffset(this.waveformRenderer.scrollOffset);
       this.cuePointRenderer.setScrollOffset(this.waveformRenderer.scrollOffset);
+      if (this.sonogramRenderer) {
+        this.sonogramRenderer.setScrollOffset(this.waveformRenderer.scrollOffset);
+      }
     };
 
     // Playback callbacks
     this.audioEngine.onPositionUpdate = (time) => {
-      this.waveformRenderer.setPlayheadPosition(time);
       this.updatePositionInfo(time);
-      if (this.audioEngine.audioBuffer) {
-        const sample = Math.floor(time * this.audioEngine.audioBuffer.sampleRate);
-        this.spectrogramRenderer.setPlayheadPosition(sample);
-        this.cuePointRenderer.setPlayheadPosition(sample);
+      if (this.useTimeline) {
+        const sample = Math.floor(time * this.timelineModel.timeline.sampleRate);
+        this.timelineRenderer?.setPlayheadPosition(sample);
+        if (this.sonogramRenderer) this.sonogramRenderer.setPlayheadPosition(sample);
         this.metering.setPlaybackPosition(sample);
+      } else {
+        this.waveformRenderer.setPlayheadPosition(time);
+        if (this.audioEngine.audioBuffer) {
+          const sample = Math.floor(time * this.audioEngine.audioBuffer.sampleRate);
+          this.spectrogramRenderer.setPlayheadPosition(sample);
+          this.cuePointRenderer.setPlayheadPosition(sample);
+          this.metering.setPlaybackPosition(sample);
+          if (this.sonogramRenderer) this.sonogramRenderer.setPlayheadPosition(sample);
+        }
       }
     };
     this.audioEngine.onPlaybackEnd = () => {
@@ -355,9 +497,9 @@ export class App {
       'play-pause': () => this.audioEngine.isPlaying ? this.pause() : this.play(),
       'stop': () => this.stop(),
       'toggle-loop': () => this.toggleLoop(),
-      'zoom-in': () => this.waveformRenderer.zoomIn(),
-      'zoom-out': () => this.waveformRenderer.zoomOut(),
-      'zoom-fit': () => this.waveformRenderer.zoomFit(),
+      'zoom-in': () => this.zoomIn(),
+      'zoom-out': () => this.zoomOut(),
+      'zoom-fit': () => this.zoomFit(),
       'toggle-mixer': () => this.mixer.toggle(),
       'toggle-plugin-browser': () => this.togglePluginBrowser(),
     };
@@ -405,8 +547,8 @@ export class App {
         e.preventDefault();
         this.audioEngine.isPlaying ? this.pause() : this.play();
         break;
-      case '+': case '=': this.waveformRenderer.zoomIn(); break;
-      case '-': this.waveformRenderer.zoomOut(); break;
+      case '+': case '=': this.zoomIn(); break;
+      case '-': this.zoomOut(); break;
       case 'ArrowLeft':
         e.preventDefault();
         if (this.audioEngine.audioBuffer) this.movePlayhead(-1);
@@ -415,9 +557,46 @@ export class App {
         e.preventDefault();
         if (this.audioEngine.audioBuffer) this.movePlayhead(1);
         break;
+      case 's': case 'S':
+        if (this.useTimeline) {
+          // Split is handled by TimelineRenderer's own keydown handler
+          // (when canvas is focused), but also allow from global keyboard
+          const selected = this.timelineModel.timeline.selectedClipIds;
+          if (selected.length > 0) {
+            for (const track of this.timelineModel.timeline.tracks) {
+              for (const clip of track.clips) {
+                if (selected.includes(clip.id)) {
+                  this.timelineUndoManager.push(
+                    new SplitClipCommand(this.timelineModel, track.id, clip.id, this.timelineModel.timeline.playheadSample),
+                  );
+                  this.timelineRenderer?.render();
+                  break;
+                }
+              }
+            }
+          }
+        }
+        break;
       case 'Delete': case 'Backspace':
         e.preventDefault();
-        this.deleteSelection();
+        if (this.useTimeline) {
+          const selected = this.timelineModel.timeline.selectedClipIds;
+          if (selected.length > 0) {
+            for (const track of this.timelineModel.timeline.tracks) {
+              for (const clip of track.clips) {
+                if (selected.includes(clip.id)) {
+                  this.timelineUndoManager.push(
+                    new DeleteClipCommand(this.timelineModel, track.id, clip.id),
+                  );
+                }
+              }
+            }
+            this.timelineModel.timeline.selectedClipIds = [];
+            this.timelineRenderer?.render();
+          }
+        } else {
+          this.deleteSelection();
+        }
         break;
       case 'l': case 'L':
         if (this.audioEngine.audioBuffer) this.toggleLoop();
@@ -504,6 +683,7 @@ export class App {
       this.undoManager.setAudioContext(this.audioEngine.audioContext!);
       this.undoManager.clear();
 
+      // Legacy single-buffer renderers
       this.waveformRenderer.setAudioBuffer(audioBuffer);
       this.spectrogramRenderer.setAudioBuffer(audioBuffer);
       this.spectrogramRenderer.setAnalyserNode(this.audioEngine.getAnalyserNode());
@@ -516,8 +696,52 @@ export class App {
       this.cuePointRenderer.setSamplesPerPixel(this.waveformRenderer.samplesPerPixel);
       this.cuePointRenderer.setScrollOffset(this.waveformRenderer.scrollOffset);
 
-      // Setup mixer for channel count
-      this.mixer.setupChannels(audioBuffer.numberOfChannels);
+      // ---- Timeline multi-track setup ----
+      if (this.timelineRenderer) {
+        this.useTimeline = true;
+        this.bufferPool.clear();
+        this.timelineModel.createTimeline(audioBuffer.sampleRate);
+        this.timelineUndoManager.clear();
+
+        // Import into buffer pool (splits into mono PooledBuffers)
+        const bufferIds = this.bufferPool.importMultiChannel(audioBuffer, this.fileName || 'audio');
+
+        // Create tracks + clips in timeline model
+        this.timelineModel.importMultiChannelFile(
+          bufferIds,
+          this.fileName || 'audio',
+          audioBuffer.sampleRate,
+          audioBuffer.length,
+        );
+
+        // Setup audio engine track routing
+        this.audioEngine.setupTrackRouting(this.timelineModel.timeline.tracks);
+
+        // Wire up mixer in track mode
+        this.mixer.setupTracks(this.timelineModel.timeline.tracks);
+
+        // Feed timeline to renderer
+        this.timelineRenderer.setTimeline(this.timelineModel.timeline, this.bufferPool);
+        this.timelineRenderer.zoomFit();
+
+        // Sonogram: show first channel
+        if (this.sonogramRenderer) {
+          this.sonogramRenderer.setAudioBuffer(audioBuffer);
+          this.sonogramRenderer.setSamplesPerPixel(this.timelineRenderer.samplesPerPixel);
+          this.sonogramRenderer.setScrollOffset(this.timelineRenderer.scrollOffsetX);
+        }
+      } else {
+        this.useTimeline = false;
+        // Legacy channel-mode mixer
+        this.mixer.setupChannels(audioBuffer.numberOfChannels);
+
+        // Sonogram in legacy mode
+        if (this.sonogramRenderer) {
+          this.sonogramRenderer.setAudioBuffer(audioBuffer);
+          this.sonogramRenderer.setSamplesPerPixel(this.waveformRenderer.samplesPerPixel);
+          this.sonogramRenderer.setScrollOffset(this.waveformRenderer.scrollOffset);
+        }
+      }
 
       if (fileId) {
         const savedCuePoints = this.fileQueue.getCuePoints(fileId);
@@ -583,12 +807,23 @@ export class App {
     this.renderFileList();
 
     if (wasActive) {
-      this.audioEngine.stop();
+      if (this.useTimeline) {
+        this.audioEngine.stopTimeline();
+      } else {
+        this.audioEngine.stop();
+      }
       this.audioEngine.audioBuffer = null;
       this.waveformRenderer.setAudioBuffer(null);
       this.spectrogramRenderer.setAudioBuffer(null);
       this.cuePointManager.clear();
       this.cuePointRenderer.setAudioBuffer(null);
+      if (this.sonogramRenderer) this.sonogramRenderer.setAudioBuffer(null);
+      if (this.timelineRenderer) {
+        this.timelineRenderer.timeline = null;
+        this.timelineRenderer.render();
+      }
+      this.bufferPool.clear();
+      this.useTimeline = false;
       this.fileName = null;
       this.updateUI();
       this.updateFileInfo();
@@ -640,6 +875,26 @@ export class App {
   // ==================== Transport ====================
 
   play(): void {
+    // Timeline mode: use playTimeline
+    if (this.useTimeline) {
+      const tl = this.timelineModel.timeline;
+      if (tl.tracks.length === 0) return;
+      if (this.audioEngine.isPaused) {
+        this.audioEngine.resume();
+      } else {
+        this.audioEngine.init().then(() => {
+          this.audioEngine.playTimeline(tl, this.bufferPool, tl.playheadSample);
+          this.startRealtimeAnalysis();
+          this.updateUI();
+        });
+        return;
+      }
+      this.startRealtimeAnalysis();
+      this.updateUI();
+      return;
+    }
+
+    // Legacy single-buffer mode
     if (!this.audioEngine.audioBuffer) return;
 
     const selection = this.waveformRenderer.getSelection();
@@ -648,7 +903,6 @@ export class App {
       const endTime = selection.end / this.audioEngine.audioBuffer.sampleRate;
       this.audioEngine.playSelection(startTime, endTime);
     } else if (this.audioEngine.isPaused) {
-      // If user clicked to move playhead while paused, play from new position
       const pausedSample = Math.floor(this.audioEngine.getCurrentTime() * this.audioEngine.audioBuffer.sampleRate);
       if (Math.abs(this.waveformRenderer.playheadPosition - pausedSample) > 1) {
         this.audioEngine.stop();
@@ -679,10 +933,16 @@ export class App {
   }
 
   stop(): void {
-    this.audioEngine.stop();
+    if (this.useTimeline) {
+      this.audioEngine.stopTimeline();
+    } else {
+      this.audioEngine.stop();
+    }
     this.stopRealtimeAnalysis();
     this.waveformRenderer.setPlayheadPosition(0);
     this.spectrogramRenderer.setPlayheadPosition(0);
+    if (this.timelineRenderer) this.timelineRenderer.setPlayheadPosition(0);
+    if (this.sonogramRenderer) this.sonogramRenderer.setPlayheadPosition(0);
     this.updatePositionInfo(0);
     this.updateUI();
   }
@@ -706,6 +966,32 @@ export class App {
     this.updatePositionInfo(newSample / sampleRate);
   }
 
+  // ==================== Zoom ====================
+
+  zoomIn(): void {
+    if (this.useTimeline && this.timelineRenderer) {
+      this.timelineRenderer.zoomIn();
+    } else {
+      this.waveformRenderer.zoomIn();
+    }
+  }
+
+  zoomOut(): void {
+    if (this.useTimeline && this.timelineRenderer) {
+      this.timelineRenderer.zoomOut();
+    } else {
+      this.waveformRenderer.zoomOut();
+    }
+  }
+
+  zoomFit(): void {
+    if (this.useTimeline && this.timelineRenderer) {
+      this.timelineRenderer.zoomFit();
+    } else {
+      this.waveformRenderer.zoomFit();
+    }
+  }
+
   // ==================== Edit Operations ====================
 
   saveStateForUndo(): void {
@@ -726,6 +1012,14 @@ export class App {
   }
 
   undo(): void {
+    if (this.useTimeline) {
+      if (this.timelineUndoManager.canUndo()) {
+        this.timelineUndoManager.undo();
+        this.timelineRenderer?.render();
+        this.updateUI();
+      }
+      return;
+    }
     if (!this.undoManager.canUndo() || !this.audioEngine.audioBuffer) return;
     this.stop();
     const previousBuffer = this.undoManager.undo(this.audioEngine.audioBuffer);
@@ -733,6 +1027,14 @@ export class App {
   }
 
   redo(): void {
+    if (this.useTimeline) {
+      if (this.timelineUndoManager.canRedo()) {
+        this.timelineUndoManager.redo();
+        this.timelineRenderer?.render();
+        this.updateUI();
+      }
+      return;
+    }
     if (!this.undoManager.canRedo() || !this.audioEngine.audioBuffer) return;
     this.stop();
     const nextBuffer = this.undoManager.redo(this.audioEngine.audioBuffer);
@@ -1014,6 +1316,236 @@ export class App {
     modal.classList.add('visible');
   }
 
+  // ==================== File Browser ====================
+
+  private setupFileBrowser(): void {
+    const openFolderBtn = document.getElementById('openFolderBtn');
+    if (openFolderBtn) {
+      openFolderBtn.addEventListener('click', () => this.openFolder());
+    }
+
+    const searchInput = document.getElementById('fileBrowserSearch') as HTMLInputElement | null;
+    if (searchInput) {
+      searchInput.addEventListener('input', () => {
+        this.searchFilter = searchInput.value.toLowerCase();
+        this.renderFileBrowser();
+      });
+    }
+
+    const markAllBtn = document.getElementById('markAllDoneBtn');
+    if (markAllBtn) {
+      markAllBtn.addEventListener('click', () => {
+        for (const f of this.folderFiles) {
+          this.fileStatuses.set(f.path, 'done');
+        }
+        this.renderFileBrowser();
+      });
+    }
+
+    const resetAllBtn = document.getElementById('resetAllBtn');
+    if (resetAllBtn) {
+      resetAllBtn.addEventListener('click', () => {
+        this.fileStatuses.clear();
+        this.renderFileBrowser();
+      });
+    }
+  }
+
+  private async openFolder(): Promise<void> {
+    if (!window.appAPI) return;
+    try {
+      const folder = await window.appAPI.openFolderDialog();
+      if (!folder) return;
+      this.folderPath = folder;
+
+      const pathEl = document.getElementById('folderPath');
+      if (pathEl) {
+        pathEl.textContent = folder.split('/').pop() || folder;
+        pathEl.title = folder;
+      }
+
+      this.folderFiles = await window.appAPI.scanFolder(folder);
+      this.fileStatuses.clear();
+      this.renderFileBrowser();
+    } catch (err: any) {
+      console.error('[FileBrowser] openFolder error:', err);
+    }
+  }
+
+  private renderFileBrowser(): void {
+    const listEl = document.getElementById('fileBrowserList');
+    const statsEl = document.getElementById('fileBrowserStats');
+    if (!listEl) return;
+
+    if (this.folderFiles.length === 0) {
+      listEl.innerHTML = '<div class="file-list-empty">Open a folder to browse files</div>';
+      if (statsEl) statsEl.textContent = '';
+      return;
+    }
+
+    const filtered = this.searchFilter
+      ? this.folderFiles.filter(f => f.name.toLowerCase().includes(this.searchFilter))
+      : this.folderFiles;
+
+    listEl.innerHTML = '';
+    for (const f of filtered) {
+      const status = this.fileStatuses.get(f.path) || 'pending';
+      const item = document.createElement('div');
+      item.className = `file-browser-item status-${status}`;
+      item.dataset.path = f.path;
+
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'fb-name';
+      nameSpan.textContent = f.name;
+      nameSpan.title = f.path;
+
+      const sizeSpan = document.createElement('span');
+      sizeSpan.className = 'fb-size';
+      sizeSpan.textContent = f.size > 1048576
+        ? (f.size / 1048576).toFixed(1) + ' MB'
+        : (f.size / 1024).toFixed(0) + ' KB';
+
+      const statusBtn = document.createElement('button');
+      statusBtn.className = 'fb-status-btn';
+      statusBtn.textContent = status === 'done' ? '\u2713' : status === 'skip' ? '\u2212' : '\u25CB';
+      statusBtn.title = `Status: ${status} (click to cycle)`;
+      statusBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const cur = this.fileStatuses.get(f.path) || 'pending';
+        const next = cur === 'pending' ? 'done' : cur === 'done' ? 'skip' : 'pending';
+        this.fileStatuses.set(f.path, next);
+        this.renderFileBrowser();
+      });
+
+      item.appendChild(statusBtn);
+      item.appendChild(nameSpan);
+      item.appendChild(sizeSpan);
+
+      item.addEventListener('click', () => this.loadFileFromBrowser(f));
+      listEl.appendChild(item);
+    }
+
+    // Update stats
+    if (statsEl) {
+      const total = this.folderFiles.length;
+      const done = Array.from(this.fileStatuses.values()).filter(s => s === 'done').length;
+      statsEl.textContent = `${done}/${total} done`;
+    }
+  }
+
+  private async loadFileFromBrowser(file: AudioFileInfo): Promise<void> {
+    const id = this.fileQueue.addFile({ name: file.name, path: file.path });
+    this.renderFileList();
+    await this.loadFileFromPath(file.path, id);
+  }
+
+  // ==================== Inline Metadata Tabs ====================
+
+  private setupInlineMetadata(): void {
+    const tabBtns = document.querySelectorAll('.metadata-tab-btn');
+    tabBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        const tabId = (btn as HTMLElement).dataset.tab;
+        if (!tabId) return;
+
+        // Toggle active tab button
+        tabBtns.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+
+        // Toggle panels
+        const panels = document.querySelectorAll('.metadata-tab-panel');
+        panels.forEach(panel => {
+          const panelTab = (panel as HTMLElement).dataset.tab;
+          if (panelTab === tabId) {
+            panel.classList.remove('hidden');
+          } else {
+            panel.classList.add('hidden');
+          }
+        });
+      });
+    });
+  }
+
+  // ==================== Export Section ====================
+
+  private setupExportSection(): void {
+    const exportPathBtn = document.getElementById('exportPathBtn');
+    if (exportPathBtn) {
+      exportPathBtn.addEventListener('click', async () => {
+        if (!window.appAPI) return;
+        try {
+          const folder = await window.appAPI.openFolderDialog();
+          if (!folder) return;
+          const el = document.getElementById('exportPath');
+          if (el) {
+            el.textContent = folder.split('/').pop() || folder;
+            el.title = folder;
+            el.dataset.fullPath = folder;
+          }
+        } catch (err: any) {
+          console.error('[Export] choose folder error:', err);
+        }
+      });
+    }
+
+    const exportActionBtn = document.getElementById('exportActionBtn');
+    if (exportActionBtn) {
+      exportActionBtn.addEventListener('click', async () => {
+        const pathEl = document.getElementById('exportPath');
+        const exportFolder = pathEl?.dataset.fullPath;
+        if (!exportFolder) {
+          // Fallback to the modal-based export
+          this.showExportModal();
+          return;
+        }
+        // Quick export to the chosen folder using current settings
+        await this.quickExport(exportFolder);
+      });
+    }
+  }
+
+  private async quickExport(folder: string): Promise<void> {
+    if (!this.audioEngine.audioBuffer || !window.appAPI) return;
+
+    const buffer = this.audioEngine.audioBuffer;
+    const formatEl = document.getElementById('exportFilenameFormat') as HTMLInputElement | null;
+    const pattern = formatEl?.value || '{filename}';
+
+    // Build filename from pattern
+    let baseName = pattern
+      .replace('{filename}', (this.fileName || 'audio').replace(/\.[^/.]+$/, ''))
+      .replace('{CatID}', (document.getElementById('inlineCatId') as HTMLInputElement)?.value || '')
+      .replace('{FXName}', (document.getElementById('inlineFxName') as HTMLInputElement)?.value || '')
+      .replace('{CreatorID}', (document.getElementById('inlineCreatorId') as HTMLInputElement)?.value || '')
+      .replace('{SourceID}', (document.getElementById('inlineSourceId') as HTMLInputElement)?.value || '');
+
+    // Remove trailing underscores/hyphens from empty tokens
+    baseName = baseName.replace(/[_-]+$/, '').replace(/[_-]{2,}/g, '_');
+    if (!baseName) baseName = this.fileName?.replace(/\.[^/.]+$/, '') || 'audio';
+
+    const blob = FileHandler.exportWAV(buffer, 24, 'none');
+    const arrayBuf = await blob.arrayBuffer();
+    const fullPath = `${folder}/${baseName}.wav`;
+
+    try {
+      await window.appAPI.writeFile(fullPath, arrayBuf);
+      console.log(`[Export] Written to ${fullPath}`);
+
+      // Mark file as done in browser if it matches
+      const activeId = this.fileQueue.getActive();
+      if (activeId !== null) {
+        const activeFile = this.fileQueue.getFile(activeId);
+        if (activeFile && 'path' in activeFile) {
+          this.fileStatuses.set((activeFile as any).path, 'done');
+          this.renderFileBrowser();
+        }
+      }
+    } catch (err: any) {
+      console.error('[Export] write error:', err);
+      alert('Export failed: ' + err.message);
+    }
+  }
+
   // ==================== UI ====================
 
   showExportModal(): void {
@@ -1122,8 +1654,10 @@ export class App {
     setDisabled('zoomInBtn', !hasAudio);
     setDisabled('zoomOutBtn', !hasAudio);
     setDisabled('zoomFitBtn', !hasAudio);
-    setDisabled('undoBtn', !this.undoManager.canUndo());
-    setDisabled('redoBtn', !this.undoManager.canRedo());
+    const canUndo = this.useTimeline ? this.timelineUndoManager.canUndo() : this.undoManager.canUndo();
+    const canRedo = this.useTimeline ? this.timelineUndoManager.canRedo() : this.undoManager.canRedo();
+    setDisabled('undoBtn', !canUndo);
+    setDisabled('redoBtn', !canRedo);
     setDisabled('trimBtn', !hasSelection);
     setDisabled('normalizeBtn', !hasAudio);
     setDisabled('fadeInBtn', !hasSelection);
@@ -1159,7 +1693,9 @@ export class App {
   }
 
   updateZoomInfo(): void {
-    const spp = this.waveformRenderer.samplesPerPixel;
+    const spp = this.useTimeline && this.timelineRenderer
+      ? this.timelineRenderer.samplesPerPixel
+      : this.waveformRenderer.samplesPerPixel;
     const el = document.getElementById('zoomInfo');
     if (!el) return;
     el.textContent = spp >= 1000 ? (spp / 1000).toFixed(1) + 'k spp' : spp.toFixed(0) + ' spp';

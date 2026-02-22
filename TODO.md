@@ -1,6 +1,65 @@
 # TODO.md — FieldCorder 任务列表
 
-## Tauri 迁移计划
+## 功能升级：多 Track 时间线 + 声能图 + UI 重构 — ✅ 全部完成
+
+### Phase 1: 数据模型基础 — ✅ 完成
+
+| # | 任务 | 负责人 | 状态 | 文件 |
+|---|------|--------|------|------|
+| 1 | Timeline/Track/Clip/PooledBuffer 接口 | generator | ✅ 完成 | `src/core/types.ts` |
+| 2 | BufferPool — mono AudioBuffer 池管理 | generator | ✅ 完成 | `src/core/BufferPool.ts` |
+| 3 | TimelineModel — Timeline/Track/Clip CRUD | generator | ✅ 完成 | `src/core/TimelineModel.ts` |
+| 4 | TimelineUndoManager — 命令模式 undo/redo | generator | ✅ 完成 | `src/utils/TimelineUndoManager.ts` |
+
+### Phase 2: AudioEngine 多 Track 播放 — ✅ 完成
+
+| # | 任务 | 负责人 | 状态 | 文件 |
+|---|------|--------|------|------|
+| 5 | Track routing + playTimeline + Fader Law + Crossfader | generator | ✅ 完成 | `src/core/AudioEngine.ts` |
+
+### Phase 3: Timeline 渲染器 — ✅ 完成
+
+| # | 任务 | 负责人 | 状态 | 文件 |
+|---|------|--------|------|------|
+| 6 | 多 Track lane + Clip 波形 + 交互 | template | ✅ 完成 | `src/editor/TimelineRenderer.ts` |
+
+### Phase 4: 声能图 (Sonogram) — ✅ 完成
+
+| # | 任务 | 负责人 | 状态 | 文件 |
+|---|------|--------|------|------|
+| 7 | Web Worker STFT 计算 | template | ✅ 完成 | `src/editor/sonogram-worker.ts` |
+| 8 | iZotope RX 风格热力图渲染 | template | ✅ 完成 | `src/editor/SonogramRenderer.ts` |
+
+### Phase 5: UI 布局重构 — ✅ 完成
+
+| # | 任务 | 负责人 | 状态 | 文件 |
+|---|------|--------|------|------|
+| 9 | HTML 三栏布局 (文件浏览器 + 编辑区 + 元数据) | designer | ✅ 完成 | `src/index.html` |
+| 10 | CSS 新布局样式 | designer | ✅ 完成 | `src/styles/main.css` |
+| 11 | Rust scan_folder + open_folder_dialog | generator | ✅ 完成 | `src-tauri/src/lib.rs`, `src/utils/TauriAPI.ts` |
+
+### Phase 6: Mixer 适配 — ✅ 完成
+
+| # | 任务 | 负责人 | 状态 | 文件 |
+|---|------|--------|------|------|
+| 12 | Track 模式 + Fader Law UI + Crossfader UI | generator | ✅ 完成 | `src/mixer/Mixer.ts` |
+
+### Phase 7: 集成 + 验证 — ✅ 完成
+
+| # | 任务 | 负责人 | 状态 | 文件 |
+|---|------|--------|------|------|
+| 13 | App.ts 全功能集成 | template | ✅ 完成 | `src/ui/App.ts` |
+| 14 | TypeScript 编译 0 错误 + Vite 构建 31 模块 | lead | ✅ 完成 | — |
+
+### 完成统计
+
+- **+3,363 / -594 行代码**，10 个修改文件 + 8 个新文件
+- **新增文件**: BufferPool.ts, TimelineModel.ts, TimelineRenderer.ts, SonogramRenderer.ts, sonogram-worker.ts, TimelineUndoManager.ts, docs/ui-wireframe.md
+- **完成日期**: 2026-02-16
+
+---
+
+## Tauri 迁移计划 (已完成/进行中)
 
 ### Phase 1: 基础搭建 — ✅ 已完成
 
@@ -22,18 +81,20 @@
 | 2.4 | 前端：IPC 事件监听迁移（onImportFiles 等） | template | ✅ 完成 |
 | 2.5 | 窗口配置：titlebar、traffic light、resize | designer | 待开始 |
 
-### Phase 3: 完善与打包 (Week 3-4)
+### Phase 3: 完善与打包
 
 | # | 任务 | 负责人 | 状态 |
 |---|------|--------|------|
 | 3.1 | Tauri 打包 DMG（签名 + 公证配置） | generator | 待开始 |
-| 3.2 | 全功能测试（导入/导出/编辑/混音/插件） | tester | 待开始 |
-| 3.3 | 性能测试（大文件、内存占用、启动速度） | tester | 待开始 |
+| 3.2 | 全功能测试 | tester | 待开始 |
+| 3.3 | 性能测试 | tester | 待开始 |
 | 3.4 | UI 适配（WKWebView 兼容性修复） | template | 待开始 |
-| 3.5 | 文档更新（README、开发指南、CLAUDE.md） | docs | 待开始 |
-| 3.6 | 代码审查（Rust + TypeScript） | code-reviewer | 待开始 |
+| 3.5 | 文档更新 | docs | 待开始 |
+| 3.6 | 代码审查 | code-reviewer | 待开始 |
 
-## 已完成 (Tauri 版)
+---
+
+## 已完成
 
 | 任务 | 完成时间 |
 |------|----------|
@@ -48,22 +109,6 @@
 | 插件浏览器 UI 入口 + ⌘B 快捷键 | 2026-02-16 |
 | 暂停后播放头位置同步修复 | 2026-02-16 |
 
-## 已完成 (Electron 版)
-
-| 任务 | 完成时间 |
-|------|----------|
-| P0 黑屏修复 | 2026-02-16 |
-| AU 原生插件调研 | 2026-02-16 |
-| AU 原生插件 N-API 实现 | 2026-02-16 |
-| 原生 addon 编译 + 扫描验证 (40 AU) | 2026-02-16 |
-| DMG 打包 (180MB) | 2026-02-16 |
-| 音频导入性能优化 (FFT/Metering 异步化) | 2026-02-16 |
-| 大文件 OOM 修复 (手动 WAV 解析) | 2026-02-16 |
-| 拖放导航修复 | 2026-02-16 |
-| Mixer 默认隐藏修复 | 2026-02-16 |
-| Tauri vs Electron 方案对比调研 | 2026-02-16 |
-| Mac App Store 分发调研 | 2026-02-16 |
-
 ## Bug 列表
 
 | Bug | 说明 | 状态 |
@@ -77,3 +122,7 @@
 - Electron 旧代码备份在 `electron-backup/`
 - 计划双版本：MAS Lite (无原生插件) + DMG Pro (AU/VST)
 - 用户尚未订阅 Apple Developer Program
+
+---
+
+*最后更新：2026-02-16*

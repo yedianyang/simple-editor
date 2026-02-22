@@ -1,0 +1,236 @@
+import { Timeline, Track, Clip, CHANNEL_NAMES, CHANNEL_COLORS } from './types';
+
+let clipIdCounter = 0;
+let trackIdCounter = 0;
+
+function genClipId(): string {
+  clipIdCounter++;
+  return `clip_${clipIdCounter}_${Math.random().toString(36).substring(2, 8)}`;
+}
+
+function genTrackId(): string {
+  trackIdCounter++;
+  return `trk_${trackIdCounter}_${Math.random().toString(36).substring(2, 8)}`;
+}
+
+/**
+ * CRUD operations on Timeline, Track, and Clip state.
+ */
+export class TimelineModel {
+  timeline: Timeline = {
+    sampleRate: 48000,
+    totalLength: 0,
+    tracks: [],
+    playheadSample: 0,
+    selectionStart: null,
+    selectionEnd: null,
+    selectedClipIds: [],
+    samplesPerPixel: 256,
+    scrollOffset: 0,
+  };
+
+  createTimeline(sampleRate: number): void {
+    this.timeline = {
+      sampleRate,
+      totalLength: 0,
+      tracks: [],
+      playheadSample: 0,
+      selectionStart: null,
+      selectionEnd: null,
+      selectedClipIds: [],
+      samplesPerPixel: 256,
+      scrollOffset: 0,
+    };
+  }
+
+  addTrack(name: string, color: string, channelIndex: number): Track {
+    const track: Track = {
+      id: genTrackId(),
+      name,
+      color,
+      clips: [],
+      volume: 0,
+      pan: 0,
+      mute: false,
+      solo: false,
+      channelIndex,
+    };
+    this.timeline.tracks.push(track);
+    return track;
+  }
+
+  removeTrack(trackId: string): void {
+    this.timeline.tracks = this.timeline.tracks.filter(t => t.id !== trackId);
+    this.recalcTotalLength();
+  }
+
+  private findTrack(trackId: string): Track | undefined {
+    return this.timeline.tracks.find(t => t.id === trackId);
+  }
+
+  addClip(trackId: string, clip: Clip): void {
+    const track = this.findTrack(trackId);
+    if (!track) return;
+    track.clips.push(clip);
+    this.recalcTotalLength();
+  }
+
+  removeClip(trackId: string, clipId: string): void {
+    const track = this.findTrack(trackId);
+    if (!track) return;
+    track.clips = track.clips.filter(c => c.id !== clipId);
+    this.timeline.selectedClipIds = this.timeline.selectedClipIds.filter(id => id !== clipId);
+    this.recalcTotalLength();
+  }
+
+  moveClip(trackId: string, clipId: string, newOffset: number): void {
+    const track = this.findTrack(trackId);
+    if (!track) return;
+    const clip = track.clips.find(c => c.id === clipId);
+    if (!clip) return;
+    clip.timelineOffset = Math.max(0, newOffset);
+    this.recalcTotalLength();
+  }
+
+  splitClip(trackId: string, clipId: string, splitSample: number): [Clip, Clip] | null {
+    const track = this.findTrack(trackId);
+    if (!track) return null;
+    const idx = track.clips.findIndex(c => c.id === clipId);
+    if (idx === -1) return null;
+
+    const original = track.clips[idx];
+    const relSplit = splitSample - original.timelineOffset;
+    if (relSplit <= 0 || relSplit >= original.duration) return null;
+
+    const clipA: Clip = {
+      ...original,
+      id: genClipId(),
+      sourceEnd: original.sourceStart + relSplit,
+      duration: relSplit,
+      fadeOutSamples: 0,
+    };
+
+    const clipB: Clip = {
+      ...original,
+      id: genClipId(),
+      timelineOffset: splitSample,
+      sourceStart: original.sourceStart + relSplit,
+      duration: original.duration - relSplit,
+      fadeInSamples: 0,
+    };
+
+    track.clips.splice(idx, 1, clipA, clipB);
+    return [clipA, clipB];
+  }
+
+  trimClipStart(trackId: string, clipId: string, newSourceStart: number): void {
+    const track = this.findTrack(trackId);
+    if (!track) return;
+    const clip = track.clips.find(c => c.id === clipId);
+    if (!clip) return;
+    const delta = newSourceStart - clip.sourceStart;
+    if (delta <= 0 || delta >= clip.duration) return;
+    clip.sourceStart = newSourceStart;
+    clip.timelineOffset += delta;
+    clip.duration -= delta;
+  }
+
+  trimClipEnd(trackId: string, clipId: string, newSourceEnd: number): void {
+    const track = this.findTrack(trackId);
+    if (!track) return;
+    const clip = track.clips.find(c => c.id === clipId);
+    if (!clip) return;
+    const newDuration = newSourceEnd - clip.sourceStart;
+    if (newDuration <= 0 || newDuration >= clip.duration + (clip.sourceEnd - newSourceEnd)) return;
+    clip.sourceEnd = newSourceEnd;
+    clip.duration = newDuration;
+    this.recalcTotalLength();
+  }
+
+  /**
+   * Create N tracks (one per channel) from a multi-channel file import.
+   * bufferIds: one ID per channel from BufferPool.importMultiChannel().
+   */
+  importMultiChannelFile(
+    bufferIds: string[],
+    fileName: string,
+    sampleRate: number,
+    numSamples: number,
+  ): void {
+    const numChannels = bufferIds.length;
+    const names = CHANNEL_NAMES[numChannels] ??
+      Array.from({ length: numChannels }, (_, i) => `Ch ${i + 1}`);
+
+    for (let i = 0; i < numChannels; i++) {
+      const track = this.addTrack(
+        names[i],
+        CHANNEL_COLORS[i % CHANNEL_COLORS.length],
+        i,
+      );
+
+      const clip: Clip = {
+        id: genClipId(),
+        bufferId: bufferIds[i],
+        name: `${fileName} — ${names[i]}`,
+        timelineOffset: 0,
+        sourceStart: 0,
+        sourceEnd: numSamples,
+        duration: numSamples,
+        gainDb: 0,
+        fadeInSamples: 0,
+        fadeOutSamples: 0,
+        muted: false,
+      };
+      track.clips.push(clip);
+    }
+
+    this.timeline.sampleRate = sampleRate;
+    this.recalcTotalLength();
+  }
+
+  getTotalLength(): number {
+    return this.timeline.totalLength;
+  }
+
+  getClipsInRange(trackId: string, startSample: number, endSample: number): Clip[] {
+    const track = this.findTrack(trackId);
+    if (!track) return [];
+    return track.clips.filter(c => {
+      const clipEnd = c.timelineOffset + c.duration;
+      return clipEnd > startSample && c.timelineOffset < endSample;
+    });
+  }
+
+  selectClip(clipId: string): void {
+    if (!this.timeline.selectedClipIds.includes(clipId)) {
+      this.timeline.selectedClipIds.push(clipId);
+    }
+  }
+
+  deselectAll(): void {
+    this.timeline.selectedClipIds = [];
+  }
+
+  getSelectedClips(): Clip[] {
+    const selected: Clip[] = [];
+    for (const track of this.timeline.tracks) {
+      for (const clip of track.clips) {
+        if (this.timeline.selectedClipIds.includes(clip.id)) {
+          selected.push(clip);
+        }
+      }
+    }
+    return selected;
+  }
+
+  private recalcTotalLength(): void {
+    let max = 0;
+    for (const track of this.timeline.tracks) {
+      for (const clip of track.clips) {
+        const end = clip.timelineOffset + clip.duration;
+        if (end > max) max = end;
+      }
+    }
+    this.timeline.totalLength = max;
+  }
+}

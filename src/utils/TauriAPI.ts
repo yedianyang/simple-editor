@@ -18,6 +18,13 @@ export interface ParsedAudioData {
   samples: Float32Array;
 }
 
+export interface AudioFileInfo {
+  path: string;
+  name: string;
+  size: number;
+  extension: string;
+}
+
 export interface AppAPI {
   // File system
   readFile(path: string): Promise<ArrayBuffer>;
@@ -48,6 +55,10 @@ export interface AppAPI {
   onPluginsScanResult(callback: (plugins: any[]) => void): Promise<UnlistenFn>;
   onPluginsAddPath(callback: (path: string) => void): Promise<UnlistenFn>;
   onMenuAction(action: string, callback: (...args: any[]) => void): Promise<UnlistenFn>;
+
+  // Folder scanning
+  scanFolder(path: string): Promise<AudioFileInfo[]>;
+  openFolderDialog(): Promise<string>;
 
   // Large file reading via custom protocol (raw bytes)
   readLargeFile(path: string): Promise<ArrayBuffer>;
@@ -191,6 +202,15 @@ export function createTauriAPI(): AppAPI {
         const args = Array.isArray(event.payload) ? event.payload : [event.payload];
         callback(...args);
       });
+    },
+
+    // ── Folder scanning ──────────────────────────────────────────────
+    async scanFolder(path: string): Promise<AudioFileInfo[]> {
+      return invoke<AudioFileInfo[]>('scan_folder', { path });
+    },
+
+    async openFolderDialog(): Promise<string> {
+      return invoke<string>('open_folder_dialog');
     },
 
     // ── Large file via custom protocol ────────────────────────────

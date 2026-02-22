@@ -1,111 +1,206 @@
 # CLAUDE.md — FieldCorder DAW
 
+## ⚠️ 废弃文件说明
+
+**已废弃（2026-02-22）：**
+- ❌ `TEAM.md` — 改用 **SendMessage** 工具通讯
+- ❌ `TODO.md` — 改用 **TaskList** 工具管理任务
+
+---
+
 ## 项目概述
 
-FieldCorder 是一个轻量级 DAW（数字音频工作站），专为多通道环境录音编辑设计。
-目标平台为 macOS，计划上架 Mac App Store。
+FieldCorder 是一个轻量级 DAW，专为多通道环境录音编辑设计。目标平台 macOS，计划上架 Mac App Store。
 
 ## 技术栈
 
 - **前端**: TypeScript + Vite + Web Audio API
 - **桌面**: Tauri 2.x (Rust 后端)
-- **音频**: Web Audio API (内置效果器) + Rust WAV 解析器
+- **音频**: Web Audio API (效果器) + Rust WAV 解析器
 - **构建**: Vite + Cargo (Tauri CLI)
-- **原 Electron 版**: 已备份至 `electron-backup/`
 
 ## 项目结构
 
 ```
 src/                    # 前端 (TypeScript)
-├── core/               # 音频引擎、类型定义
-│   ├── AudioEngine.ts  # Web Audio API 引擎 + loadFromParsedData()
-│   ├── types.ts        # 全局类型（Window.appAPI 等）
-│   └── ucs-data.ts     # UCS 命名数据
-├── editor/             # 波形编辑器
-│   ├── AudioEditor.ts  # 音频编辑操作
-│   ├── WaveformRenderer.ts  # 波形渲染（异步 Peak Cache）
-│   ├── SpectrogramRenderer.ts  # 频谱图（Radix-2 FFT）
-│   ├── CuePointManager.ts
-│   └── CuePointRenderer.ts
-├── mixer/              # 混音台
-│   └── Mixer.ts
-├── plugins/            # 效果器
-│   └── PluginHost.ts   # 插件管理（appAPI 接口）
-├── ui/                 # UI 组件
-│   ├── App.ts          # 主控制器
-│   ├── Metering.ts     # 电平表（异步 LUFS 计算）
-│   ├── MetadataManager.ts
-│   ├── ProjectManager.ts
-│   └── FileQueue.ts
-├── utils/              # 工具
-│   ├── FileHandler.ts  # 文件导入（Rust WAV 解析路径）
-│   ├── TauriAPI.ts     # Tauri API 适配层（替代 electronAPI）
-│   └── UndoManager.ts
-├── styles/             # CSS
-└── main.ts             # 入口（初始化 appAPI）
-
-src-tauri/              # Rust 后端 (Tauri 2.x)
-├── src/lib.rs          # 命令：文件 I/O、WAV 解析、菜单系统
-├── Cargo.toml          # Rust 依赖
-├── tauri.conf.json     # 窗口配置、构建设置
-└── capabilities/       # 权限配置
-
-electron-backup/        # Electron 旧代码备份
-├── main.ts
-└── preload.ts
-
-docs/research/          # 技术调研报告
-├── vst-au-plugin-loading.md
-├── mac-app-store-distribution.md
-└── tauri-vs-electron-memory.md
+├── core/               # 音频引擎、类型（@generator）
+├── editor/             # 波形编辑器（@frontend）
+├── mixer/              # 混音台（@frontend）
+├── plugins/            # 效果器（@generator）
+├── ui/                 # UI 组件（@frontend）
+├── utils/              # 工具层（@generator）
+├── styles/             # CSS（@frontend）
+└── main.ts             # 入口（@frontend）
+src-tauri/              # Rust 后端（@generator）
+docs/                   # 文档（@docs）
 ```
 
-## 架构要点
-
-### Rust 后端 (src-tauri/src/lib.rs)
-- **文件 I/O 命令**: `read_file_bytes`, `read_file_text`, `write_file`, `file_info`
-- **对话框**: `open_file_dialog`, `save_file_dialog`
-- **WAV 解析**: `read_large_audio_file` — Rust 侧解析 RIFF/WAV，返回 Float32 PCM（支持 16/24/32bit PCM + 32bit float）
-- **大文件协议**: `localfile://` 自定义协议，用于非 WAV 文件的流式加载
-- **菜单系统**: 完整 macOS 原生菜单（File/Edit/Transport/View/Window/Help），事件通过 `menu:{action}` 传递到前端
-
-### 前端 API 适配 (src/utils/TauriAPI.ts)
-- `createTauriAPI()` 工厂函数返回 `AppAPI` 接口
-- 所有 `window.electronAPI` 已替换为 `window.appAPI`
-- WAV 文件走 Rust 解析路径，非 WAV 走 `localfile://` + `decodeAudioData`
-
-### 性能优化
-- **异步 Peak Cache**: 256 samples/block，每 1000 块 yield 一次避免阻塞
-- **Radix-2 FFT**: O(N log N) 替代 O(N²) 朴素 DFT
-- **异步 Metering**: LUFS/Stats 分块计算（每 200K samples yield）
-- **Rust WAV 解析**: 绕过 decodeAudioData，避免 OOM（大文件安全）
+完整结构见 README。
 
 ## 开发命令
 
 ```bash
 npm run dev            # Vite 开发服务器（仅前端）
-npm run tauri:dev      # Tauri + Vite 开发模式（完整应用）
+npm run tauri:dev      # Tauri + Vite 完整开发模式
 npm run tauri:build    # Tauri 生产构建（DMG）
 npm run build:frontend # 仅构建前端
 ```
 
-## 规范
+## 代码规范
 
-- TypeScript strict mode
+- TypeScript strict mode，无 `any`
+- Rust：snake_case 函数，PascalCase 类型，clippy 零警告
 - 深色主题，遵循 macOS HIG
-- 面向专业声音编辑师
-- 多通道支持（1-6 通道）
-- 计划双版本策略：MAS Lite (无原生插件) + DMG Pro (AU/VST 插件)
+- 完整架构详见各 agent 文件
 
-## Agent 团队
+---
 
-| 角色 | 模型 | 职责 |
-|------|------|------|
-| main (Team Lead) | Opus 4.6 | 协调、分配、追踪 |
-| generator | Opus 4.6 | 核心开发（Tauri Rust、AudioEngine、文件处理）|
-| template | Opus 4.6 | 前端开发（编辑器 UI、波形、混音台）|
-| designer | Opus 4.6 | UI/UX 设计 |
-| tester | Sonnet 4.5 | 测试、Bug 报告 |
-| researcher | Sonnet 4.5 | 技术调研 |
-| docs | Sonnet 4.5 | 文档 |
-| code-reviewer | Sonnet 4.5 | 代码审查 |
+## 验证标准（Commit 前必须通过）
+
+```bash
+# TypeScript — 类型检查
+npx tsc --noEmit
+
+# Rust — 编译 + 测试 + lint
+cd src-tauri && cargo check && cargo test && cargo clippy -- -D warnings
+
+# 完整构建（重大变更时）
+npm run build:frontend
+```
+
+**什么算"通过"：**
+- `tsc --noEmit` — 零类型错误
+- `cargo check` — 零编译错误
+- `cargo test` — 全绿
+- `cargo clippy -- -D warnings` — 零警告
+
+**不通过不准 commit。没有例外。**
+
+### 音频/UI 变更 — 需要人工验证
+
+以下变更 commit 后标记 🔍：
+- 播放/暂停/停止逻辑
+- 波形渲染（缩放、颜色、精度）
+- 频谱图渲染
+- 混音台 UI（推子、电平表）
+- 键盘快捷键
+- 文件加载（WAV/非WAV 路径）
+
+**Agent 职责：** commit message 加 🔍，SendMessage 说明验证方式。
+**Jingxi 职责：** `npm run tauri:dev` 启动后实际操作确认。
+
+---
+
+## Agent Team 协作规范
+
+### 核心机制
+
+- **TaskCreate/TaskList/TaskUpdate** — 共享任务列表
+- **SendMessage** — agent 间通讯
+- **delegate mode** (Shift+Tab) — Lead 只协调不写码
+- **plan approval** — 跨模块/架构变更需 Lead 审批
+
+### 角色定义 & 文件 Ownership（5 agents）
+
+| Agent | Model | 文件 ownership | 用途 |
+|---|---|---|---|
+| **lead** | opus | 不碰源码 | 拆任务、分配、审批 Plan |
+| **generator** | sonnet | `src-tauri/src/*`, `Cargo.toml`, `src/core/*`, `src/utils/*` | Rust 后端 + 音频引擎核心 |
+| **frontend** | sonnet | `src/editor/*`, `src/mixer/*`, `src/ui/*`, `src/plugins/*`, `src/styles/*`, `src/main.ts`, `index.html` | 前端 UI + 渲染 |
+| **quality** | sonnet | `**/*.test.ts`, `#[cfg(test)]` blocks, `docs/test-report.md` | 测试 + 代码审查 |
+| **docs** | sonnet | `readme.md`, `docs/*.md`, `docs/research/*.md` | 文档 + 技术调研 |
+
+### Interview Mode（新模块/新功能必须）
+
+新功能开发前，Lead 用 plan mode 向用户提问——专攻**用户可能没想到的**：
+- 边界情况、性能瓶颈、格式兼容性、MAS 限制
+- 不问显而易见的，挑战需求直到覆盖完整
+- 输出 spec 到 `docs/specs/`，再拆任务
+
+```
+"Interview me about this feature.
+Ask hard questions I might not have considered — edge cases,
+performance, format compatibility, MAS sandbox limits.
+Keep interviewing until complete, then write a spec."
+```
+
+### 并行策略
+
+**可并行：**
+- frontend(UI 渲染) + generator(Rust/音频引擎) + docs(调研)
+
+**必须串行：**
+- generator → frontend（API 契约：generator 先定义 AppAPI 接口，frontend 再调用）
+- quality 等功能完成后才测试/审查
+- docs 等测试通过后才更新文档
+
+### Rust ↔ TypeScript 协作（API 契约）
+
+1. generator 在 `types.ts` 新增接口、在 `TauriAPI.ts` 实现、在 Rust 添加命令
+2. 完成后 SendMessage 通知 frontend：
+   > `window.appAPI.xxx({ param })` 返回 `{ field1, field2 }`
+3. frontend 按契约实现 UI 调用
+
+### Plan Approval（分层策略）
+
+| 任务类型 | 需要 Plan Approval |
+|----------|:---:|
+| 单文件 bug fix | No |
+| 单模块新功能 | No |
+| 跨 2+ 模块 / AppAPI 接口变更 | **Yes** |
+| 架构变更 / 新依赖引入 | **Yes** |
+| WAV 解析格式扩展 | **Yes** |
+| MAS 权限变更 | **Yes** |
+
+### 任务流程
+
+```
+Lead: TaskCreate → TaskUpdate(owner=teammate)
+  ↓
+Teammate: TaskUpdate(status=in_progress) → [plan mode if required]
+  ↓
+Teammate: 编码 → tsc/cargo 验证 → git commit → TaskUpdate(status=completed)
+  ↓
+Lead: TaskList → 检查进度 → 分配下一个 / SendMessage 反馈
+```
+
+### 通讯规范
+
+- **SendMessage(type=message)** — 点对点
+- **SendMessage(type=broadcast)** — 全员广播（仅紧急事项）
+
+---
+
+## 自我改进机制
+
+### Past Mistakes to Avoid
+
+> 记录已识别的错误模式，持续更新。
+
+**最后更新：2026-02-22**
+
+#### 技术规范
+- Tauri 命令修改后必须同步更新 `TauriAPI.ts` 接口，否则前端类型错误
+- `#[tauri::command]` 函数名用 snake_case，JS 调用时也用 snake_case（Tauri 自动转换）
+- WAV 解析不能一次性读入内存——超过 10 分钟文件会 OOM
+
+#### 协作规范
+- 不要修改 TEAM.md/TODO.md — 使用 TaskList/SendMessage
+- generator 修改 AppAPI 接口后必须 SendMessage 通知 frontend
+
+### 手动触发 Review
+
+```
+"Review CLAUDE.md based on last week's work.
+Update 'Past Mistakes to Avoid' with new lessons learned.
+Remove outdated rules that are now obvious.
+Commit with: 'docs: weekly CLAUDE.md review'"
+```
+
+---
+
+## 工程流程
+
+- 每个 task 完成 + 验证通过 → 立即 commit（不积攒）
+- Git commit 格式：`feat: xxx` / `fix: xxx` / `docs: xxx`
+- 踩坑记录到 `docs/lessons-learned.md`
