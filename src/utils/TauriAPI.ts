@@ -105,17 +105,29 @@ export function createTauriAPI(): AppAPI {
 
     // ── Audio file parsing (Rust WAV decoder) ─────────────────────
     async readLargeAudioFile(path: string): Promise<ParsedAudioData> {
+      // Rust AudioFileData returns:
+      //   sample_rate: u32, num_channels: u16, num_samples: usize,
+      //   channels: Vec<Vec<f32>>  (per-channel sample vectors)
       const result = await invoke<{
         sample_rate: number;
-        channels: number;
+        num_channels: number;
         num_samples: number;
-        samples: number[];
+        channels: number[][];
       }>('read_audio_file', { path });
+
+      // Flatten per-channel 2D arrays into a single Float32Array:
+      // layout [ch0_all_samples, ch1_all_samples, ...]
+      const totalSamples = result.num_channels * result.num_samples;
+      const flat = new Float32Array(totalSamples);
+      for (let ch = 0; ch < result.num_channels; ch++) {
+        flat.set(result.channels[ch], ch * result.num_samples);
+      }
+
       return {
         sample_rate: result.sample_rate,
-        channels: result.channels,
+        channels: result.num_channels,
         num_samples: result.num_samples,
-        samples: new Float32Array(result.samples),
+        samples: flat,
       };
     },
 
