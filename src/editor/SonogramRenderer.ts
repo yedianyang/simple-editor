@@ -27,6 +27,9 @@ export class SonogramRenderer {
   private playheadSample: number = 0;
   private selectedChannel: number = 0;
 
+  // Resize
+  private resizeObserver: ResizeObserver | null = null;
+
   // Audio source
   private audioBuffer: AudioBuffer | null = null;
 
@@ -89,8 +92,8 @@ export class SonogramRenderer {
 
   private setupResize(): void {
     if (!this.canvas.parentElement) return;
-    const resizeObserver = new ResizeObserver(() => this.resize());
-    resizeObserver.observe(this.canvas.parentElement);
+    this.resizeObserver = new ResizeObserver(() => this.resize());
+    this.resizeObserver.observe(this.canvas.parentElement);
     this.resize();
   }
 
@@ -345,6 +348,8 @@ export class SonogramRenderer {
       this.worker.terminate();
       this.worker = null;
     }
+    this.resizeObserver?.disconnect();
+    this.resizeObserver = null;
     this.stftData = null;
     this.audioBuffer = null;
   }

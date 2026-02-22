@@ -310,6 +310,8 @@ export class Mixer {
   }
 
   // ==================== Render ====================
+  // TODO: Replace innerHTML-based rendering with DOM diffing or incremental updates
+  // to avoid destroying/recreating event listeners on every render call.
 
   render(): void {
     if (this.mode === 'track') {

@@ -69,6 +69,9 @@ export class SpectrogramRenderer {
   }
 
   setFFTSize(size: number): void {
+    if (size <= 0 || (size & (size - 1)) !== 0) {
+      throw new Error(`FFT size must be a power of 2, got ${size}`);
+    }
     this.fftSize = size;
     this.smoothedSpectrum = null;
   }
