@@ -68,7 +68,7 @@ export class WaveformRenderer {
   }
 
   resize(): void {
-    if (!this.canvas.parentElement) return;
+    if (this.disabled || !this.canvas.parentElement) return;
     const rect = this.canvas.parentElement.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
     this.width = rect.width;
