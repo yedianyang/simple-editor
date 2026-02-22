@@ -141,7 +141,8 @@ export class FileHandler {
         } else if (bitDepth === 24) {
           if (dither === 'tpdf') sample += this.ditherTPDF(24);
           else if (dither === 'shaped' && noiseShaper) sample = noiseShaper.process(sample, c, 24);
-          const intSample = Math.round(Math.max(-1, Math.min(1, sample)) * 0x7FFFFF);
+          let intSample = Math.round(Math.max(-1, Math.min(1, sample)) * 0x7FFFFF);
+          if (intSample < 0) intSample += 0x1000000; // two's complement for 24-bit unsigned representation
           view.setUint8(offset, intSample & 0xFF);
           view.setUint8(offset + 1, (intSample >> 8) & 0xFF);
           view.setUint8(offset + 2, (intSample >> 16) & 0xFF);

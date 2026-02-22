@@ -51,7 +51,10 @@ export class UndoManager {
   }
 
   cloneBuffer(audioBuffer: AudioBuffer): AudioBuffer {
-    const clone = this.audioContext!.createBuffer(
+    if (!this.audioContext) {
+      throw new Error('UndoManager: audioContext is null — call setAudioContext() before saving state');
+    }
+    const clone = this.audioContext.createBuffer(
       audioBuffer.numberOfChannels,
       audioBuffer.length,
       audioBuffer.sampleRate

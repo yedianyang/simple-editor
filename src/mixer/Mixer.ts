@@ -24,7 +24,7 @@ interface TrackStrip {
 export class Mixer {
   container: HTMLElement;
   audioEngine: AudioEngine;
-  pluginHost: PluginHost;
+  pluginHost: PluginHost | null;
   channels: ChannelStripState[] = [];
   masterVolume = 0; // dB
   visible = false;
@@ -47,7 +47,7 @@ export class Mixer {
   // Callbacks
   onPluginInsertRequest: ((channelIndex: number) => void) | null = null;
 
-  constructor(container: HTMLElement, audioEngine: AudioEngine, pluginHost: PluginHost) {
+  constructor(container: HTMLElement, audioEngine: AudioEngine, pluginHost: PluginHost | null) {
     this.container = container;
     this.audioEngine = audioEngine;
     this.pluginHost = pluginHost;
@@ -228,6 +228,7 @@ export class Mixer {
   async addPlugin(channelIndex: number, pluginInfo: any): Promise<void> {
     if (channelIndex < 0 || channelIndex >= this.channels.length) return;
 
+    if (!this.pluginHost) return;
     const instance = await this.pluginHost.createInstance(pluginInfo);
     this.channels[channelIndex].plugins.push(instance);
 
@@ -241,7 +242,7 @@ export class Mixer {
 
     const idx = this.channels[channelIndex].plugins.findIndex(p => p.id === pluginInstanceId);
     if (idx !== -1) {
-      this.pluginHost.removeInstance(pluginInstanceId);
+      this.pluginHost?.removeInstance(pluginInstanceId);
       this.channels[channelIndex].plugins.splice(idx, 1);
       this.rebuildPluginChain(channelIndex);
       this.render();

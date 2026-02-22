@@ -81,7 +81,7 @@ export class App {
     this.mixer = new Mixer(
       document.getElementById('mixerContainer')!,
       this.audioEngine,
-      null as any // Will be set after audio context init
+      null // Will be set after audio context init
     );
 
     this.metadataManager = new MetadataManager();
