@@ -6,9 +6,10 @@ import { FileQueueItem } from '../core/types';
 export class FileQueue {
   files: FileQueueItem[] = [];
   activeFileId: number | null = null;
+  private nextId = 1;
 
   addFile(file: File | { name: string; path: string }): number {
-    const id = Date.now() + Math.random();
+    const id = this.nextId++;
     this.files.push({ id, file, cuePoints: [] });
     return id;
   }

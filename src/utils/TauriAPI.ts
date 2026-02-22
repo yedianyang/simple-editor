@@ -27,6 +27,7 @@ export interface AudioFileInfo {
 
 export interface AppAPI {
   // File system
+  /** @deprecated Use readLargeFile() or readLargeAudioFile() for large files. */
   readFile(path: string): Promise<ArrayBuffer>;
   writeFile(path: string, data: ArrayBuffer): Promise<void>;
   readFileText(path: string): Promise<string>;
@@ -87,6 +88,7 @@ export interface OpenDialogOptions {
 export function createTauriAPI(): AppAPI {
   return {
     // ── File system ───────────────────────────────────────────────
+    /** @deprecated For large audio files, use readLargeFile() (localfile:// protocol) or readLargeAudioFile() (Rust WAV parser) instead. This method serializes bytes as JSON array and is unsuitable for files > ~50MB. */
     async readFile(path: string): Promise<ArrayBuffer> {
       const bytes: number[] = await invoke('read_file_bytes', { path });
       return new Uint8Array(bytes).buffer;
@@ -224,6 +226,8 @@ export function createTauriAPI(): AppAPI {
     },
 
     // ── Platform ──────────────────────────────────────────────────
+    // Hardcoded: FieldCorder targets macOS only (MAS distribution).
+    // If cross-platform is needed, use @tauri-apps/plugin-os instead.
     platform: 'darwin',
   };
 }

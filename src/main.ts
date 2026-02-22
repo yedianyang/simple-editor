@@ -26,8 +26,8 @@ window.addEventListener('unhandledrejection', (event) => {
 document.addEventListener('DOMContentLoaded', () => {
   const app = new App();
 
-  // Expose for debugging
-  (window as any).app = app;
+  // Expose for debugging (access via browser console: window.app)
+  (window as unknown as Record<string, unknown>).app = app;
 
   console.log('FieldCorder DAW initialized');
   console.log('Platform:', window.appAPI?.platform || 'browser');

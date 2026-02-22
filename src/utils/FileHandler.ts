@@ -232,63 +232,7 @@ export class FileHandler {
    * XML-based metadata following iXML open standard.
    */
   private static buildIXMLChunk(metadata: ExportMetadata, numChannels: number): ArrayBuffer {
-    const escXml = (s: string) => s
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
-
-    let xml = '<?xml version="1.0" encoding="UTF-8"?>\n';
-    xml += '<BWFXML>\n';
-    xml += '  <IXML_VERSION>2.0</IXML_VERSION>\n';
-
-    if (metadata.project) xml += `  <PROJECT>${escXml(metadata.project)}</PROJECT>\n`;
-    if (metadata.scene) xml += `  <SCENE>${escXml(metadata.scene)}</SCENE>\n`;
-    if (metadata.take) xml += `  <TAKE>${escXml(metadata.take)}</TAKE>\n`;
-    if (metadata.tape) xml += `  <TAPE>${escXml(metadata.tape)}</TAPE>\n`;
-    if (metadata.note) xml += `  <NOTE>${escXml(metadata.note)}</NOTE>\n`;
-    xml += `  <CIRCLED>${metadata.circled ? 'TRUE' : 'FALSE'}</CIRCLED>\n`;
-    xml += `  <WILD_TRACK>${metadata.wildTrack ? 'TRUE' : 'FALSE'}</WILD_TRACK>\n`;
-
-    // Track list
-    if (metadata.trackNames && metadata.trackNames.length > 0) {
-      xml += '  <TRACK_LIST>\n';
-      xml += `    <TRACK_COUNT>${numChannels}</TRACK_COUNT>\n`;
-      for (let i = 0; i < numChannels; i++) {
-        xml += '    <TRACK>\n';
-        xml += `      <CHANNEL_INDEX>${i + 1}</CHANNEL_INDEX>\n`;
-        xml += `      <INTERLEAVE_INDEX>${i + 1}</INTERLEAVE_INDEX>\n`;
-        const name = (metadata.trackNames[i] || '').trim();
-        if (name) xml += `      <NAME>${escXml(name)}</NAME>\n`;
-        xml += '    </TRACK>\n';
-      }
-      xml += '  </TRACK_LIST>\n';
-    }
-
-    // UCS fields as user-defined extensions
-    if (metadata.ucsCatId) {
-      xml += '  <USER>\n';
-      if (metadata.ucsCategory) xml += `    <UCS_CATEGORY>${escXml(metadata.ucsCategory)}</UCS_CATEGORY>\n`;
-      if (metadata.ucsSubCategory) xml += `    <UCS_SUBCATEGORY>${escXml(metadata.ucsSubCategory)}</UCS_SUBCATEGORY>\n`;
-      xml += `    <UCS_CATID>${escXml(metadata.ucsCatId)}</UCS_CATID>\n`;
-      if (metadata.ucsFxName) xml += `    <UCS_FXNAME>${escXml(metadata.ucsFxName)}</UCS_FXNAME>\n`;
-      if (metadata.ucsCreatorId) xml += `    <UCS_CREATORID>${escXml(metadata.ucsCreatorId)}</UCS_CREATORID>\n`;
-      if (metadata.ucsSourceId) xml += `    <UCS_SOURCEID>${escXml(metadata.ucsSourceId)}</UCS_SOURCEID>\n`;
-      xml += '  </USER>\n';
-    }
-
-    // SFX library fields as additional user data
-    if (metadata.recordist || metadata.microphone || metadata.location || metadata.library || metadata.keywords) {
-      if (!metadata.ucsCatId) xml += '  <USER>\n';
-      else {
-        // Already inside USER block - reopen isn't needed; we'll add a second USER block
-        // Actually let's merge them. Rewrite approach:
-      }
-    }
-
-    // Close and re-add SFX fields in a clean way
-    // Let's rebuild the USER section properly
-    xml = this.buildIXMLClean(metadata, numChannels);
+    const xml = this.buildIXMLClean(metadata, numChannels);
 
     const encoder = new TextEncoder();
     const xmlBytes = encoder.encode(xml);

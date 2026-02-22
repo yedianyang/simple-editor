@@ -46,7 +46,9 @@ export class WaveformRenderer {
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
-    this.ctx = canvas.getContext('2d')!;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('WaveformRenderer: failed to get 2d context');
+    this.ctx = ctx;
     this.boundMouseDown = (e: MouseEvent) => this.onMouseDown(e);
     this.boundMouseMove = (e: MouseEvent) => this.onMouseMove(e);
     this.boundMouseUp = (e: MouseEvent) => this.onMouseUp(e);

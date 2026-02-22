@@ -22,7 +22,9 @@ export class SpectrogramRenderer {
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
-    this.ctx = canvas.getContext('2d')!;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('SpectrogramRenderer: failed to get 2d context');
+    this.ctx = ctx;
     this.setupResize();
   }
 

@@ -35,7 +35,9 @@ export class SonogramRenderer {
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
-    this.ctx = canvas.getContext('2d')!;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('SonogramRenderer: failed to get 2d context');
+    this.ctx = ctx;
     this.colorLUT = this.buildColorLUT();
     this.setupResize();
   }
@@ -86,13 +88,15 @@ export class SonogramRenderer {
   // ---- Resize ----
 
   private setupResize(): void {
+    if (!this.canvas.parentElement) return;
     const resizeObserver = new ResizeObserver(() => this.resize());
-    resizeObserver.observe(this.canvas.parentElement!);
+    resizeObserver.observe(this.canvas.parentElement);
     this.resize();
   }
 
   resize(): void {
-    const rect = this.canvas.parentElement!.getBoundingClientRect();
+    if (!this.canvas.parentElement) return;
+    const rect = this.canvas.parentElement.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
     this.width = rect.width;
     this.height = rect.height;
@@ -149,6 +153,8 @@ export class SonogramRenderer {
     const channelIndex = Math.min(this.selectedChannel, buffer.numberOfChannels - 1);
     const channelData = buffer.getChannelData(channelIndex);
 
+    // Vite handles this URL pattern: transforms the .ts worker into a
+    // bundled JS file at build time. Works in both dev and production.
     this.worker = new Worker(
       new URL('./sonogram-worker.ts', import.meta.url),
       { type: 'module' },
