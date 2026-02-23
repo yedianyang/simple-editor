@@ -76,6 +76,26 @@ npm run build:frontend
 
 **不通过不准 commit。没有例外。**
 
+### TDD 规则（Red/Green）
+
+所有新功能和 bug 修复使用 **red/green TDD**：
+
+1. **Red** — 先写测试，跑一遍，**必须失败**（证明测试有效）
+2. **Green** — 再写/修改实现，跑测试，**必须通过**
+
+```
+quality: 写测试 → cargo test / npx tsc → 确认红 ❌
+generator/frontend: 实现功能 → 跑测试 → 确认绿 ✅
+commit
+```
+
+**为什么：**
+- 防止写了不工作的代码
+- 防止写了从不被调用的代码
+- 防止以后改动悄悄破坏现有功能（regression）
+
+**跳过 red 阶段是禁止的。** 如果测试一开始就通过 → 测试写错了，重写。
+
 ### 音频/UI 变更 — 需要人工验证
 
 以下变更 commit 后标记 🔍：
