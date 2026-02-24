@@ -183,9 +183,8 @@ export class App {
       );
       this.timelineRenderer?.render();
 
-      // Stop playback during drag; will resume on drag end
-      if (this.audioEngine.isPlaying && this.useTimeline && !this._pendingPlaybackResume) {
-        this.audioEngine.stopTimeline();
+      // Pro Tools style: don't stop playback during drag, just mark for re-schedule on mouseup
+      if (this.audioEngine.isPlaying && this.useTimeline) {
         this._pendingPlaybackResume = true;
       }
     };
@@ -211,9 +210,8 @@ export class App {
       this.timelineRenderer?.clearPeakCaches();
       this.timelineRenderer?.render();
 
-      // Stop playback during drag; will resume on drag end
-      if (this.audioEngine.isPlaying && this.useTimeline && !this._pendingPlaybackResume) {
-        this.audioEngine.stopTimeline();
+      // Pro Tools style: don't stop playback during drag, just mark for re-schedule on mouseup
+      if (this.audioEngine.isPlaying && this.useTimeline) {
         this._pendingPlaybackResume = true;
       }
     };
@@ -235,8 +233,14 @@ export class App {
     this.timelineRenderer.onDragEnd = () => {
       if (this._pendingPlaybackResume && this.useTimeline) {
         this._pendingPlaybackResume = false;
-        const tl = this.timelineModel.timeline;
-        this.audioEngine.playTimeline(tl, this.bufferPool, tl.playheadSample);
+        // Re-schedule from current playback position (playback never stopped)
+        const currentSample = Math.floor(
+          this.audioEngine.getCurrentTime() * this.timelineModel.timeline.sampleRate,
+        );
+        this.audioEngine.stopTimeline();
+        this.audioEngine.playTimeline(
+          this.timelineModel.timeline, this.bufferPool, currentSample,
+        );
       }
     };
 
