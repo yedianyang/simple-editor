@@ -1,4 +1,10 @@
-# TODO.md — FieldCorder 任务列表
+# ⚠️ DEPRECATED — 此文件已废弃（2026-02-22）
+# 任务管理 → 使用 TaskCreate/TaskList/TaskUpdate（Claude Code 内建）
+# 保留此文件仅作历史参考，**不要修改或读取此文件做决策**
+
+---
+
+# TODO.md — FieldCorder 任务列表（历史记录）
 
 ## 功能升级：多 Track 时间线 + 声能图 + UI 重构 — ✅ 全部完成
 

@@ -1,4 +1,12 @@
-# TEAM.md — FieldCorder 团队状态
+# ⚠️ DEPRECATED — 此文件已废弃（2026-02-22）
+# 任务管理 → 使用 TaskCreate/TaskList/TaskUpdate（Claude Code 内建）
+# 团队通讯 → 使用 SendMessage（Claude Code 内建）
+# 当前团队：main(opus-4-6) / generator / frontend / quality / docs（均 sonnet-4-6）
+# 保留此文件仅作历史参考，**不要修改或读取此文件做决策**
+
+---
+
+# TEAM.md — FieldCorder 团队状态（历史记录）
 
 ## 当前状态
 
