@@ -1,0 +1,134 @@
+# FieldCorder Development Rules
+# Claude Code Team Lead 必须遵守的开发规范
+
+## 🔴🟢 Test-Driven Development (TDD) - MANDATORY
+
+### Core Principle
+**ALL bug fixes and new features MUST follow Red-Green-Refactor cycle.**
+
+### Workflow
+
+1. **🔴 RED Phase - Write Failing Test**
+   - Before writing ANY implementation code, write a test that describes the desired behavior
+   - Test MUST fail initially (proves test is valid)
+   - Use descriptive test names matching test-report.md numbering when applicable
+   - Example:
+     ```typescript
+     // tests/unit/Module1_FileIO.test.ts
+     it('1.1.2 - imports 24-bit stereo WAV', async () => {
+       const result = await audioEngine.importWAV('test-24bit.wav');
+       expect(result.bitDepth).toBe(24);
+       expect(result.channels).toBe(2);
+     });
+     ```
+
+2. **🟢 GREEN Phase - Make Test Pass**
+   - Write MINIMAL code to make test pass
+   - Avoid premature optimization
+   - Run `npm test` to verify
+
+3. **🔵 REFACTOR Phase - Improve Code**
+   - Clean up implementation
+   - Improve structure, naming, performance
+   - Tests must still pass after refactoring
+
+### Bug Fix Protocol
+
+When fixing a bug:
+1. Write a test that reproduces the bug (fails)
+2. Fix the bug (test passes)
+3. Verify the fix doesn't break existing tests
+4. Commit with reference to test
+
+Example:
+```typescript
+// Bug: P0 Export Interface Freeze
+it('should open metadata modal without null reference error', () => {
+  const modal = document.getElementById('metadataModal');
+  expect(modal).not.toBeNull();
+  expect(() => showExportDialog()).not.toThrow();
+});
+```
+
+### Feature Development Protocol
+
+When implementing new features (e.g., collapsible panels):
+1. Create test file: `tests/unit/CollapsiblePanel.test.ts`
+2. Write tests for ALL expected behaviors:
+   - Collapse/expand toggle
+   - Drag resize
+   - State persistence (localStorage)
+   - Keyboard shortcuts
+3. Implement feature incrementally (one test at a time)
+4. Add integration tests if needed
+
+### Test Organization
+
+```
+tests/
+├── unit/              # Unit tests (isolated components)
+│   ├── AudioEngine.test.ts
+│   ├── CollapsiblePanel.test.ts
+│   └── Module1_FileIO.test.ts
+├── integration/       # Integration tests (component interaction)
+│   └── Timeline.test.ts
+└── setup.ts           # Global test configuration
+```
+
+### Commands
+
+- `npm test` - Run tests in watch mode (use during development)
+- `npm run test:ui` - Open Vitest UI (visual test runner)
+- `npm run test:coverage` - Generate coverage report
+
+### Coverage Requirements
+
+- All new code must have tests
+- Bug fixes must include regression tests
+- Aim for >80% coverage (but 100% of critical paths)
+
+### Exemptions
+
+Manual testing ONLY for:
+- Visual UI verification (colors, spacing, animations)
+- Audio playback quality (requires human ears)
+- Platform-specific behaviors (macOS menu integration)
+
+All logic, state management, and data processing MUST have automated tests.
+
+---
+
+## 🚫 Prohibited Practices
+
+- ❌ Writing implementation before tests
+- ❌ Skipping tests for "quick fixes"
+- ❌ Committing code with failing tests
+- ❌ "Testing later" (never happens)
+
+## ✅ Communication
+
+When reporting completion:
+- State test file location
+- State test pass/fail status
+- Include coverage % if available
+
+Example:
+```
+✅ Collapsible panel implemented
+Tests: tests/unit/CollapsiblePanel.test.ts (15/15 passing)
+Coverage: 94% (CollapsiblePanel.ts)
+Manual testing: Verify drag smoothness, visual transitions
+```
+
+---
+
+## 📚 Resources
+
+- Vitest Docs: https://vitest.dev
+- Testing Library: https://testing-library.com
+- TDD Best Practices: Kent C. Dodds' Testing JS course
+
+---
+
+**Last Updated:** 2026-02-24
+**Enforced By:** Claude Code Team Lead
