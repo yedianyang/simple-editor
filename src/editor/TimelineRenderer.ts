@@ -106,6 +106,7 @@ export class TimelineRenderer {
   onScrollChange: (() => void) | null = null;
 
   onSelectionChange: (() => void) | null = null;
+  onDragEnd: (() => void) | null = null;
 
   // Also expose split/delete for keyboard shortcuts
   onClipSplit: ((trackId: string, clipId: string, splitSample: number) => void) | null = null;
@@ -526,7 +527,13 @@ export class TimelineRenderer {
         if (this.onSelectionChange) this.onSelectionChange();
       }
     }
+    // Fire onDragEnd for clip move / trim drags (not selection)
+    const wasClipDrag = this.drag.mode === 'clipMove' ||
+      this.drag.mode === 'trimStart' || this.drag.mode === 'trimEnd';
     this.drag.mode = 'none';
+    if (wasClipDrag && this.onDragEnd) {
+      this.onDragEnd();
+    }
   }
 
   // ==================================================================

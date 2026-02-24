@@ -60,6 +60,8 @@ export class App {
   timelineUndoManager: TimelineUndoManager;
   /** true when operating in multi-track timeline mode (vs legacy single-buffer). */
   private useTimeline = false;
+  /** Set during clip drag when playback was active; cleared on drag end to resume. */
+  private _pendingPlaybackResume = false;
 
   // ---- Collapsible Panels ----
   private leftPanel: CollapsiblePanel | null = null;
@@ -181,14 +183,10 @@ export class App {
       );
       this.timelineRenderer?.render();
 
-      // Re-schedule playback to reflect move changes on already-playing sources
-      if (this.audioEngine.isPlaying && this.useTimeline) {
-        const currentSample = Math.floor(
-          this.audioEngine.getCurrentTime() * this.timelineModel.timeline.sampleRate,
-        );
-        this.audioEngine.playTimeline(
-          this.timelineModel.timeline, this.bufferPool, currentSample,
-        );
+      // Stop playback during drag; will resume on drag end
+      if (this.audioEngine.isPlaying && this.useTimeline && !this._pendingPlaybackResume) {
+        this.audioEngine.stopTimeline();
+        this._pendingPlaybackResume = true;
       }
     };
 
@@ -213,14 +211,10 @@ export class App {
       this.timelineRenderer?.clearPeakCaches();
       this.timelineRenderer?.render();
 
-      // Re-schedule playback to reflect trim changes on already-playing sources
-      if (this.audioEngine.isPlaying && this.useTimeline) {
-        const currentSample = Math.floor(
-          this.audioEngine.getCurrentTime() * this.timelineModel.timeline.sampleRate,
-        );
-        this.audioEngine.playTimeline(
-          this.timelineModel.timeline, this.bufferPool, currentSample,
-        );
+      // Stop playback during drag; will resume on drag end
+      if (this.audioEngine.isPlaying && this.useTimeline && !this._pendingPlaybackResume) {
+        this.audioEngine.stopTimeline();
+        this._pendingPlaybackResume = true;
       }
     };
 
@@ -236,6 +230,14 @@ export class App {
         new DeleteClipCommand(this.timelineModel, trackId, clipId),
       );
       this.timelineRenderer?.render();
+    };
+
+    this.timelineRenderer.onDragEnd = () => {
+      if (this._pendingPlaybackResume && this.useTimeline) {
+        this._pendingPlaybackResume = false;
+        const tl = this.timelineModel.timeline;
+        this.audioEngine.playTimeline(tl, this.bufferPool, tl.playheadSample);
+      }
     };
 
     this.timelineRenderer.onTrackMuteToggle = (trackId) => {
