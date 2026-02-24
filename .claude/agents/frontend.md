@@ -33,7 +33,7 @@ permissionMode: bypassPermissions
 ### 样式 & 入口
 - `src/styles/*.css` — 所有样式（深色主题，macOS HIG）
 - `src/main.ts` — 入口（初始化 `window.appAPI`）
-- `index.html` — HTML 外壳
+- `src/index.html` — HTML 外壳（Vite root 是 src/）
 
 ### CLI 模板
 - `templates/` 目录（如有）

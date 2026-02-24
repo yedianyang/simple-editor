@@ -74,7 +74,7 @@ Jingxi 用产品语言描述问题 → Metro 翻译成技术任务 → 粘贴给
 | Agent | 独占文件/目录 |
 |-------|--------------|
 | **generator** | `src-tauri/src/*`, `Cargo.toml`, `tauri.conf.json`, `src/core/*`, `src/utils/*` |
-| **frontend** | `src/editor/*`, `src/mixer/*`, `src/ui/*`, `src/plugins/*`, `src/styles/*`, `src/main.ts`, `index.html` |
+| **frontend** | `src/editor/*`, `src/mixer/*`, `src/ui/*`, `src/plugins/*`, `src/styles/*`, `src/main.ts`, `src/index.html` |
 | **quality** | `**/*.test.ts`, `**/*.spec.ts`, `#[cfg(test)]` blocks, `docs/test-report.md` |
 | **docs** | `readme.md`, `docs/*.md`, `docs/research/*.md` |
 

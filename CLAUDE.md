@@ -126,7 +126,7 @@ commit
 |---|---|---|---|
 | **lead** | opus | 不碰源码 | 拆任务、分配、审批 Plan |
 | **generator** | sonnet | `src-tauri/src/*`, `Cargo.toml`, `src/core/*`, `src/utils/*` | Rust 后端 + 音频引擎核心 |
-| **frontend** | sonnet | `src/editor/*`, `src/mixer/*`, `src/ui/*`, `src/plugins/*`, `src/styles/*`, `src/main.ts`, `index.html` | 前端 UI + 渲染 |
+| **frontend** | sonnet | `src/editor/*`, `src/mixer/*`, `src/ui/*`, `src/plugins/*`, `src/styles/*`, `src/main.ts`, `src/index.html` | 前端 UI + 渲染 |
 | **quality** | sonnet | `**/*.test.ts`, `#[cfg(test)]` blocks, `docs/test-report.md` | 测试 + 代码审查 |
 | **docs** | sonnet | `readme.md`, `docs/*.md`, `docs/research/*.md` | 文档 + 技术调研 |
 
