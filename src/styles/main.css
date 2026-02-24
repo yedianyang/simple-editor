@@ -273,6 +273,7 @@ button:focus-visible {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  transition: width 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .file-browser-header {
@@ -455,38 +456,205 @@ button:focus-visible {
   min-height: 0;
 }
 
-/* Spectrogram area */
-.spectrogram-container {
-  height: 150px;
-  min-height: 100px;
+/* --------------------------------------------------------------------------
+   Collapsible Panels
+   -------------------------------------------------------------------------- */
+
+.collapsible-panel {
   position: relative;
+  transition: width 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+              height 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.collapsible-panel.resizing {
+  transition: none !important;
+}
+
+/* Collapsed horizontal panels (sidebars) */
+.left-sidebar.collapsed,
+.right-sidebar.collapsed {
+  width: 0 !important;
+  min-width: 0 !important;
+  overflow: hidden;
+  border-width: 0;
+  padding: 0;
+}
+
+/* Collapsed vertical panel (bottom) */
+.analysis-panel.collapsed .analysis-panel-content {
+  display: none;
+}
+
+/* Resize handles */
+.resize-handle {
+  position: absolute;
+  z-index: 20;
+  background: transparent;
+  transition: background-color 0.15s;
+}
+
+.resize-handle:hover,
+.resize-handle.active {
+  background-color: #2563eb;
+}
+
+/* Horizontal resize handles (for sidebars) */
+.resize-handle-right {
+  top: 0;
+  right: 0;
+  width: 4px;
+  height: 100%;
+  cursor: col-resize;
+}
+
+.resize-handle-left {
+  top: 0;
+  left: 0;
+  width: 4px;
+  height: 100%;
+  cursor: col-resize;
+}
+
+/* Vertical resize handle (for bottom panel) */
+.resize-handle-top {
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 4px;
+  cursor: row-resize;
+}
+
+/* --------------------------------------------------------------------------
+   Analysis Panel (tabbed bottom panel)
+   -------------------------------------------------------------------------- */
+
+.analysis-panel {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  min-height: 28px;
   background-color: #111;
   border-top: 1px solid #333;
-  flex-shrink: 0;
-}
-
-/* Sonogram (3D spectrogram) */
-.sonogram-container {
-  height: 200px;
-  min-height: 100px;
   position: relative;
-  background-color: #0a0a0a;
-  border-top: 1px solid #333;
-  flex-shrink: 0;
+  height: 200px;
 }
 
-.sonogram-container canvas {
+.analysis-panel.collapsed {
+  height: auto;
+}
+
+.analysis-panel-header {
+  height: 28px;
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 8px;
+  background-color: #1e1e1e;
+  border-bottom: 1px solid #333;
+  cursor: pointer;
+  flex-shrink: 0;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.analysis-tab-bar {
+  display: flex;
+  gap: 2px;
+}
+
+.analysis-tab {
+  padding: 3px 10px;
+  font-size: 10px;
+  font-weight: 600;
+  font-family: inherit;
+  background: none;
+  border: none;
+  color: #666;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: color 0.12s, background-color 0.12s;
+}
+
+.analysis-tab:hover {
+  color: #888;
+  background-color: #2a2a2a;
+}
+
+.analysis-tab.active {
+  color: #e0e0e0;
+  background-color: #3a3a3a;
+}
+
+.analysis-panel-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  color: #666;
+}
+
+.analysis-panel-controls .fft-label {
+  font-size: 10px;
+  color: #666;
+}
+
+.analysis-panel-controls .fft-select {
+  font-size: 10px;
+  padding: 1px 4px;
+  background: #2a2a2a;
+  color: #888;
+  border: 1px solid #3a3a3a;
+  border-radius: 3px;
+  font-family: inherit;
+}
+
+.analysis-panel-content {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.analysis-tab-pane {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+}
+
+.analysis-tab-pane.hidden {
+  display: none;
+}
+
+.analysis-tab-pane canvas {
   display: block;
   width: 100%;
   height: 100%;
 }
 
-.sonogram-label {
-  position: absolute;
-  top: 4px;
-  left: 8px;
+/* Panel header (collapse toggle bar) */
+.panel-header {
+  height: 28px;
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  background-color: #252525;
+  border-bottom: 1px solid #1a1a1a;
+  cursor: pointer;
+  flex-shrink: 0;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.panel-header-title {
   font-size: 10px;
-  color: #666;
+  font-weight: 600;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
 }
 
 /* Overview (mini-map) waveform */
@@ -512,8 +680,6 @@ button:focus-visible {
 /* Canvas elements in their containers */
 .cuepoint-container canvas,
 .waveform-container canvas,
-.spectrogram-container canvas,
-.sonogram-container canvas,
 .overview-container canvas,
 .timeline-container canvas {
   display: block;
@@ -556,6 +722,7 @@ button:focus-visible {
   display: flex;
   flex-direction: column;
   overflow-y: auto;
+  transition: width 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .sidebar-section {
@@ -1652,92 +1819,10 @@ button:focus-visible {
 
 /* --------------------------------------------------------------------------
    13. Modal Overlay
+   --------------------------------------------------------------------------
+   Base modal styles are defined in src/index.html <style> block.
+   Only animation and plugin-browser overrides live here.
    -------------------------------------------------------------------------- */
-
-.modal-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-color: rgba(0, 0, 0, 0.6);
-  display: none;
-  align-items: center;
-  justify-content: center;
-  z-index: 500;
-  backdrop-filter: blur(2px);
-  -webkit-backdrop-filter: blur(2px);
-}
-
-.modal-overlay.visible {
-  display: flex;
-}
-
-.modal {
-  background-color: #2a2a2a;
-  border: 1px solid #3a3a3a;
-  border-radius: 8px;
-  padding: 24px;
-  max-width: 400px;
-  width: 90%;
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4);
-}
-
-.modal-title {
-  font-size: 16px;
-  font-weight: 600;
-  color: #e0e0e0;
-  margin-bottom: 16px;
-}
-
-.modal-body {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.modal-row {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.modal-row label {
-  font-size: 12px;
-  color: #888;
-  font-weight: 500;
-}
-
-.modal-row input,
-.modal-row select,
-.modal-row textarea {
-  background-color: #333;
-  color: #e0e0e0;
-  border: 1px solid #4a4a4a;
-  border-radius: 4px;
-  padding: 8px 10px;
-  font-size: 13px;
-  font-family: inherit;
-  outline: none;
-  transition: border-color 0.15s;
-}
-
-.modal-row input:focus,
-.modal-row select:focus,
-.modal-row textarea:focus {
-  border-color: #2563eb;
-}
-
-.modal-row input::placeholder {
-  color: #666;
-}
-
-.modal-buttons {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-top: 16px;
-}
 
 /* --------------------------------------------------------------------------
    14. Plugin Browser Modal

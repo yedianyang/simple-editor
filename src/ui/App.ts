@@ -10,6 +10,8 @@ import { Mixer } from '../mixer/Mixer';
 import { PluginHost } from '../plugins/PluginHost';
 import { Metering } from './Metering';
 import { MetadataManager } from './MetadataManager';
+import { CollapsiblePanel } from './CollapsiblePanel';
+import { AnalysisPanel } from './AnalysisPanel';
 import { FileQueue } from './FileQueue';
 import { ProjectManager } from './ProjectManager';
 import { UndoManager } from '../utils/UndoManager';
@@ -24,6 +26,7 @@ import {
   TrimClipCommand,
 } from '../utils/TimelineUndoManager';
 import type { AudioFileInfo } from '../utils/TauriAPI';
+import { generateUCSFilename } from '../core/ucs-data';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 
 /**
@@ -57,6 +60,12 @@ export class App {
   timelineUndoManager: TimelineUndoManager;
   /** true when operating in multi-track timeline mode (vs legacy single-buffer). */
   private useTimeline = false;
+
+  // ---- Collapsible Panels ----
+  private leftPanel: CollapsiblePanel | null = null;
+  private rightPanel: CollapsiblePanel | null = null;
+  private bottomPanel: CollapsiblePanel | null = null;
+  private analysisPanel: AnalysisPanel | null = null;
 
   // ---- Cleanup ----
   private unlistenFns: Array<() => void> = [];
@@ -117,6 +126,7 @@ export class App {
     this.setupFileBrowser();
     this.setupInlineMetadata();
     this.setupExportSection();
+    this.setupCollapsiblePanels();
     this.updateUI();
   }
 
@@ -421,42 +431,45 @@ export class App {
   }
 
   setupDragAndDrop(): void {
-    const waveformContainer = document.querySelector('.waveform-container') || document.querySelector('.editor-area');
     const dragOverlay = document.getElementById('dragOverlay');
-    if (!waveformContainer || !dragOverlay) return;
+    if (!dragOverlay) return;
 
-    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-      waveformContainer.addEventListener(eventName, (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-      }, false);
-    });
+    // Listen on the entire document body for broader drag coverage
+    let dragCounter = 0;
 
-    ['dragenter', 'dragover'].forEach(eventName => {
-      waveformContainer.addEventListener(eventName, () => {
-        dragOverlay.classList.add('visible');
-      }, false);
-    });
+    document.body.addEventListener('dragenter', (e) => {
+      e.preventDefault();
+      dragCounter++;
+      dragOverlay.classList.add('visible');
+    }, false);
 
-    waveformContainer.addEventListener('dragleave', (e) => {
-      if (e.target === waveformContainer) {
+    document.body.addEventListener('dragover', (e) => {
+      e.preventDefault();
+    }, false);
+
+    document.body.addEventListener('dragleave', (e) => {
+      e.preventDefault();
+      dragCounter--;
+      if (dragCounter <= 0) {
+        dragCounter = 0;
         dragOverlay.classList.remove('visible');
       }
     }, false);
 
-    waveformContainer.addEventListener('drop', (e) => {
+    document.body.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dragCounter = 0;
       dragOverlay.classList.remove('visible');
       // In Tauri, file drops are handled by onDragDropEvent in setupNativeListeners
+      // (WKWebView does not populate dataTransfer.files for native file drops)
       if (window.appAPI) return;
-      console.log('[DROP] Drop event received');
       const dt = (e as DragEvent).dataTransfer;
-      if (!dt) { console.log('[DROP] No dataTransfer'); return; }
+      if (!dt) return;
       const files = Array.from(dt.files).filter(f => {
         const ext = f.name.toLowerCase();
         return ext.endsWith('.wav') || ext.endsWith('.aif') || ext.endsWith('.aiff') ||
                ext.endsWith('.flac') || ext.endsWith('.mp3') || ext.endsWith('.ogg');
       });
-      console.log(`[DROP] ${files.length} audio files found, sizes: ${files.map(f => (f.size/1024/1024).toFixed(1) + 'MB').join(', ')}`);
       if (files.length > 0) {
         this.addFilesToQueue(files);
       }
@@ -467,7 +480,8 @@ export class App {
     if (!window.appAPI) return;
 
     const collect = (p: Promise<() => void>) => {
-      p.then(fn => this.unlistenFns.push(fn));
+      p.then(fn => this.unlistenFns.push(fn))
+        .catch(err => console.warn('[NativeListeners] setup error:', err));
     };
 
     collect(window.appAPI.onImportFiles(async (filePaths) => {
@@ -476,9 +490,7 @@ export class App {
         const fileObj = { name, path: filePath };
         const id = this.fileQueue.addFile(fileObj);
         this.renderFileList();
-        if (!this.audioEngine.audioBuffer) {
-          await this.loadFileFromPath(filePath, id);
-        }
+        await this.loadFileFromPath(filePath, id);
       }
     }));
 
@@ -493,33 +505,29 @@ export class App {
     }));
 
     // Tauri native drag-and-drop (WKWebView does not populate dataTransfer.files)
-    const webview = getCurrentWebview();
-    collect(webview.onDragDropEvent((event) => {
-      const dragOverlay = document.getElementById('dragOverlay');
-      if (event.payload.type === 'enter' || event.payload.type === 'over') {
-        dragOverlay?.classList.add('visible');
-      } else if (event.payload.type === 'leave') {
-        dragOverlay?.classList.remove('visible');
-      } else if (event.payload.type === 'drop') {
-        dragOverlay?.classList.remove('visible');
-        const paths = event.payload.paths.filter((p: string) => {
-          const ext = p.toLowerCase();
-          return ext.endsWith('.wav') || ext.endsWith('.aif') || ext.endsWith('.aiff') ||
-                 ext.endsWith('.flac') || ext.endsWith('.mp3') || ext.endsWith('.ogg');
-        });
-        if (paths.length > 0) {
-          for (const filePath of paths) {
-            const name = filePath.split('/').pop() || filePath;
-            const fileObj = { name, path: filePath };
-            const id = this.fileQueue.addFile(fileObj);
-            this.renderFileList();
-            if (!this.audioEngine.audioBuffer) {
-              this.loadFileFromPath(filePath, id);
-            }
+    try {
+      const webview = getCurrentWebview();
+      collect(webview.onDragDropEvent((event) => {
+        const dragOverlay = document.getElementById('dragOverlay');
+        if (event.payload.type === 'enter' || event.payload.type === 'over') {
+          dragOverlay?.classList.add('visible');
+        } else if (event.payload.type === 'leave') {
+          dragOverlay?.classList.remove('visible');
+        } else if (event.payload.type === 'drop') {
+          dragOverlay?.classList.remove('visible');
+          const paths = event.payload.paths.filter((p: string) => {
+            const ext = p.toLowerCase();
+            return ext.endsWith('.wav') || ext.endsWith('.aif') || ext.endsWith('.aiff') ||
+                   ext.endsWith('.flac') || ext.endsWith('.mp3') || ext.endsWith('.ogg');
+          });
+          if (paths.length > 0) {
+            this.handleDroppedPaths(paths);
           }
         }
-      }
-    }));
+      }));
+    } catch (err) {
+      console.warn('[NativeListeners] drag-drop setup failed:', err);
+    }
 
     // Menu actions
     const menuActions: Record<string, () => void> = {
@@ -586,6 +594,16 @@ export class App {
     }));
   }
 
+  private async handleDroppedPaths(paths: string[]): Promise<void> {
+    for (const filePath of paths) {
+      const name = filePath.split('/').pop() || filePath;
+      const fileObj = { name, path: filePath };
+      const id = this.fileQueue.addFile(fileObj);
+      this.renderFileList();
+      await this.loadFileFromPath(filePath, id);
+    }
+  }
+
   handleKeyboard(e: KeyboardEvent): void {
     if ((e.target as HTMLElement).tagName === 'INPUT' || (e.target as HTMLElement).tagName === 'SELECT') return;
 
@@ -611,6 +629,18 @@ export class App {
         case 'b':
           e.preventDefault();
           this.togglePluginBrowser();
+          return;
+        case '[':
+          e.preventDefault();
+          this.leftPanel?.toggle();
+          return;
+        case ']':
+          e.preventDefault();
+          this.rightPanel?.toggle();
+          return;
+        case '\\':
+          e.preventDefault();
+          this.bottomPanel?.toggle();
           return;
       }
     }
@@ -708,6 +738,8 @@ export class App {
       const name = filePath.split('/').pop() || 'Untitled';
       this.showLoadingIndicator(name);
       this.fileName = name;
+      // Yield a frame so the loading indicator renders before heavy IPC work
+      await new Promise<void>(r => requestAnimationFrame(() => r()));
       console.log('[IMPORT] Step 1: Reading file...');
       const result = await FileHandler.importFilePath(filePath);
 
@@ -955,18 +987,15 @@ export class App {
     if (this.useTimeline) {
       const tl = this.timelineModel.timeline;
       if (tl.tracks.length === 0) return;
-      if (this.audioEngine.isPaused) {
-        this.audioEngine.resume();
-      } else {
-        this.audioEngine.init().then(() => {
-          this.audioEngine.playTimeline(tl, this.bufferPool, tl.playheadSample);
-          this.startRealtimeAnalysis();
-          this.updateUI();
-        });
-        return;
-      }
-      this.startRealtimeAnalysis();
-      this.updateUI();
+      this.audioEngine.init().then(() => {
+        // Resume from paused position, or start from playhead
+        const startSample = this.audioEngine.isPaused
+          ? Math.floor(this.audioEngine.getCurrentTime() * tl.sampleRate)
+          : tl.playheadSample;
+        this.audioEngine.playTimeline(tl, this.bufferPool, startSample);
+        this.startRealtimeAnalysis();
+        this.updateUI();
+      });
       return;
     }
 
@@ -1515,6 +1544,59 @@ export class App {
     await this.loadFileFromPath(file.path, id);
   }
 
+  // ==================== Collapsible Panels ====================
+
+  private setupCollapsiblePanels(): void {
+    const leftSidebar = document.getElementById('leftSidebar');
+    const rightSidebar = document.getElementById('rightSidebar');
+    const analysisPanelEl = document.getElementById('analysisPanel');
+
+    if (leftSidebar) {
+      this.leftPanel = new CollapsiblePanel({
+        container: leftSidebar,
+        direction: 'horizontal',
+        side: 'left',
+        defaultSize: 220,
+        minSize: 100,
+        headerSelector: '.file-browser-header',
+        storageKeyPrefix: 'panel.left',
+        collapsedByDefault: false,
+      });
+    }
+
+    if (rightSidebar) {
+      this.rightPanel = new CollapsiblePanel({
+        container: rightSidebar,
+        direction: 'horizontal',
+        side: 'right',
+        defaultSize: 260,
+        minSize: 120,
+        headerSelector: '.panel-header',
+        storageKeyPrefix: 'panel.right',
+        collapsedByDefault: false,
+      });
+    }
+
+    if (analysisPanelEl) {
+      this.analysisPanel = new AnalysisPanel(analysisPanelEl);
+
+      this.bottomPanel = new CollapsiblePanel({
+        container: analysisPanelEl,
+        direction: 'vertical',
+        side: 'bottom',
+        defaultSize: 200,
+        minSize: 60,
+        headerSelector: '.analysis-panel-header',
+        storageKeyPrefix: 'panel.bottom',
+        collapsedByDefault: true,
+      });
+
+      this.analysisPanel.onRequestExpand = () => {
+        this.bottomPanel?.expand();
+      };
+    }
+  }
+
   // ==================== Inline Metadata Tabs ====================
 
   private setupInlineMetadata(): void {
@@ -1583,27 +1665,37 @@ export class App {
   private async quickExport(folder: string): Promise<void> {
     if (!this.audioEngine.audioBuffer || !window.appAPI) return;
 
-    const buffer = this.audioEngine.audioBuffer;
-    const formatEl = document.getElementById('exportFilenameFormat') as HTMLInputElement | null;
-    const pattern = formatEl?.value || '{filename}';
-
-    // Build filename from pattern
-    let baseName = pattern
-      .replace('{filename}', (this.fileName || 'audio').replace(/\.[^/.]+$/, ''))
-      .replace('{CatID}', (document.getElementById('inlineCatId') as HTMLInputElement)?.value || '')
-      .replace('{FXName}', (document.getElementById('inlineFxName') as HTMLInputElement)?.value || '')
-      .replace('{CreatorID}', (document.getElementById('inlineCreatorId') as HTMLInputElement)?.value || '')
-      .replace('{SourceID}', (document.getElementById('inlineSourceId') as HTMLInputElement)?.value || '');
-
-    // Remove trailing underscores/hyphens from empty tokens
-    baseName = baseName.replace(/[_-]+$/, '').replace(/[_-]{2,}/g, '_');
-    if (!baseName) baseName = this.fileName?.replace(/\.[^/.]+$/, '') || 'audio';
-
-    const blob = FileHandler.exportWAV(buffer, 24, 'none');
-    const arrayBuf = await blob.arrayBuffer();
-    const fullPath = `${folder}/${baseName}.wav`;
+    const btn = document.getElementById('exportActionBtn') as HTMLButtonElement | null;
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = 'Exporting...';
+    }
 
     try {
+      const buffer = this.audioEngine.audioBuffer;
+      const formatEl = document.getElementById('exportFilenameFormat') as HTMLInputElement | null;
+      const pattern = formatEl?.value || '{filename}';
+
+      // Build filename from pattern
+      let baseName = pattern
+        .replace('{filename}', (this.fileName || 'audio').replace(/\.[^/.]+$/, ''))
+        .replace('{CatID}', (document.getElementById('inlineCatId') as HTMLInputElement)?.value || '')
+        .replace('{FXName}', (document.getElementById('inlineFxName') as HTMLInputElement)?.value || '')
+        .replace('{CreatorID}', (document.getElementById('inlineCreatorId') as HTMLInputElement)?.value || '')
+        .replace('{SourceID}', (document.getElementById('inlineSourceId') as HTMLInputElement)?.value || '');
+
+      // Remove trailing underscores/hyphens from empty tokens
+      baseName = baseName.replace(/[_-]+$/, '').replace(/[_-]{2,}/g, '_');
+      if (!baseName) baseName = this.fileName?.replace(/\.[^/.]+$/, '') || 'audio';
+
+      // Async encoding — yields to main thread to keep UI responsive
+      const blob = await FileHandler.exportWAVAsync(buffer, 24, 'none', undefined, (progress) => {
+        if (btn) btn.textContent = `Exporting ${Math.round(progress * 100)}%...`;
+      });
+      const arrayBuf = await blob.arrayBuffer();
+      const fullPath = `${folder}/${baseName}.wav`;
+
+      if (btn) btn.textContent = 'Writing...';
       await window.appAPI.writeFile(fullPath, arrayBuf);
       console.log(`[Export] Written to ${fullPath}`);
 
@@ -1616,9 +1708,21 @@ export class App {
           this.renderFileBrowser();
         }
       }
-    } catch (err: any) {
-      console.error('[Export] write error:', err);
-      alert('Export failed: ' + err.message);
+
+      // Brief success flash
+      if (btn) {
+        btn.textContent = 'Done!';
+        await new Promise<void>(r => setTimeout(r, 1200));
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[Export] error:', err);
+      alert('Export failed: ' + msg);
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = 'Export';
+      }
     }
   }
 
@@ -1627,27 +1731,56 @@ export class App {
   showExportModal(): void {
     if (!this.audioEngine.audioBuffer) return;
 
-    // Show metadata dialog first, then export settings
-    this.metadataManager.show(
-      this.audioEngine.audioBuffer.numberOfChannels,
-      (metadata, ucsFilename) => {
-        this.pendingExportMetadata = metadata;
+    // Read metadata directly from the right sidebar inline fields (skip dialog)
+    this.pendingExportMetadata = this.gatherInlineMetadata();
 
-        // If UCS filename was generated, update the filename
-        if (ucsFilename) {
-          this.pendingUCSFilename = ucsFilename;
-        } else {
-          this.pendingUCSFilename = null;
-        }
+    // Build UCS filename from sidebar fields
+    const catId = (document.getElementById('inlineCatId') as HTMLInputElement)?.value || '';
+    const fxName = (document.getElementById('inlineFxName') as HTMLInputElement)?.value || '';
+    const creatorId = (document.getElementById('inlineCreatorId') as HTMLInputElement)?.value || '';
+    const sourceId = (document.getElementById('inlineSourceId') as HTMLInputElement)?.value || '';
+    if (catId && fxName) {
+      this.pendingUCSFilename = generateUCSFilename(catId, fxName, creatorId, sourceId);
+    } else {
+      this.pendingUCSFilename = null;
+    }
 
-        // Now show export settings dialog
-        const hasSelection = this.waveformRenderer.hasSelection();
-        const checkbox = document.getElementById('exportSelection') as HTMLInputElement;
-        checkbox.disabled = !hasSelection;
-        checkbox.checked = hasSelection;
-        this.showModal('exportModal');
-      }
-    );
+    // Show export settings dialog directly
+    const hasSelection = this.waveformRenderer.hasSelection();
+    const checkbox = document.getElementById('exportSelection') as HTMLInputElement;
+    checkbox.disabled = !hasSelection;
+    checkbox.checked = hasSelection;
+    this.showModal('exportModal');
+  }
+
+  /** Gather metadata from the inline sidebar fields. */
+  private gatherInlineMetadata(): ExportMetadata {
+    const val = (id: string) => (document.getElementById(id) as HTMLInputElement)?.value || '';
+    return {
+      bpiDescription: val('inlineDescription'),
+      originator: 'FieldCorder',
+      originatorRef: '',
+      project: '',
+      scene: val('inlineScene'),
+      take: val('inlineTake'),
+      tape: val('inlineTape'),
+      note: val('inlineNote'),
+      circled: false,
+      wildTrack: false,
+      trackNames: [],
+      ucsCategory: val('inlineUcsCategory'),
+      ucsSubCategory: val('inlineUcsSubCategory'),
+      ucsCatId: val('inlineCatId'),
+      ucsFxName: val('inlineFxName'),
+      ucsCreatorId: val('inlineCreatorId'),
+      ucsSourceId: val('inlineSourceId'),
+      recordist: '',
+      microphone: '',
+      micPerspective: '',
+      location: '',
+      library: '',
+      keywords: '',
+    };
   }
 
   showNormalizeModal(): void { this.showModal('normalizeModal'); }
@@ -1661,53 +1794,92 @@ export class App {
     document.getElementById(id)?.classList.remove('visible');
   }
 
-  exportFile(): void {
+  async exportFile(): Promise<void> {
     const format = (document.getElementById('exportFormat') as HTMLSelectElement).value;
     const bitDepth = parseInt((document.getElementById('exportBitDepth') as HTMLSelectElement).value);
     const dither = (document.getElementById('exportDither') as HTMLSelectElement).value;
     const exportSelection = (document.getElementById('exportSelection') as HTMLInputElement).checked;
 
-    let bufferToExport = this.audioEngine.audioBuffer!;
-    let fileNameSuffix = '';
-
-    if (exportSelection && this.waveformRenderer.hasSelection()) {
-      const selection = this.waveformRenderer.getSelection()!;
-      bufferToExport = this.audioEditor!.trim(this.audioEngine.audioBuffer!, selection.start, selection.end);
-      fileNameSuffix = '_selection';
+    const confirmBtn = document.getElementById('exportConfirmBtn') as HTMLButtonElement | null;
+    if (confirmBtn) {
+      confirmBtn.disabled = true;
+      confirmBtn.textContent = 'Exporting...';
     }
 
-    const metadata = this.pendingExportMetadata || undefined;
+    try {
+      let bufferToExport = this.audioEngine.audioBuffer!;
+      let fileNameSuffix = '';
 
-    let blob: Blob;
-    let extension: string;
+      if (exportSelection && this.waveformRenderer.hasSelection()) {
+        const selection = this.waveformRenderer.getSelection()!;
+        bufferToExport = this.audioEditor!.trim(this.audioEngine.audioBuffer!, selection.start, selection.end);
+        fileNameSuffix = '_selection';
+      }
 
-    if (format === 'wav') {
-      blob = FileHandler.exportWAV(bufferToExport, bitDepth, dither, metadata);
-      extension = '.wav';
-    } else {
-      const aifBitDepth = bitDepth === 32 ? 24 : bitDepth;
-      blob = FileHandler.exportAIF(bufferToExport, aifBitDepth, dither);
-      extension = '.aif';
+      const metadata = this.pendingExportMetadata || undefined;
+
+      let blob: Blob;
+      let extension: string;
+
+      if (format === 'wav') {
+        blob = await FileHandler.exportWAVAsync(bufferToExport, bitDepth, dither, metadata, (progress) => {
+          if (confirmBtn) confirmBtn.textContent = `Exporting ${Math.round(progress * 100)}%...`;
+        });
+        extension = '.wav';
+      } else {
+        // AIF export — yield first so button text updates
+        if (confirmBtn) confirmBtn.textContent = 'Exporting...';
+        await new Promise<void>(resolve => setTimeout(resolve, 0));
+        const aifBitDepth = bitDepth === 32 ? 24 : bitDepth;
+        blob = FileHandler.exportAIF(bufferToExport, aifBitDepth, dither);
+        extension = '.aif';
+      }
+
+      // Use UCS filename if available, otherwise use original filename
+      let baseName: string;
+      if (this.pendingUCSFilename) {
+        baseName = this.pendingUCSFilename;
+      } else {
+        baseName = this.fileName ? this.fileName.replace(/\.[^/.]+$/, '') : 'audio';
+      }
+
+      const defaultName = baseName + fileNameSuffix + extension;
+
+      if (window.appAPI) {
+        // Tauri: show native save dialog → write via fs plugin
+        const savePath = await window.appAPI.showSaveDialog({
+          title: 'Export Audio',
+          defaultPath: defaultName,
+          filters: [{ name: format === 'wav' ? 'WAV Audio' : 'AIFF Audio', extensions: [format === 'wav' ? 'wav' : 'aif'] }],
+        });
+        if (savePath) {
+          if (confirmBtn) confirmBtn.textContent = 'Writing...';
+          const arrayBuf = await blob.arrayBuffer();
+          await window.appAPI.writeFile(savePath, arrayBuf);
+          console.log(`[Export] Written to ${savePath}`);
+        }
+      } else {
+        // Browser fallback
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = defaultName;
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+
+      this.pendingExportMetadata = null;
+      this.pendingUCSFilename = null;
+      this.hideModal('exportModal');
+    } finally {
+      // Always clean up both modals and button state
+      this.metadataManager.hide();
+      this.hideModal('exportModal');
+      if (confirmBtn) {
+        confirmBtn.disabled = false;
+        confirmBtn.textContent = 'Export';
+      }
     }
-
-    // Use UCS filename if available, otherwise use original filename
-    let baseName: string;
-    if (this.pendingUCSFilename) {
-      baseName = this.pendingUCSFilename;
-    } else {
-      baseName = this.fileName ? this.fileName.replace(/\.[^/.]+$/, '') : 'audio';
-    }
-
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = baseName + fileNameSuffix + extension;
-    a.click();
-    URL.revokeObjectURL(url);
-
-    this.pendingExportMetadata = null;
-    this.pendingUCSFilename = null;
-    this.hideModal('exportModal');
   }
 
   updateUI(): void {
@@ -1746,21 +1918,45 @@ export class App {
 
   updateFileInfo(): void {
     const buffer = this.audioEngine.audioBuffer;
+
+    // Status bar (bottom)
     const el = document.getElementById('fileInfo');
-    if (!el) return;
+    if (el) {
+      if (!buffer) {
+        el.textContent = 'No file loaded';
+      } else {
+        const duration = formatTime(buffer.duration);
+        const sampleRate = (buffer.sampleRate / 1000).toFixed(1) + ' kHz';
+        const channels = buffer.numberOfChannels;
+        const channelLabel = channels === 1 ? 'Mono' : channels === 2 ? 'Stereo' :
+          channels === 4 ? 'Quad' : channels === 6 ? '5.1' : `${channels}ch`;
+        el.textContent = `${this.fileName} | ${duration} | ${sampleRate} | ${channelLabel}`;
+      }
+    }
+
+    // Right sidebar File Info panel
+    const nameEl = document.getElementById('currentFileName');
+    const chEl = document.getElementById('fileChannels');
+    const srEl = document.getElementById('fileSampleRate');
+    const bdEl = document.getElementById('fileBitDepth');
+    const durEl = document.getElementById('fileDuration');
 
     if (!buffer) {
-      el.textContent = 'No file loaded';
+      if (nameEl) nameEl.textContent = 'No file loaded';
+      if (chEl) chEl.textContent = '-';
+      if (srEl) srEl.textContent = '-';
+      if (bdEl) bdEl.textContent = '-';
+      if (durEl) durEl.textContent = '-';
       return;
     }
 
-    const duration = formatTime(buffer.duration);
-    const sampleRate = (buffer.sampleRate / 1000).toFixed(1) + ' kHz';
-    const channels = buffer.numberOfChannels;
-    const channelLabel = channels === 1 ? 'Mono' : channels === 2 ? 'Stereo' :
-      channels === 4 ? 'Quad' : channels === 6 ? '5.1' : `${channels}ch`;
-
-    el.textContent = `${this.fileName} | ${duration} | ${sampleRate} | ${channelLabel}`;
+    const ch = buffer.numberOfChannels;
+    if (nameEl) nameEl.textContent = this.fileName || 'Untitled';
+    if (chEl) chEl.textContent = ch === 1 ? 'Mono' : ch === 2 ? 'Stereo' :
+      ch === 4 ? 'Quad' : ch === 6 ? '5.1' : `${ch}ch`;
+    if (srEl) srEl.textContent = (buffer.sampleRate / 1000).toFixed(1) + ' kHz';
+    if (bdEl) bdEl.textContent = '32-bit float'; // Web Audio always uses 32-bit float internally
+    if (durEl) durEl.textContent = formatTime(buffer.duration);
   }
 
   updatePositionInfo(time: number): void {
@@ -1811,6 +2007,10 @@ export class App {
       unlisten();
     }
     this.unlistenFns = [];
+    this.leftPanel?.destroy();
+    this.rightPanel?.destroy();
+    this.bottomPanel?.destroy();
+    this.analysisPanel?.destroy();
     this.waveformRenderer.destroy();
     this.spectrogramRenderer.destroy();
     await this.audioEngine.destroy();
