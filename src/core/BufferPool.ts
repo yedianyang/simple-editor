@@ -45,6 +45,31 @@ export class BufferPool {
     return ids;
   }
 
+  /**
+   * Create mono PooledBuffers directly from a flat Float32Array (IPC data).
+   * Skips the intermediate multi-channel AudioBuffer — only 1 copy per channel
+   * (subarray view → copyToChannel).
+   * Layout: [ch0_all_samples, ch1_all_samples, ...]
+   */
+  importFromRawChannels(
+    samples: Float32Array,
+    numChannels: number,
+    numSamples: number,
+    sampleRate: number,
+    sourceFileName: string,
+  ): string[] {
+    const ids: string[] = [];
+    for (let ch = 0; ch < numChannels; ch++) {
+      const offset = ch * numSamples;
+      const channelView = samples.subarray(offset, offset + numSamples) as Float32Array<ArrayBuffer>;
+      const monoCtx = new OfflineAudioContext(1, numSamples, sampleRate);
+      const monoBuffer = monoCtx.createBuffer(1, numSamples, sampleRate);
+      monoBuffer.copyToChannel(channelView, 0);
+      ids.push(this.addBuffer(monoBuffer, sourceFileName, ch));
+    }
+    return ids;
+  }
+
   getBuffer(id: string): PooledBuffer | null {
     return this.buffers.get(id) ?? null;
   }

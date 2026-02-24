@@ -25,7 +25,7 @@ import {
   DeleteClipCommand,
   TrimClipCommand,
 } from '../utils/TimelineUndoManager';
-import type { AudioFileInfo } from '../utils/TauriAPI';
+import type { AudioFileInfo, ParsedAudioData } from '../utils/TauriAPI';
 import { generateUCSFilename } from '../core/ucs-data';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 
@@ -811,19 +811,21 @@ export class App {
       const result = await FileHandler.importFilePath(filePath);
 
       let audioBuffer: AudioBuffer;
+      let parsedData: ParsedAudioData | null = null;
       if (result instanceof ArrayBuffer) {
         // Non-WAV: raw bytes need decodeAudioData
         console.log(`[IMPORT] Step 2: File read complete (${(result.byteLength / 1024 / 1024).toFixed(1)} MB). Decoding...`);
         audioBuffer = await this.audioEngine.loadAudio(result);
       } else {
         // WAV: already parsed by Rust — create AudioBuffer directly
+        parsedData = result;
         const dataMB = (result.num_samples * result.channels * 4 / (1024 * 1024)).toFixed(1);
         console.log(`[IMPORT] Step 2: Rust WAV parse complete (${result.channels}ch, ${result.sample_rate}Hz, ${dataMB} MB). Loading...`);
         audioBuffer = await this.audioEngine.loadFromParsedData(result);
       }
 
       console.log('[IMPORT] Step 3: Audio loaded. Loading UI...');
-      this.onAudioLoaded(audioBuffer, fileId);
+      this.onAudioLoaded(audioBuffer, fileId, parsedData);
       console.log('[IMPORT] Step 4: Done.');
     } catch (err: any) {
       console.error('Import error:', err);
@@ -842,7 +844,7 @@ export class App {
     if (el) el.textContent = this.fileName || 'No file loaded';
   }
 
-  private onAudioLoaded(audioBuffer: AudioBuffer, fileId: number | null): void {
+  private onAudioLoaded(audioBuffer: AudioBuffer, fileId: number | null, parsedData?: ParsedAudioData | null): void {
     try {
       if (!this.audioEditor) {
         this.audioEditor = new AudioEditor(this.audioEngine.audioContext!);
@@ -878,7 +880,17 @@ export class App {
         this.timelineUndoManager.clear();
 
         // Import into buffer pool (splits into mono PooledBuffers)
-        const bufferIds = this.bufferPool.importMultiChannel(audioBuffer, this.fileName || 'audio');
+        // When raw IPC data is available, use importFromRawChannels to skip the
+        // intermediate multi-channel AudioBuffer copy (subarray view → copyToChannel)
+        const bufferIds = parsedData
+          ? this.bufferPool.importFromRawChannels(
+              parsedData.samples,
+              parsedData.channels,
+              parsedData.num_samples,
+              parsedData.sample_rate,
+              this.fileName || 'audio',
+            )
+          : this.bufferPool.importMultiChannel(audioBuffer, this.fileName || 'audio');
 
         // Create tracks + clips in timeline model
         this.timelineModel.importMultiChannelFile(

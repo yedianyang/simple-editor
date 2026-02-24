@@ -315,10 +315,10 @@ export class AudioEngine {
 
     this.audioBuffer = this.audioContext!.createBuffer(channels, num_samples, sample_rate);
 
-    // Slice the flat samples array into per-channel data and copy
+    // Use subarray (zero-copy view) instead of slice to avoid allocating a copy
     for (let ch = 0; ch < channels; ch++) {
       const offset = ch * num_samples;
-      const channelData = samples.slice(offset, offset + num_samples);
+      const channelData = samples.subarray(offset, offset + num_samples) as Float32Array<ArrayBuffer>;
       this.audioBuffer.copyToChannel(channelData, ch);
     }
 
