@@ -39,31 +39,17 @@ describe('Mixer', () => {
   describe('4.1 PluginHost Null Safety', () => {
     it('4.1.1 - renders without crash when pluginHost is null', () => {
       expect(mixer.pluginHost).toBeNull();
-      expect(() => mixer.setupChannels(2)).not.toThrow();
+      const tracks = [makeTrack('t1'), makeTrack('t2')];
+      expect(() => mixer.setupTracks(tracks)).not.toThrow();
       expect(container.innerHTML).not.toBe('');
     });
 
     it('4.1.2 - mixer controls work with no audio loaded', () => {
-      mixer.setupChannels(2);
-      expect(() => mixer.setChannelVolume(0, -6)).not.toThrow();
-      expect(() => mixer.setChannelMute(0, true)).not.toThrow();
-      expect(() => mixer.setChannelSolo(0, true)).not.toThrow();
-    });
-
-    it('4.1.3 - plugin insertion works after pluginHost is set', async () => {
-      mixer.setupChannels(2);
-      engine.setupChannelRouting(2);
-
-      // Set pluginHost after construction
-      const pluginHost = new PluginHost(engine.audioContext!);
-      mixer.pluginHost = pluginHost;
-
-      const plugins = pluginHost.getAvailablePlugins();
-      const gainPlugin = plugins.find(p => p.id === 'builtin:gain')!;
-
-      // Should not throw
-      await mixer.addPlugin(0, gainPlugin);
-      expect(mixer.channels[0].plugins).toHaveLength(1);
+      const tracks = [makeTrack('t1'), makeTrack('t2')];
+      mixer.setupTracks(tracks);
+      expect(() => mixer.setTrackVolume('t1', -6)).not.toThrow();
+      expect(() => mixer.setTrackMute('t1', true)).not.toThrow();
+      expect(() => mixer.setTrackSolo('t1', true)).not.toThrow();
     });
   });
 
@@ -113,59 +99,6 @@ describe('Mixer', () => {
       // Crossfader gain nodes should be unchanged
       expect(engine.trackCrossfaderNodes.get('tA')!.gain.value).toBeCloseTo(cfGainA, 4);
       expect(engine.trackCrossfaderNodes.get('tB')!.gain.value).toBeCloseTo(cfGainB, 4);
-    });
-  });
-
-  // ==================== Channel Mode ====================
-
-  describe('Channel Mode', () => {
-    it('setupChannels(1) creates mono strip', () => {
-      mixer.setupChannels(1);
-      expect(mixer.channels).toHaveLength(1);
-      expect(mixer.channels[0].name).toBe('Mono');
-    });
-
-    it('setupChannels(2) creates stereo strips', () => {
-      mixer.setupChannels(2);
-      expect(mixer.channels).toHaveLength(2);
-      expect(mixer.channels[0].name).toBe('Left');
-      expect(mixer.channels[1].name).toBe('Right');
-    });
-
-    it('setupChannels(6) creates 5.1 strips', () => {
-      mixer.setupChannels(6);
-      expect(mixer.channels).toHaveLength(6);
-      expect(mixer.channels[2].name).toBe('Center');
-      expect(mixer.channels[3].name).toBe('LFE');
-    });
-
-    it('setChannelVolume calls audioEngine.setChannelVolume', () => {
-      mixer.setupChannels(2);
-      engine.setupChannelRouting(2);
-
-      const spy = vi.spyOn(engine, 'setChannelVolume');
-      mixer.setChannelVolume(0, -10);
-
-      expect(spy).toHaveBeenCalledWith(0, -10);
-      expect(mixer.channels[0].volume).toBe(-10);
-    });
-
-    it('setChannelMute updates state + calls audioEngine', () => {
-      mixer.setupChannels(2);
-      const spy = vi.spyOn(engine, 'setChannelMute');
-      mixer.setChannelMute(1, true);
-
-      expect(spy).toHaveBeenCalledWith(1, true);
-      expect(mixer.channels[1].mute).toBe(true);
-    });
-
-    it('setChannelSolo updates state + calls audioEngine', () => {
-      mixer.setupChannels(2);
-      const spy = vi.spyOn(engine, 'setChannelSolo');
-      mixer.setChannelSolo(0, true);
-
-      expect(spy).toHaveBeenCalledWith(0, true);
-      expect(mixer.channels[0].solo).toBe(true);
     });
   });
 
@@ -260,17 +193,6 @@ describe('Mixer', () => {
   // ==================== State Export ====================
 
   describe('State Export', () => {
-    it('getState() returns channels and masterVolume', () => {
-      mixer.setupChannels(2);
-      mixer.setMasterVolume(-3);
-
-      const state = mixer.getState();
-      expect(state.channels).toHaveLength(2);
-      expect(state.masterVolume).toBe(-3);
-      // Plugins should not be serialized
-      expect(state.channels[0].plugins).toHaveLength(0);
-    });
-
     it('getTrackState() returns tracks and masterVolume', () => {
       const tracks = [makeTrack('t1', { volume: -6 }), makeTrack('t2', { volume: -12 })];
       mixer.setupTracks(tracks);

@@ -1,4 +1,4 @@
-import { ChannelStripState, CHANNEL_COLORS, CHANNEL_NAMES, Track, FaderLaw } from '../core/types';
+import { CHANNEL_COLORS, Track, FaderLaw } from '../core/types';
 import { AudioEngine } from '../core/AudioEngine';
 import { PluginHost } from '../plugins/PluginHost';
 
@@ -16,21 +16,15 @@ interface TrackStrip {
 }
 
 /**
- * Mixer with per-channel strips, plugin inserts, and master bus.
- * Supports two modes:
- *   - channel: classic per-channel routing (single-buffer playback)
- *   - track:   per-track routing (timeline playback) with Fader Law + Crossfader
+ * Mixer with per-track strips, plugin inserts, and master bus.
+ * Operates in track mode (timeline playback) with Fader Law + Crossfader.
  */
 export class Mixer {
   container: HTMLElement;
   audioEngine: AudioEngine;
   pluginHost: PluginHost | null;
-  channels: ChannelStripState[] = [];
   masterVolume = 0; // dB
   visible = false;
-
-  // Mode
-  private mode: 'channel' | 'track' = 'channel';
 
   // Track-mode state
   private trackStrips: TrackStrip[] = [];
@@ -53,61 +47,13 @@ export class Mixer {
     this.pluginHost = pluginHost;
   }
 
-  // ==================== Channel Mode (existing) ====================
-
-  /**
-   * Initialize mixer channels based on the loaded audio buffer.
-   */
-  setupChannels(numChannels: number): void {
-    this.mode = 'channel';
-    this.channels = [];
-    const names = CHANNEL_NAMES[numChannels] || Array.from({ length: numChannels }, (_, i) => `Ch ${i + 1}`);
-
-    for (let i = 0; i < numChannels; i++) {
-      this.channels.push({
-        channelIndex: i,
-        name: names[i],
-        volume: 0,
-        pan: 0,
-        mute: false,
-        solo: false,
-        plugins: [],
-      });
-    }
-
-    this.render();
-  }
-
-  setChannelVolume(index: number, db: number): void {
-    if (index < 0 || index >= this.channels.length) return;
-    this.channels[index].volume = db;
-    this.audioEngine.setChannelVolume(index, db);
-    this.updateChannelStripDisplay(index);
-  }
-
-  setChannelMute(index: number, mute: boolean): void {
-    if (index < 0 || index >= this.channels.length) return;
-    this.channels[index].mute = mute;
-    this.audioEngine.setChannelMute(index, mute);
-    this.updateChannelStripDisplay(index);
-  }
-
-  setChannelSolo(index: number, solo: boolean): void {
-    if (index < 0 || index >= this.channels.length) return;
-    this.channels[index].solo = solo;
-    this.audioEngine.setChannelSolo(index, solo);
-    // Update all strips since solo affects others
-    this.channels.forEach((_, i) => this.updateChannelStripDisplay(i));
-  }
-
-  // ==================== Track Mode (new) ====================
+  // ==================== Track Mode ====================
 
   /**
    * Initialize mixer strips from Track objects for timeline playback.
    * Builds one channel strip per track, sets up audio routing via AudioEngine.
    */
   setupTracks(tracks: Track[]): void {
-    this.mode = 'track';
     this.trackStrips = tracks.map(t => ({
       trackId: t.id,
       name: t.name,
@@ -225,57 +171,6 @@ export class Mixer {
     }
   }
 
-  async addPlugin(channelIndex: number, pluginInfo: any): Promise<void> {
-    if (channelIndex < 0 || channelIndex >= this.channels.length) return;
-
-    if (!this.pluginHost) return;
-    const instance = await this.pluginHost.createInstance(pluginInfo);
-    this.channels[channelIndex].plugins.push(instance);
-
-    // Connect plugin to channel insert
-    this.rebuildPluginChain(channelIndex);
-    this.render();
-  }
-
-  removePlugin(channelIndex: number, pluginInstanceId: string): void {
-    if (channelIndex < 0 || channelIndex >= this.channels.length) return;
-
-    const idx = this.channels[channelIndex].plugins.findIndex(p => p.id === pluginInstanceId);
-    if (idx !== -1) {
-      this.pluginHost?.removeInstance(pluginInstanceId);
-      this.channels[channelIndex].plugins.splice(idx, 1);
-      this.rebuildPluginChain(channelIndex);
-      this.render();
-    }
-  }
-
-  private rebuildPluginChain(channelIndex: number): void {
-    const insertPoint = this.audioEngine.getChannelInsertPoint(channelIndex);
-    if (!insertPoint) return;
-
-    const { input, output } = insertPoint;
-
-    // Disconnect all
-    try { input.disconnect(); } catch {}
-
-    const plugins = this.channels[channelIndex].plugins.filter(p => !p.bypassed && p.audioNode);
-
-    if (plugins.length === 0) {
-      input.connect(output);
-      return;
-    }
-
-    // Chain: input -> plugin1 -> plugin2 -> ... -> output
-    let currentNode: AudioNode = input;
-    for (const plugin of plugins) {
-      const pluginIn = plugin.audioNode!;
-      const pluginOut = (pluginIn as any)._outputNode || pluginIn;
-      currentNode.connect(pluginIn);
-      currentNode = pluginOut;
-    }
-    currentNode.connect(output);
-  }
-
   toggle(): void {
     this.visible = !this.visible;
     this.container.style.display = this.visible ? 'flex' : 'none';
@@ -291,22 +186,8 @@ export class Mixer {
     this.container.style.display = 'none';
   }
 
-  getMode(): 'channel' | 'track' {
-    return this.mode;
-  }
-
-  private updateChannelStripDisplay(index: number): void {
-    const strip = this.container.querySelector(`[data-channel="${index}"]`);
-    if (!strip) return;
-
-    const ch = this.channels[index];
-    const muteBtn = strip.querySelector('.mixer-mute') as HTMLButtonElement;
-    const soloBtn = strip.querySelector('.mixer-solo') as HTMLButtonElement;
-    const volValue = strip.querySelector('.mixer-vol-value');
-
-    if (muteBtn) muteBtn.classList.toggle('active', ch.mute);
-    if (soloBtn) soloBtn.classList.toggle('active', ch.solo);
-    if (volValue) volValue.textContent = `${ch.volume.toFixed(1)}`;
+  getMode(): 'track' {
+    return 'track';
   }
 
   // ==================== Render ====================
@@ -314,64 +195,7 @@ export class Mixer {
   // to avoid destroying/recreating event listeners on every render call.
 
   render(): void {
-    if (this.mode === 'track') {
-      this.renderTrackMode();
-    } else {
-      this.renderChannelMode();
-    }
-  }
-
-  private renderChannelMode(): void {
-    const numChannels = this.channels.length;
-    if (numChannels === 0) {
-      this.container.innerHTML = '<div class="mixer-empty">No audio loaded</div>';
-      return;
-    }
-
-    let html = '<div class="mixer-channels">';
-
-    // Channel strips
-    for (let i = 0; i < numChannels; i++) {
-      const ch = this.channels[i];
-      const color = CHANNEL_COLORS[i % CHANNEL_COLORS.length];
-
-      html += `
-        <div class="mixer-strip" data-channel="${i}">
-          <div class="mixer-strip-header" style="border-top: 3px solid ${color}">
-            <span class="mixer-strip-name">${ch.name}</span>
-          </div>
-          <div class="mixer-strip-plugins">
-            ${ch.plugins.map(p => `
-              <div class="mixer-plugin-slot" data-plugin="${p.id}">
-                <span class="mixer-plugin-name">${p.pluginInfo.name}</span>
-                <button class="mixer-plugin-remove" data-channel="${i}" data-plugin-id="${p.id}">\u00d7</button>
-              </div>
-            `).join('')}
-            <button class="mixer-plugin-add" data-channel="${i}">+ Insert</button>
-          </div>
-          <div class="mixer-strip-fader">
-            <input type="range" class="mixer-fader" orient="vertical"
-                   min="-60" max="12" step="0.1" value="${ch.volume}"
-                   data-channel="${i}">
-            <span class="mixer-vol-value">${ch.volume.toFixed(1)}</span>
-          </div>
-          <div class="mixer-strip-buttons">
-            <button class="mixer-mute ${ch.mute ? 'active' : ''}" data-channel="${i}">M</button>
-            <button class="mixer-solo ${ch.solo ? 'active' : ''}" data-channel="${i}">S</button>
-          </div>
-          <div class="mixer-strip-meter" data-channel="${i}">
-            <div class="mixer-meter-bar"></div>
-          </div>
-        </div>
-      `;
-    }
-
-    // Master strip
-    html += this.renderMasterStrip();
-    html += '</div>';
-
-    this.container.innerHTML = html;
-    this.attachChannelEventListeners();
+    this.renderTrackMode();
   }
 
   private renderTrackMode(): void {
@@ -494,54 +318,6 @@ export class Mixer {
 
   // ==================== Event Listeners ====================
 
-  private attachChannelEventListeners(): void {
-    // Master fader (shared)
-    this.attachMasterFaderListener();
-
-    // Channel faders
-    this.container.querySelectorAll('.mixer-fader:not(.mixer-master-fader)').forEach(el => {
-      el.addEventListener('input', (e) => {
-        const target = e.target as HTMLInputElement;
-        const ch = parseInt(target.dataset.channel!);
-        this.setChannelVolume(ch, parseFloat(target.value));
-      });
-    });
-
-    // Mute buttons
-    this.container.querySelectorAll('.mixer-mute').forEach(el => {
-      el.addEventListener('click', (e) => {
-        const ch = parseInt((e.target as HTMLElement).dataset.channel!);
-        this.setChannelMute(ch, !this.channels[ch].mute);
-      });
-    });
-
-    // Solo buttons
-    this.container.querySelectorAll('.mixer-solo').forEach(el => {
-      el.addEventListener('click', (e) => {
-        const ch = parseInt((e.target as HTMLElement).dataset.channel!);
-        this.setChannelSolo(ch, !this.channels[ch].solo);
-      });
-    });
-
-    // Plugin add buttons
-    this.container.querySelectorAll('.mixer-plugin-add').forEach(el => {
-      el.addEventListener('click', (e) => {
-        const ch = parseInt((e.target as HTMLElement).dataset.channel!);
-        if (this.onPluginInsertRequest) this.onPluginInsertRequest(ch);
-      });
-    });
-
-    // Plugin remove buttons
-    this.container.querySelectorAll('.mixer-plugin-remove').forEach(el => {
-      el.addEventListener('click', (e) => {
-        const target = e.target as HTMLElement;
-        const ch = parseInt(target.dataset.channel!);
-        const pluginId = target.dataset.pluginId!;
-        this.removePlugin(ch, pluginId);
-      });
-    });
-  }
-
   private attachTrackEventListeners(): void {
     // Master fader (shared)
     this.attachMasterFaderListener();
@@ -646,27 +422,8 @@ export class Mixer {
 
   // ==================== Metering ====================
 
-  /**
-   * Update meter displays with current audio levels.
-   * Works for both channel and track modes.
-   */
   updateMeters(): void {
-    if (this.mode === 'track') {
-      this.updateTrackMeters();
-    } else {
-      this.updateChannelMeters();
-    }
-  }
-
-  private updateChannelMeters(): void {
-    for (let i = 0; i < this.channels.length; i++) {
-      const analyser = this.audioEngine.getChannelAnalyser(i);
-      if (!analyser) continue;
-      this.updateMeterBar(
-        this.container.querySelector(`[data-channel="${i}"] .mixer-meter-bar`) as HTMLElement,
-        analyser,
-      );
-    }
+    this.updateTrackMeters();
   }
 
   private updateTrackMeters(): void {
@@ -702,13 +459,6 @@ export class Mixer {
   }
 
   // ==================== State ====================
-
-  getState(): { channels: ChannelStripState[]; masterVolume: number } {
-    return {
-      channels: this.channels.map(ch => ({ ...ch, plugins: [] })), // Don't serialize plugin instances
-      masterVolume: this.masterVolume,
-    };
-  }
 
   getTrackState(): { tracks: Track[]; masterVolume: number } {
     return {

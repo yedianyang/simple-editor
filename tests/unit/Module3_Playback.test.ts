@@ -155,89 +155,82 @@ describe('AudioEngine — Playback & Transport', () => {
     });
   });
 
-  // ==================== 3.2 Playhead Pause/Resume Behavior ====================
+  // ==================== 3.2 Timeline Pause/Resume Behavior ====================
 
-  describe('3.2 Playhead Pause/Resume Behavior', () => {
-    beforeEach(async () => {
-      // Load a mock buffer so play() works
-      const mockBuffer = engine.audioContext!.createBuffer(2, 44100 * 5, 44100);
-      engine.audioBuffer = mockBuffer as any;
-      engine.setupChannelRouting(2);
+  describe('3.2 Timeline Pause/Resume Behavior', () => {
+    let bufferPool: BufferPool;
+
+    beforeEach(() => {
+      bufferPool = new BufferPool();
+      const mockBuffer = engine.audioContext!.createBuffer(1, 44100 * 5, 44100);
+      const bufferId = bufferPool.addBuffer(mockBuffer as any, 'test.wav', 0);
+      const clip = makeClip(bufferId, { duration: 44100 * 5 });
+      const track = makeTrack('t1', [clip]);
+      engine.setupTrackRouting([track]);
+      const timeline = makeTimeline({ tracks: [track] });
+      engine.playTimeline(timeline, bufferPool);
     });
 
-    it('3.2.1 - play from new position after pause + move', () => {
-      engine.play(0);
+    it('3.2.1 - pause sets isPaused=true, clears scheduledSources', () => {
       expect(engine.isPlaying).toBe(true);
 
       engine.pause();
+
       expect(engine.isPaused).toBe(true);
       expect(engine.isPlaying).toBe(false);
-
-      // Simulate user moving playhead to a new position
-      const newOffset = 2.0;
-      engine.play(newOffset);
-
-      expect(engine.isPlaying).toBe(true);
-      expect(engine.isPaused).toBe(false);
+      expect(engine.scheduledSources).toHaveLength(0);
     });
 
-    it('3.2.2 - resume from paused position when no movement', () => {
-      engine.play(0);
+    it('3.2.2 - pause then stop resets to initial state', () => {
       engine.pause();
+      engine.stop();
 
-      const savedPauseTime = engine.pauseTime;
-      engine.resume();
-
-      expect(engine.isPlaying).toBe(true);
+      expect(engine.isPlaying).toBe(false);
       expect(engine.isPaused).toBe(false);
-      // resume() calls play(pauseTime), so startTime is adjusted accordingly
+      expect(engine.pauseTime).toBe(0);
     });
   });
 
   // ==================== Transport State Machine ====================
 
   describe('Transport State Machine', () => {
-    beforeEach(async () => {
+    let bufferPool: BufferPool;
+    let timeline: ReturnType<typeof makeTimeline>;
+
+    beforeEach(() => {
+      bufferPool = new BufferPool();
       const mockBuffer = engine.audioContext!.createBuffer(1, 44100 * 3, 44100);
-      engine.audioBuffer = mockBuffer as any;
-      engine.setupChannelRouting(1);
+      const bufferId = bufferPool.addBuffer(mockBuffer as any, 'test.wav', 0);
+      const clip = makeClip(bufferId, { duration: 44100 * 3 });
+      const track = makeTrack('t1', [clip]);
+      engine.setupTrackRouting([track]);
+      timeline = makeTimeline({ tracks: [track] });
     });
 
-    it('play() sets isPlaying=true, isPaused=false', () => {
-      engine.play(0);
+    it('playTimeline() sets isPlaying=true, isPaused=false', () => {
+      engine.playTimeline(timeline, bufferPool);
       expect(engine.isPlaying).toBe(true);
       expect(engine.isPaused).toBe(false);
     });
 
     it('pause() sets isPlaying=false, isPaused=true, saves pauseTime', () => {
-      engine.play(0);
+      engine.playTimeline(timeline, bufferPool);
       engine.pause();
       expect(engine.isPlaying).toBe(false);
       expect(engine.isPaused).toBe(true);
-      // pauseTime should be >= 0
       expect(engine.pauseTime).toBeGreaterThanOrEqual(0);
     });
 
-    it('pause() stops all scheduledSources in timeline mode', () => {
-      const bufferPool = new BufferPool();
-      const mockBuffer = engine.audioContext!.createBuffer(1, 44100, 44100);
-      const bufferId = bufferPool.addBuffer(mockBuffer as any, 'test.wav', 0);
-
-      const clip = makeClip(bufferId, { duration: 44100 });
-      const track = makeTrack('t1', [clip]);
-      const timeline = makeTimeline({ tracks: [track] });
-      engine.setupTrackRouting([track]);
+    it('pause() clears all scheduledSources', () => {
       engine.playTimeline(timeline, bufferPool);
-
       expect(engine.scheduledSources.length).toBeGreaterThan(0);
 
       engine.pause();
-      // After pause, scheduled sources are cleared
       expect(engine.scheduledSources).toHaveLength(0);
     });
 
     it('stop() resets isPlaying, isPaused, pauseTime to initial', () => {
-      engine.play(0);
+      engine.playTimeline(timeline, bufferPool);
       engine.pause();
       engine.stop();
 
@@ -246,14 +239,12 @@ describe('AudioEngine — Playback & Transport', () => {
       expect(engine.pauseTime).toBe(0);
     });
 
-    it('resume() continues from pauseTime', () => {
-      engine.play(0);
-      engine.pause();
+    it('stopTimeline() resets isPlaying and clears scheduledSources', () => {
+      engine.playTimeline(timeline, bufferPool);
+      engine.stopTimeline();
 
-      // Should not throw
-      engine.resume();
-      expect(engine.isPlaying).toBe(true);
-      expect(engine.isPaused).toBe(false);
+      expect(engine.isPlaying).toBe(false);
+      expect(engine.scheduledSources).toHaveLength(0);
     });
   });
 
@@ -286,44 +277,6 @@ describe('AudioEngine — Playback & Transport', () => {
     it('setMasterVolume(0) sets gain to 1.0 (unity)', () => {
       engine.setMasterVolume(0);
       expect(engine.masterGainNode!.gain.value).toBeCloseTo(1.0, 4);
-    });
-  });
-
-  // ==================== Channel Routing ====================
-
-  describe('Channel Routing', () => {
-    it('setupChannelRouting(1) sets MONO layout', () => {
-      engine.setupChannelRouting(1);
-      expect(engine.channelGainNodes).toHaveLength(1);
-      expect(engine.channelInsertInputs).toHaveLength(1);
-      expect(engine.channelInsertOutputs).toHaveLength(1);
-      expect(engine.channelAnalysers).toHaveLength(1);
-    });
-
-    it('setupChannelRouting(2) creates stereo chain', () => {
-      engine.setupChannelRouting(2);
-      expect(engine.channelGainNodes).toHaveLength(2);
-    });
-
-    it('setupChannelRouting(6) creates 5.1 chain', () => {
-      engine.setupChannelRouting(6);
-      expect(engine.channelGainNodes).toHaveLength(6);
-      expect(engine.channelAnalysers).toHaveLength(6);
-    });
-
-    it('setChannelVolume applies dB-to-linear conversion', () => {
-      engine.setupChannelRouting(2);
-      engine.setChannelVolume(0, -6);
-      const expected = Math.pow(10, -6 / 20);
-      expect(engine.channelGainNodes[0].gain.value).toBeCloseTo(expected, 4);
-    });
-
-    it('setChannelMute/Solo updates mute state', () => {
-      engine.setupChannelRouting(2);
-      engine.setChannelMute(0, true);
-      expect(engine.muteChannels.has(0)).toBe(true);
-      // Insert output should be muted (gain = 0)
-      expect(engine.channelInsertOutputs[0].gain.value).toBe(0);
     });
   });
 

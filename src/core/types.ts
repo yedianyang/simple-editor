@@ -61,22 +61,6 @@ export interface PluginInstance {
   audioNode?: AudioNode;
 }
 
-export interface ChannelStripState {
-  channelIndex: number;
-  name: string;
-  volume: number;      // dB
-  pan: number;         // -1 to 1
-  mute: boolean;
-  solo: boolean;
-  plugins: PluginInstance[];
-}
-
-export interface MixerState {
-  channels: ChannelStripState[];
-  masterVolume: number;
-  channelLayout: ChannelLayout;
-}
-
 export interface ProjectData {
   version: number;
   fileName: string;
@@ -88,7 +72,6 @@ export interface ProjectData {
     channels: string[]; // base64 encoded
   };
   cuePoints: Array<{ sample: number; name: string }>;
-  mixer: MixerState;
 }
 
 export interface CuePoint {
@@ -107,7 +90,6 @@ export interface FileQueueItem {
   id: number;
   file: File | { name: string; path: string };
   cuePoints: Array<{ sample: number; name: string }>;
-  mixerState?: MixerState;
 }
 
 // ==================== BWF / iXML Metadata ====================

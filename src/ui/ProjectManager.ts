@@ -1,15 +1,13 @@
 import { CuePointManager } from '../editor/CuePointManager';
-import { MixerState } from '../core/types';
 
 /**
- * Project save/load manager with multi-channel and mixer state support.
+ * Project save/load manager with multi-channel support.
  */
 export class ProjectManager {
   static async saveProject(
     audioBuffer: AudioBuffer,
     cuePointManager: CuePointManager,
     fileName: string,
-    mixerState?: MixerState,
     metadata: Record<string, any> = {}
   ): Promise<string> {
     const project = {
@@ -24,7 +22,6 @@ export class ProjectManager {
         channels: [] as string[],
       },
       cuePoints: cuePointManager.toJSON(),
-      mixer: mixerState || null,
     };
 
     for (let c = 0; c < audioBuffer.numberOfChannels; c++) {
@@ -42,7 +39,6 @@ export class ProjectManager {
     cuePoints: Array<{ sample: number; name: string }>;
     fileName: string;
     metadata: Record<string, any>;
-    mixer: MixerState | null;
   }> {
     const project = JSON.parse(jsonString);
 
@@ -66,7 +62,6 @@ export class ProjectManager {
       cuePoints: project.cuePoints,
       fileName: project.fileName,
       metadata: project.metadata || {},
-      mixer: project.mixer || null,
     };
   }
 

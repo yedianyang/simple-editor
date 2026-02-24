@@ -58,8 +58,6 @@ export class App {
   timelineRenderer: TimelineRenderer | null = null;
   sonogramRenderer: SonogramRenderer | null = null;
   timelineUndoManager: TimelineUndoManager;
-  /** true when operating in multi-track timeline mode (vs legacy single-buffer). */
-  private useTimeline = false;
   /** Set during clip drag when playback was active; cleared on drag end to resume. */
   private _pendingPlaybackResume = false;
 
@@ -184,7 +182,7 @@ export class App {
       this.timelineRenderer?.render();
 
       // Pro Tools style: don't stop playback during drag, just mark for re-schedule on mouseup
-      if (this.audioEngine.isPlaying && this.useTimeline) {
+      if (this.audioEngine.isPlaying) {
         this._pendingPlaybackResume = true;
       }
     };
@@ -211,7 +209,7 @@ export class App {
       this.timelineRenderer?.render();
 
       // Pro Tools style: don't stop playback during drag, just mark for re-schedule on mouseup
-      if (this.audioEngine.isPlaying && this.useTimeline) {
+      if (this.audioEngine.isPlaying) {
         this._pendingPlaybackResume = true;
       }
     };
@@ -231,7 +229,7 @@ export class App {
     };
 
     this.timelineRenderer.onDragEnd = () => {
-      if (this._pendingPlaybackResume && this.useTimeline) {
+      if (this._pendingPlaybackResume) {
         this._pendingPlaybackResume = false;
         // Re-schedule from current playback position (playback never stopped)
         const currentSample = Math.floor(
@@ -393,21 +391,10 @@ export class App {
     // Playback callbacks
     this.audioEngine.onPositionUpdate = (time) => {
       this.updatePositionInfo(time);
-      if (this.useTimeline) {
-        const sample = Math.floor(time * this.timelineModel.timeline.sampleRate);
-        this.timelineRenderer?.setPlayheadPosition(sample);
-        if (this.sonogramRenderer) this.sonogramRenderer.setPlayheadPosition(sample);
-        this.metering.setPlaybackPosition(sample);
-      } else {
-        this.waveformRenderer.setPlayheadPosition(time);
-        if (this.audioEngine.audioBuffer) {
-          const sample = Math.floor(time * this.audioEngine.audioBuffer.sampleRate);
-          this.spectrogramRenderer.setPlayheadPosition(sample);
-          this.cuePointRenderer.setPlayheadPosition(sample);
-          this.metering.setPlaybackPosition(sample);
-          if (this.sonogramRenderer) this.sonogramRenderer.setPlayheadPosition(sample);
-        }
-      }
+      const sample = Math.floor(time * this.timelineModel.timeline.sampleRate);
+      this.timelineRenderer?.setPlayheadPosition(sample);
+      if (this.sonogramRenderer) this.sonogramRenderer.setPlayheadPosition(sample);
+      this.metering.setPlaybackPosition(sample);
     };
     this.audioEngine.onPlaybackEnd = () => {
       this.updateUI();
@@ -423,27 +410,30 @@ export class App {
   setupCuePointCallbacks(): void {
     this.cuePointRenderer.onCuePointClick = (cuePoint) => {
       if (!this.audioEngine.audioBuffer) return;
-      const time = cuePoint.sample / this.audioEngine.audioBuffer.sampleRate;
       this.stop();
+      if (this.timelineRenderer) {
+        this.timelineModel.timeline.playheadSample = cuePoint.sample;
+        this.timelineRenderer.setPlayheadPosition(cuePoint.sample);
+      }
       this.waveformRenderer.playheadPosition = cuePoint.sample;
       this.waveformRenderer.selectionStart = null;
       this.waveformRenderer.selectionEnd = null;
       this.waveformRenderer.render();
       this.waveformRenderer.updateSelectionInfo();
       this.spectrogramRenderer.setSelection(null, null);
-      this.audioEngine.play(time);
-      this.startRealtimeAnalysis();
       this.updateUI();
     };
 
     this.cuePointRenderer.onCuePointDoubleClick = (cuePoint) => {
       if (!this.audioEngine.audioBuffer) return;
-      const time = cuePoint.sample / this.audioEngine.audioBuffer.sampleRate;
       this.stop();
+      if (this.timelineRenderer) {
+        this.timelineModel.timeline.playheadSample = cuePoint.sample;
+        this.timelineRenderer.setPlayheadPosition(cuePoint.sample);
+      }
       this.waveformRenderer.playheadPosition = cuePoint.sample;
       this.waveformRenderer.render();
-      this.audioEngine.play(time);
-      this.startRealtimeAnalysis();
+      this.play();
       this.updateUI();
     };
 
@@ -733,47 +723,43 @@ export class App {
         e.preventDefault();
         if (this.audioEngine.audioBuffer) this.movePlayhead(1);
         break;
-      case 's': case 'S':
-        if (this.useTimeline) {
-          // Split is handled by TimelineRenderer's own keydown handler
-          // (when canvas is focused), but also allow from global keyboard
-          const selected = this.timelineModel.timeline.selectedClipIds;
-          if (selected.length > 0) {
-            for (const track of this.timelineModel.timeline.tracks) {
-              for (const clip of track.clips) {
-                if (selected.includes(clip.id)) {
-                  this.timelineUndoManager.push(
-                    new SplitClipCommand(this.timelineModel, track.id, clip.id, this.timelineModel.timeline.playheadSample),
-                  );
-                  this.timelineRenderer?.render();
-                  break;
-                }
+      case 's': case 'S': {
+        // Split is handled by TimelineRenderer's own keydown handler
+        // (when canvas is focused), but also allow from global keyboard
+        const selected = this.timelineModel.timeline.selectedClipIds;
+        if (selected.length > 0) {
+          for (const track of this.timelineModel.timeline.tracks) {
+            for (const clip of track.clips) {
+              if (selected.includes(clip.id)) {
+                this.timelineUndoManager.push(
+                  new SplitClipCommand(this.timelineModel, track.id, clip.id, this.timelineModel.timeline.playheadSample),
+                );
+                this.timelineRenderer?.render();
+                break;
               }
             }
           }
         }
         break;
-      case 'Delete': case 'Backspace':
+      }
+      case 'Delete': case 'Backspace': {
         e.preventDefault();
-        if (this.useTimeline) {
-          const selected = this.timelineModel.timeline.selectedClipIds;
-          if (selected.length > 0) {
-            for (const track of this.timelineModel.timeline.tracks) {
-              for (const clip of track.clips) {
-                if (selected.includes(clip.id)) {
-                  this.timelineUndoManager.push(
-                    new DeleteClipCommand(this.timelineModel, track.id, clip.id),
-                  );
-                }
+        const selectedClips = this.timelineModel.timeline.selectedClipIds;
+        if (selectedClips.length > 0) {
+          for (const track of this.timelineModel.timeline.tracks) {
+            for (const clip of track.clips) {
+              if (selectedClips.includes(clip.id)) {
+                this.timelineUndoManager.push(
+                  new DeleteClipCommand(this.timelineModel, track.id, clip.id),
+                );
               }
             }
-            this.timelineModel.timeline.selectedClipIds = [];
-            this.timelineRenderer?.render();
           }
-        } else {
-          this.deleteSelection();
+          this.timelineModel.timeline.selectedClipIds = [];
+          this.timelineRenderer?.render();
         }
         break;
+      }
       case 'l': case 'L':
         if (this.audioEngine.audioBuffer) this.toggleLoop();
         break;
@@ -886,7 +872,6 @@ export class App {
 
       // ---- Timeline multi-track setup ----
       if (this.timelineRenderer) {
-        this.useTimeline = true;
         this.waveformRenderer.disabled = true;
         this.waveformRenderer.detachListeners();
         this.bufferPool.clear();
@@ -929,18 +914,6 @@ export class App {
           this.sonogramRenderer.setAudioBuffer(audioBuffer);
           this.sonogramRenderer.setSamplesPerPixel(this.timelineRenderer.samplesPerPixel);
           this.sonogramRenderer.setScrollOffset(this.timelineRenderer.scrollOffsetX);
-        }
-      } else {
-        this.useTimeline = false;
-        this.waveformRenderer.disabled = false;
-        // Legacy channel-mode mixer
-        this.mixer.setupChannels(audioBuffer.numberOfChannels);
-
-        // Sonogram in legacy mode
-        if (this.sonogramRenderer) {
-          this.sonogramRenderer.setAudioBuffer(audioBuffer);
-          this.sonogramRenderer.setSamplesPerPixel(this.waveformRenderer.samplesPerPixel);
-          this.sonogramRenderer.setScrollOffset(this.waveformRenderer.scrollOffset);
         }
       }
 
@@ -1010,11 +983,7 @@ export class App {
     this.renderFileList();
 
     if (wasActive) {
-      if (this.useTimeline) {
-        this.audioEngine.stopTimeline();
-      } else {
-        this.audioEngine.stop();
-      }
+      this.audioEngine.stopTimeline();
       this.audioEngine.audioBuffer = null;
       this.waveformRenderer.setAudioBuffer(null);
       this.spectrogramRenderer.setAudioBuffer(null);
@@ -1026,7 +995,6 @@ export class App {
         this.timelineRenderer.render();
       }
       this.bufferPool.clear();
-      this.useTimeline = false;
       this.waveformRenderer.disabled = false;
       this.fileName = null;
       this.updateUI();
@@ -1079,57 +1047,22 @@ export class App {
   // ==================== Transport ====================
 
   play(): void {
-    // Timeline mode: use playTimeline
-    if (this.useTimeline) {
-      const tl = this.timelineModel.timeline;
-      if (tl.tracks.length === 0) return;
-      this.audioEngine.init().then(() => {
-        // Ensure spectrum analyser is connected (belt-and-suspenders)
-        const analyser = this.audioEngine.getAnalyserNode();
-        if (analyser) {
-          this.spectrogramRenderer.setAnalyserNode(analyser);
-        }
-        // Resume from paused position, or start from playhead
-        const startSample = this.audioEngine.isPaused
-          ? Math.floor(this.audioEngine.getCurrentTime() * tl.sampleRate)
-          : tl.playheadSample;
-        this.audioEngine.playTimeline(tl, this.bufferPool, startSample);
-        this.startRealtimeAnalysis();
-        this.updateUI();
-      });
-      return;
-    }
-
-    // Legacy single-buffer mode
-    if (!this.audioEngine.audioBuffer) return;
-
-    const selection = this.waveformRenderer.getSelection();
-    if (selection) {
-      const startTime = selection.start / this.audioEngine.audioBuffer.sampleRate;
-      const endTime = selection.end / this.audioEngine.audioBuffer.sampleRate;
-      this.audioEngine.playSelection(startTime, endTime);
-    } else if (this.audioEngine.isPaused) {
-      const pausedSample = Math.floor(this.audioEngine.getCurrentTime() * this.audioEngine.audioBuffer.sampleRate);
-      if (Math.abs(this.waveformRenderer.playheadPosition - pausedSample) > 1) {
-        this.audioEngine.stop();
-        const startTime = this.waveformRenderer.playheadPosition / this.audioEngine.audioBuffer.sampleRate;
-        this.audioEngine.play(startTime);
-      } else {
-        this.audioEngine.resume();
+    const tl = this.timelineModel.timeline;
+    if (tl.tracks.length === 0) return;
+    this.audioEngine.init().then(() => {
+      // Ensure spectrum analyser is connected (belt-and-suspenders)
+      const analyser = this.audioEngine.getAnalyserNode();
+      if (analyser) {
+        this.spectrogramRenderer.setAnalyserNode(analyser);
       }
-    } else {
-      let startSample = this.waveformRenderer.playheadPosition;
-      const totalSamples = this.audioEngine.audioBuffer.length;
-      if (startSample >= totalSamples * 0.99) {
-        startSample = 0;
-        this.waveformRenderer.playheadPosition = 0;
-        this.waveformRenderer.render();
-      }
-      const startTime = startSample / this.audioEngine.audioBuffer.sampleRate;
-      this.audioEngine.play(startTime);
-    }
-    this.startRealtimeAnalysis();
-    this.updateUI();
+      // Resume from paused position, or start from playhead
+      const startSample = this.audioEngine.isPaused
+        ? Math.floor(this.audioEngine.getCurrentTime() * tl.sampleRate)
+        : tl.playheadSample;
+      this.audioEngine.playTimeline(tl, this.bufferPool, startSample);
+      this.startRealtimeAnalysis();
+      this.updateUI();
+    });
   }
 
   pause(): void {
@@ -1139,11 +1072,7 @@ export class App {
   }
 
   stop(): void {
-    if (this.useTimeline) {
-      this.audioEngine.stopTimeline();
-    } else {
-      this.audioEngine.stop();
-    }
+    this.audioEngine.stopTimeline();
     this.stopRealtimeAnalysis();
     this.waveformRenderer.setPlayheadPosition(0);
     this.spectrogramRenderer.setPlayheadPosition(0);
@@ -1175,7 +1104,7 @@ export class App {
   // ==================== Zoom ====================
 
   zoomIn(): void {
-    if (this.useTimeline && this.timelineRenderer) {
+    if (this.timelineRenderer) {
       this.timelineRenderer.zoomIn();
     } else {
       this.waveformRenderer.zoomIn();
@@ -1183,7 +1112,7 @@ export class App {
   }
 
   zoomOut(): void {
-    if (this.useTimeline && this.timelineRenderer) {
+    if (this.timelineRenderer) {
       this.timelineRenderer.zoomOut();
     } else {
       this.waveformRenderer.zoomOut();
@@ -1191,7 +1120,7 @@ export class App {
   }
 
   zoomFit(): void {
-    if (this.useTimeline && this.timelineRenderer) {
+    if (this.timelineRenderer) {
       this.timelineRenderer.zoomFit();
     } else {
       this.waveformRenderer.zoomFit();
@@ -1211,40 +1140,25 @@ export class App {
     this.waveformRenderer.setAudioBuffer(buffer);
     this.spectrogramRenderer.setAudioBuffer(buffer);
     this.metering.setAudioBuffer(buffer);
-    this.mixer.setupChannels(buffer.numberOfChannels);
     this.updateFileInfo();
     this.updateChannelInfo();
     this.updateUI();
   }
 
   undo(): void {
-    if (this.useTimeline) {
-      if (this.timelineUndoManager.canUndo()) {
-        this.timelineUndoManager.undo();
-        this.timelineRenderer?.render();
-        this.updateUI();
-      }
-      return;
+    if (this.timelineUndoManager.canUndo()) {
+      this.timelineUndoManager.undo();
+      this.timelineRenderer?.render();
+      this.updateUI();
     }
-    if (!this.undoManager.canUndo() || !this.audioEngine.audioBuffer) return;
-    this.stop();
-    const previousBuffer = this.undoManager.undo(this.audioEngine.audioBuffer);
-    if (previousBuffer) this.applyBuffer(previousBuffer);
   }
 
   redo(): void {
-    if (this.useTimeline) {
-      if (this.timelineUndoManager.canRedo()) {
-        this.timelineUndoManager.redo();
-        this.timelineRenderer?.render();
-        this.updateUI();
-      }
-      return;
+    if (this.timelineUndoManager.canRedo()) {
+      this.timelineUndoManager.redo();
+      this.timelineRenderer?.render();
+      this.updateUI();
     }
-    if (!this.undoManager.canRedo() || !this.audioEngine.audioBuffer) return;
-    this.stop();
-    const nextBuffer = this.undoManager.redo(this.audioEngine.audioBuffer);
-    if (nextBuffer) this.applyBuffer(nextBuffer);
   }
 
   trim(): void {
@@ -1402,7 +1316,6 @@ export class App {
         this.audioEngine.audioBuffer,
         this.cuePointManager,
         this.fileName || 'Untitled',
-        this.mixer.getState() as any,
       );
       ProjectManager.downloadProject(jsonString, this.fileName || 'Untitled');
     } catch (err: any) {
@@ -1440,8 +1353,6 @@ export class App {
       this.cuePointRenderer.setAudioBuffer(project.audioBuffer);
       this.cuePointRenderer.setSamplesPerPixel(this.waveformRenderer.samplesPerPixel);
       this.cuePointRenderer.setScrollOffset(this.waveformRenderer.scrollOffset);
-
-      this.mixer.setupChannels(project.audioBuffer.numberOfChannels);
 
       this.updateUI();
       this.updateFileInfo();
@@ -1493,13 +1404,8 @@ export class App {
           <span class="plugin-item-category">${plugin.category || ''}</span>
         `;
         if (channelIndex !== null) {
-          item.addEventListener('click', async () => {
-            try {
-              await this.mixer.addPlugin(channelIndex, plugin);
-              this.hideModal('pluginBrowserModal');
-            } catch (err: any) {
-              alert('Error loading plugin: ' + err.message);
-            }
+          item.addEventListener('click', () => {
+            this.hideModal('pluginBrowserModal');
           });
         }
         pluginList.appendChild(item);
@@ -2026,8 +1932,8 @@ export class App {
     setDisabled('zoomInBtn', !hasAudio);
     setDisabled('zoomOutBtn', !hasAudio);
     setDisabled('zoomFitBtn', !hasAudio);
-    const canUndo = this.useTimeline ? this.timelineUndoManager.canUndo() : this.undoManager.canUndo();
-    const canRedo = this.useTimeline ? this.timelineUndoManager.canRedo() : this.undoManager.canRedo();
+    const canUndo = this.timelineUndoManager.canUndo();
+    const canRedo = this.timelineUndoManager.canRedo();
     setDisabled('undoBtn', !canUndo);
     setDisabled('redoBtn', !canRedo);
     setDisabled('trimBtn', !hasSelection);
@@ -2089,7 +1995,7 @@ export class App {
   }
 
   updateZoomInfo(): void {
-    const spp = this.useTimeline && this.timelineRenderer
+    const spp = this.timelineRenderer
       ? this.timelineRenderer.samplesPerPixel
       : this.waveformRenderer.samplesPerPixel;
     const el = document.getElementById('zoomInfo');
