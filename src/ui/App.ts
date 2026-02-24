@@ -144,7 +144,30 @@ export class App {
       this.updatePositionInfo(sample / sr);
     };
 
-    this.timelineRenderer.onClipSelect = (_clipId, _trackId) => {
+    this.timelineRenderer.onClipSelect = (clipId, trackId) => {
+      // Update sonogram to show the selected clip's audio
+      if (this.sonogramRenderer && this.audioEngine.audioContext) {
+        const track = this.timelineModel.timeline.tracks.find(t => t.id === trackId);
+        const clip = track?.clips.find(c => c.id === clipId);
+        if (clip) {
+          const pooled = this.bufferPool.getBuffer(clip.bufferId);
+          if (pooled) {
+            const regionLen = clip.sourceEnd - clip.sourceStart;
+            if (regionLen > 0) {
+              const tmpBuf = this.audioEngine.audioContext.createBuffer(
+                1, regionLen, pooled.sampleRate,
+              );
+              const src = pooled.buffer.getChannelData(0);
+              tmpBuf.getChannelData(0).set(
+                src.subarray(clip.sourceStart, clip.sourceEnd),
+              );
+              this.sonogramRenderer.setAudioBuffer(tmpBuf);
+              this.sonogramRenderer.setSamplesPerPixel(this.timelineRenderer!.samplesPerPixel);
+              this.sonogramRenderer.setScrollOffset(0);
+            }
+          }
+        }
+      }
       this.updateUI();
     };
 
@@ -156,8 +179,22 @@ export class App {
     };
 
     this.timelineRenderer.onClipTrim = (clipId, trackId, edge, newValue) => {
+      // Clamp newValue to buffer bounds before applying
+      const track = this.timelineModel.timeline.tracks.find(t => t.id === trackId);
+      const clip = track?.clips.find(c => c.id === clipId);
+      if (!clip) return;
+      const pooled = this.bufferPool.getBuffer(clip.bufferId);
+      const bufferLength = pooled?.length ?? clip.sourceEnd;
+
+      let clamped = newValue;
+      if (edge === 'start') {
+        clamped = Math.max(0, Math.min(clip.sourceEnd - 1, newValue));
+      } else {
+        clamped = Math.max(clip.sourceStart + 1, Math.min(bufferLength, newValue));
+      }
+
       this.timelineUndoManager.push(
-        new TrimClipCommand(this.timelineModel, trackId, clipId, edge, newValue),
+        new TrimClipCommand(this.timelineModel, trackId, clipId, edge, clamped),
       );
       this.timelineRenderer?.clearPeakCaches();
       this.timelineRenderer?.render();
@@ -995,6 +1032,11 @@ export class App {
       const tl = this.timelineModel.timeline;
       if (tl.tracks.length === 0) return;
       this.audioEngine.init().then(() => {
+        // Ensure spectrum analyser is connected (belt-and-suspenders)
+        const analyser = this.audioEngine.getAnalyserNode();
+        if (analyser) {
+          this.spectrogramRenderer.setAnalyserNode(analyser);
+        }
         // Resume from paused position, or start from playhead
         const startSample = this.audioEngine.isPaused
           ? Math.floor(this.audioEngine.getCurrentTime() * tl.sampleRate)

@@ -128,9 +128,11 @@ export class TimelineModel {
     if (!track) return;
     const clip = track.clips.find(c => c.id === clipId);
     if (!clip) return;
-    const delta = newSourceStart - clip.sourceStart;
-    if (delta <= 0 || delta >= clip.duration) return;
-    clip.sourceStart = newSourceStart;
+    // Clamp to [0, sourceEnd - 1] — allows extending back towards 0
+    const clamped = Math.max(0, Math.min(clip.sourceEnd - 1, newSourceStart));
+    const delta = clamped - clip.sourceStart;
+    if (delta === 0) return;
+    clip.sourceStart = clamped;
     clip.timelineOffset += delta;
     clip.duration -= delta;
   }
@@ -140,10 +142,10 @@ export class TimelineModel {
     if (!track) return;
     const clip = track.clips.find(c => c.id === clipId);
     if (!clip) return;
-    const newDuration = newSourceEnd - clip.sourceStart;
-    if (newDuration <= 0 || newDuration >= clip.duration + (clip.sourceEnd - newSourceEnd)) return;
+    // Must be > sourceStart (caller clamps upper bound to buffer length)
+    if (newSourceEnd <= clip.sourceStart) return;
     clip.sourceEnd = newSourceEnd;
-    clip.duration = newDuration;
+    clip.duration = newSourceEnd - clip.sourceStart;
     this.recalcTotalLength();
   }
 
