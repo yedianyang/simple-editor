@@ -467,7 +467,9 @@ button:focus-visible {
               height 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.collapsible-panel.resizing {
+.collapsible-panel.resizing,
+.left-sidebar.resizing,
+.right-sidebar.resizing {
   transition: none !important;
 }
 
