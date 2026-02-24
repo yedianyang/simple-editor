@@ -160,6 +160,118 @@ export class FileHandler {
   }
 
   /**
+   * Async version of exportWAV that yields to the main thread periodically,
+   * preventing UI freezes during encoding of large audio files.
+   */
+  static async exportWAVAsync(
+    audioBuffer: AudioBuffer,
+    bitDepth = 16,
+    dither = 'none',
+    metadata?: ExportMetadata,
+    onProgress?: (progress: number) => void
+  ): Promise<Blob> {
+    const numChannels = audioBuffer.numberOfChannels;
+    const sampleRate = audioBuffer.sampleRate;
+    const length = audioBuffer.length;
+
+    let bytesPerSample: number;
+    let formatCode: number;
+    if (bitDepth === 32) {
+      bytesPerSample = 4;
+      formatCode = 3;
+    } else {
+      bytesPerSample = bitDepth / 8;
+      formatCode = 1;
+    }
+
+    const bextData = metadata ? this.buildBextChunk(metadata, sampleRate, numChannels, bitDepth) : null;
+    const ixmlData = metadata ? this.buildIXMLChunk(metadata, numChannels) : null;
+    const bextChunkSize = bextData ? 8 + bextData.byteLength : 0;
+    const ixmlChunkSize = ixmlData ? 8 + ixmlData.byteLength : 0;
+
+    const dataSize = length * numChannels * bytesPerSample;
+    const totalSize = 44 + bextChunkSize + ixmlChunkSize + dataSize;
+    const buffer = new ArrayBuffer(totalSize);
+    const view = new DataView(buffer);
+
+    // RIFF header
+    this.writeString(view, 0, 'RIFF');
+    view.setUint32(4, totalSize - 8, true);
+    this.writeString(view, 8, 'WAVE');
+
+    // fmt chunk
+    this.writeString(view, 12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, formatCode, true);
+    view.setUint16(22, numChannels, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * numChannels * bytesPerSample, true);
+    view.setUint16(32, numChannels * bytesPerSample, true);
+    view.setUint16(34, bitDepth, true);
+
+    let offset = 36;
+
+    if (bextData) {
+      this.writeString(view, offset, 'bext');
+      view.setUint32(offset + 4, bextData.byteLength, true);
+      new Uint8Array(buffer, offset + 8, bextData.byteLength).set(new Uint8Array(bextData));
+      offset += 8 + bextData.byteLength;
+    }
+
+    if (ixmlData) {
+      this.writeString(view, offset, 'iXML');
+      view.setUint32(offset + 4, ixmlData.byteLength, true);
+      new Uint8Array(buffer, offset + 8, ixmlData.byteLength).set(new Uint8Array(ixmlData));
+      offset += 8 + ixmlData.byteLength;
+    }
+
+    this.writeString(view, offset, 'data');
+    view.setUint32(offset + 4, dataSize, true);
+    offset += 8;
+
+    const channels: Float32Array[] = [];
+    for (let c = 0; c < numChannels; c++) {
+      channels.push(audioBuffer.getChannelData(c));
+    }
+
+    const noiseShaper = dither === 'shaped' ? this.createNoiseShaper(numChannels) : null;
+    const CHUNK_SIZE = 50000; // Yield every 50K samples
+
+    for (let i = 0; i < length; i++) {
+      for (let c = 0; c < numChannels; c++) {
+        let sample = channels[c][i];
+
+        if (bitDepth === 32) {
+          view.setFloat32(offset, sample, true);
+        } else if (bitDepth === 24) {
+          if (dither === 'tpdf') sample += this.ditherTPDF(24);
+          else if (dither === 'shaped' && noiseShaper) sample = noiseShaper.process(sample, c, 24);
+          let intSample = Math.round(Math.max(-1, Math.min(1, sample)) * 0x7FFFFF);
+          if (intSample < 0) intSample += 0x1000000;
+          view.setUint8(offset, intSample & 0xFF);
+          view.setUint8(offset + 1, (intSample >> 8) & 0xFF);
+          view.setUint8(offset + 2, (intSample >> 16) & 0xFF);
+        } else {
+          if (dither === 'tpdf') sample += this.ditherTPDF(16);
+          else if (dither === 'shaped' && noiseShaper) sample = noiseShaper.process(sample, c, 16);
+          const intSample = Math.round(Math.max(-1, Math.min(1, sample)) * 0x7FFF);
+          view.setInt16(offset, intSample, true);
+        }
+        offset += bytesPerSample;
+      }
+
+      // Yield to main thread periodically to keep UI responsive
+      if (i % CHUNK_SIZE === 0 && i > 0) {
+        onProgress?.(i / length);
+        await new Promise<void>(resolve => setTimeout(resolve, 0));
+      }
+    }
+
+    onProgress?.(1);
+    return new Blob([buffer], { type: 'audio/wav' });
+  }
+
+  /**
    * Build BWF BEXT chunk data (EBU Tech 3285).
    * Structure: Description(256) + Originator(32) + OriginatorRef(32) +
    *            Date(10) + Time(8) + TimeRefLow(4) + TimeRefHigh(4) +

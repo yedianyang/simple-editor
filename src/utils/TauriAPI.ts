@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { open, save } from '@tauri-apps/plugin-dialog';
+import { writeFile as fsWriteFile } from '@tauri-apps/plugin-fs';
 
 /**
  * Unified application API that wraps Tauri IPC calls.
@@ -95,8 +96,15 @@ export function createTauriAPI(): AppAPI {
     },
 
     async writeFile(path: string, data: ArrayBuffer): Promise<void> {
-      const contents = Array.from(new Uint8Array(data));
-      await invoke('write_file', { path, contents });
+      try {
+        await fsWriteFile(path, new Uint8Array(data));
+      } catch (e) {
+        // Fallback to custom Rust command if plugin-fs scope rejects the path
+        console.warn('[writeFile] plugin-fs failed, falling back to invoke:', e);
+        const bytes = new Uint8Array(data);
+        const contents = Array.from(bytes);
+        await invoke('write_file', { path, contents });
+      }
     },
 
     async readFileText(path: string): Promise<string> {

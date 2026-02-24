@@ -546,9 +546,17 @@ export class AudioEngine {
   pause(): void {
     if (!this.isPlaying || this.isPaused) return;
     this.pauseTime = this.getCurrentTime();
-    this.sourceNode?.stop();
+    // Set state BEFORE stopping to prevent onended callbacks from interfering
     this.isPaused = true;
     this.isPlaying = false;
+    // Stop legacy single-buffer source
+    this.sourceNode?.stop();
+    // Stop timeline scheduled sources
+    for (const source of this.scheduledSources) {
+      try { source.stop(); } catch (_) { /* already stopped */ }
+      source.disconnect();
+    }
+    this.scheduledSources = [];
     cancelAnimationFrame(this.animationFrame);
   }
 

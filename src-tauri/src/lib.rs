@@ -126,6 +126,12 @@ struct AudioFileData {
 #[allow(clippy::needless_range_loop)]
 async fn read_audio_file(path: String) -> Result<AudioFileData, String> {
     let data = fs::read(&path).map_err(|e| format!("Failed to read '{}': {}", path, e))?;
+    parse_wav_data(&data)
+}
+
+/// Parse WAV bytes into AudioFileData. Extracted for testability.
+#[allow(clippy::needless_range_loop)]
+fn parse_wav_data(data: &[u8]) -> Result<AudioFileData, String> {
 
     if data.len() < 44 {
         return Err("File too small to be a valid WAV".into());
@@ -309,6 +315,15 @@ async fn read_audio_file(path: String) -> Result<AudioFileData, String> {
             }
         }
         _ => unreachable!(),
+    }
+
+    // Sanitize: replace NaN/Infinity with 0.0 to prevent serde_json serialization failures
+    for ch in channels.iter_mut() {
+        for sample in ch.iter_mut() {
+            if !sample.is_finite() {
+                *sample = 0.0;
+            }
+        }
     }
 
     Ok(AudioFileData {
@@ -630,4 +645,106 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+// ── Tests ─────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a minimal WAV file in memory for testing.
+    fn build_wav(format_code: u16, bits_per_sample: u16, channels: u16, sample_rate: u32, data: &[u8]) -> Vec<u8> {
+        let fmt_chunk_size: u32 = 16;
+        let data_chunk_size = data.len() as u32;
+        let riff_size = 4 + (8 + fmt_chunk_size) + (8 + data_chunk_size);
+        let block_align = channels * (bits_per_sample / 8);
+        let byte_rate = sample_rate * block_align as u32;
+
+        let mut buf = Vec::new();
+        // RIFF header
+        buf.extend_from_slice(b"RIFF");
+        buf.extend_from_slice(&riff_size.to_le_bytes());
+        buf.extend_from_slice(b"WAVE");
+        // fmt chunk
+        buf.extend_from_slice(b"fmt ");
+        buf.extend_from_slice(&fmt_chunk_size.to_le_bytes());
+        buf.extend_from_slice(&format_code.to_le_bytes());
+        buf.extend_from_slice(&channels.to_le_bytes());
+        buf.extend_from_slice(&sample_rate.to_le_bytes());
+        buf.extend_from_slice(&byte_rate.to_le_bytes());
+        buf.extend_from_slice(&block_align.to_le_bytes());
+        buf.extend_from_slice(&bits_per_sample.to_le_bytes());
+        // data chunk
+        buf.extend_from_slice(b"data");
+        buf.extend_from_slice(&data_chunk_size.to_le_bytes());
+        buf.extend_from_slice(data);
+        buf
+    }
+
+    #[test]
+    fn test_parse_32bit_float_wav() {
+        let sample1: f32 = 0.5;
+        let sample2: f32 = -0.25;
+        let mut data = Vec::new();
+        data.extend_from_slice(&sample1.to_le_bytes());
+        data.extend_from_slice(&sample2.to_le_bytes());
+
+        let wav = build_wav(3, 32, 1, 48000, &data);
+        let result = parse_wav_data(&wav).unwrap();
+        assert_eq!(result.sample_rate, 48000);
+        assert_eq!(result.num_channels, 1);
+        assert_eq!(result.num_samples, 2);
+        assert!((result.channels[0][0] - 0.5).abs() < 1e-6);
+        assert!((result.channels[0][1] - (-0.25)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_parse_32bit_float_stereo() {
+        let l: f32 = 0.75;
+        let r: f32 = -0.5;
+        let mut data = Vec::new();
+        data.extend_from_slice(&l.to_le_bytes());
+        data.extend_from_slice(&r.to_le_bytes());
+
+        let wav = build_wav(3, 32, 2, 44100, &data);
+        let result = parse_wav_data(&wav).unwrap();
+        assert_eq!(result.num_channels, 2);
+        assert_eq!(result.num_samples, 1);
+        assert!((result.channels[0][0] - 0.75).abs() < 1e-6);
+        assert!((result.channels[1][0] - (-0.5)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_nan_infinity_sanitized() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&f32::NAN.to_le_bytes());
+        data.extend_from_slice(&f32::INFINITY.to_le_bytes());
+        data.extend_from_slice(&f32::NEG_INFINITY.to_le_bytes());
+        data.extend_from_slice(&0.3f32.to_le_bytes());
+
+        let wav = build_wav(3, 32, 1, 48000, &data);
+        let result = parse_wav_data(&wav).unwrap();
+        assert_eq!(result.channels[0][0], 0.0); // NaN → 0.0
+        assert_eq!(result.channels[0][1], 0.0); // Inf → 0.0
+        assert_eq!(result.channels[0][2], 0.0); // -Inf → 0.0
+        assert!((result.channels[0][3] - 0.3).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_parse_16bit_pcm() {
+        let s1: i16 = 16384; // ~0.5
+        let s2: i16 = -16384; // ~-0.5
+        let mut data = Vec::new();
+        data.extend_from_slice(&s1.to_le_bytes());
+        data.extend_from_slice(&s2.to_le_bytes());
+
+        let wav = build_wav(1, 16, 1, 44100, &data);
+        let result = parse_wav_data(&wav).unwrap();
+        assert_eq!(result.sample_rate, 44100);
+        assert_eq!(result.num_channels, 1);
+        assert_eq!(result.num_samples, 2);
+        assert!((result.channels[0][0] - 0.5).abs() < 0.001);
+        assert!((result.channels[0][1] - (-0.5)).abs() < 0.001);
+    }
 }
