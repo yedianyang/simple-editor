@@ -243,6 +243,8 @@ export class SonogramRenderer {
     const width = this.width;
     const height = this.height;
 
+    if (width <= 0 || height <= 0) return;
+
     // Clear
     ctx.fillStyle = '#0d1117';
     ctx.fillRect(0, 0, width, height);

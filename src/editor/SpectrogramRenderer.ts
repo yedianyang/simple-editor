@@ -118,6 +118,10 @@ export class SpectrogramRenderer {
 
   renderRealtime(): void {
     if (!this.isRealtime || !this.analyserNode) return;
+    if (this.width <= 0 || this.height <= 0) {
+      this.animationFrame = requestAnimationFrame(() => this.renderRealtime());
+      return;
+    }
 
     const ctx = this.ctx;
     const width = this.width;
@@ -213,6 +217,8 @@ export class SpectrogramRenderer {
     const ctx = this.ctx;
     const width = this.width;
     const height = this.height;
+
+    if (width <= 0 || height <= 0) return;
 
     ctx.fillStyle = '#0d1117';
     ctx.fillRect(0, 0, width, height);

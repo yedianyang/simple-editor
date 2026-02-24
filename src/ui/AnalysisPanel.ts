@@ -5,6 +5,8 @@
 export class AnalysisPanel {
   /** Called when a tab is clicked while the panel is collapsed. */
   onRequestExpand: (() => void) | null = null;
+  /** Called after the active tab changes. */
+  onTabChange: ((tabId: string) => void) | null = null;
 
   private container: HTMLElement;
   private tabButtons: HTMLButtonElement[];
@@ -55,6 +57,7 @@ export class AnalysisPanel {
     }
 
     localStorage.setItem('analysis.activeTab', tabId);
+    if (this.onTabChange) this.onTabChange(tabId);
   }
 
   /** Returns the currently active tab identifier. */

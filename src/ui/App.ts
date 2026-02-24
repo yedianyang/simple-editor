@@ -206,6 +206,12 @@ export class App {
         this.sonogramRenderer.setScrollOffset(this.timelineRenderer.scrollOffsetX);
       }
     };
+
+    this.timelineRenderer.onSelectionChange = () => {
+      const sel = this.timelineRenderer?.getSelection();
+      this.spectrogramRenderer.setSelection(sel ? sel.start : null, sel ? sel.end : null);
+      this.updateUI();
+    };
   }
 
   setupEventListeners(): void {
@@ -805,6 +811,7 @@ export class App {
       if (this.timelineRenderer) {
         this.useTimeline = true;
         this.waveformRenderer.disabled = true;
+        this.waveformRenderer.detachListeners();
         this.bufferPool.clear();
         this.timelineModel.createTimeline(audioBuffer.sampleRate);
         this.timelineUndoManager.clear();
@@ -1593,6 +1600,29 @@ export class App {
 
       this.analysisPanel.onRequestExpand = () => {
         this.bottomPanel?.expand();
+      };
+
+      // Force analysis renderers to resize when bottom panel expands.
+      // Double-rAF ensures the browser has fully computed layout after
+      // display:none → visible transition.
+      this.bottomPanel.onStateChange = (collapsed: boolean) => {
+        if (!collapsed) {
+          requestAnimationFrame(() => requestAnimationFrame(() => {
+            this.spectrogramRenderer.resize();
+            this.sonogramRenderer?.resize();
+          }));
+        }
+      };
+
+      // Force the newly-visible renderer to resize on tab switch
+      this.analysisPanel.onTabChange = (tabId: string) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          if (tabId === 'spectrum') {
+            this.spectrogramRenderer.resize();
+          } else if (tabId === 'sonogram') {
+            this.sonogramRenderer?.resize();
+          }
+        }));
       };
     }
   }

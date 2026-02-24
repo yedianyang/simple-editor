@@ -36,6 +36,9 @@ export class CollapsiblePanel {
   private handleEl: HTMLDivElement;
   private headerEl: HTMLElement | null;
 
+  /** Called when panel transitions between collapsed and expanded states. */
+  onStateChange: ((collapsed: boolean) => void) | null = null;
+
   /** Bound references for cleanup */
   private readonly onHeaderClick: () => void;
   private readonly onHandleMouseDown: (e: MouseEvent) => void;
@@ -94,6 +97,7 @@ export class CollapsiblePanel {
     this.collapsed = false;
     this.applyState();
     this.saveState();
+    if (this.onStateChange) this.onStateChange(false);
   }
 
   /** Force the panel into collapsed state. */
@@ -101,6 +105,7 @@ export class CollapsiblePanel {
     this.collapsed = true;
     this.applyState();
     this.saveState();
+    if (this.onStateChange) this.onStateChange(true);
   }
 
   /** Returns true if the panel is currently collapsed. */
@@ -242,6 +247,7 @@ export class CollapsiblePanel {
       this.container.classList.remove('resizing');
       document.body.style.userSelect = '';
       this.saveState();
+      if (this.onStateChange) this.onStateChange(this.collapsed);
     };
 
     document.addEventListener('mousemove', onMouseMove);

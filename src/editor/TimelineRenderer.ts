@@ -23,7 +23,7 @@ const COLOR_TRACK_BORDER = '#2a2a2a';
 // ---- Peak cache block size ----
 const PEAK_BLOCK_SIZE = 256;
 
-type DragMode = 'none' | 'playhead' | 'clipMove' | 'trimStart' | 'trimEnd';
+type DragMode = 'none' | 'selection' | 'clipMove' | 'trimStart' | 'trimEnd';
 
 interface DragState {
   mode: DragMode;
@@ -35,6 +35,8 @@ interface DragState {
   originalValue: number;
   startMouseX: number;
   startMouseY: number;
+  /** Whether the mouse has moved > threshold since mousedown. */
+  hasDragged: boolean;
 }
 
 interface ClipPeakEntry {
@@ -71,6 +73,10 @@ export class TimelineRenderer {
 
   private playheadSample = 0;
 
+  // ---- Time selection ----
+  selectionStartSample: number | null = null;
+  selectionEndSample: number | null = null;
+
   // ---- Peak caches ----
   /** Per-buffer peak cache at fixed PEAK_BLOCK_SIZE. bufferId -> Float32Array */
   private bufferPeakCaches = new Map<string, Float32Array>();
@@ -86,6 +92,7 @@ export class TimelineRenderer {
     originalValue: 0,
     startMouseX: 0,
     startMouseY: 0,
+    hasDragged: false,
   };
 
   // ---- Callbacks ----
@@ -97,6 +104,8 @@ export class TimelineRenderer {
   onTrackSoloToggle: ((trackId: string) => void) | null = null;
   onZoomChange: (() => void) | null = null;
   onScrollChange: (() => void) | null = null;
+
+  onSelectionChange: (() => void) | null = null;
 
   // Also expose split/delete for keyboard shortcuts
   onClipSplit: ((trackId: string, clipId: string, splitSample: number) => void) | null = null;
@@ -118,7 +127,18 @@ export class TimelineRenderer {
     this.bufferPool = bufferPool;
     this.bufferPeakCaches.clear();
     this.clipPeakCaches.clear();
+    this.selectionStartSample = null;
+    this.selectionEndSample = null;
     this.render();
+  }
+
+  /** Returns the normalized selection range, or null if no selection. */
+  getSelection(): { start: number; end: number } | null {
+    if (this.selectionStartSample === null || this.selectionEndSample === null) return null;
+    return {
+      start: Math.min(this.selectionStartSample, this.selectionEndSample),
+      end: Math.max(this.selectionStartSample, this.selectionEndSample),
+    };
   }
 
   setPlayheadPosition(sample: number): void {
@@ -262,8 +282,14 @@ export class TimelineRenderer {
    * Hit-test a clip at the given canvas-local coordinate.
    * Returns the clip, its track, and the interaction zone -- or null.
    */
+  /**
+   * Pro Tools-style "Smart Tool" hit test.
+   *   - Clip edges → trim
+   *   - Upper half of track → select (time selection)
+   *   - Lower half of track → move (clip drag)
+   */
   private hitTestClip(x: number, y: number): {
-    clip: Clip; track: Track; zone: 'trimStart' | 'trimEnd' | 'body';
+    clip: Clip; track: Track; zone: 'trimStart' | 'trimEnd' | 'select' | 'move';
   } | null {
     if (!this.timeline || x < TRACK_HEADER_WIDTH) return null;
     const trackIndex = this.yToTrackIndex(y);
@@ -275,12 +301,14 @@ export class TimelineRenderer {
       const clipEndPx = this.sampleToPixel(clip.timelineOffset + clip.duration);
 
       if (x >= clipStartPx && x <= clipEndPx) {
-        let zone: 'trimStart' | 'trimEnd' | 'body' = 'body';
-        if (x - clipStartPx <= TRIM_HANDLE_WIDTH) {
-          zone = 'trimStart';
-        } else if (clipEndPx - x <= TRIM_HANDLE_WIDTH) {
-          zone = 'trimEnd';
-        }
+        // Edges take priority regardless of Y
+        if (x - clipStartPx <= TRIM_HANDLE_WIDTH) return { clip, track, zone: 'trimStart' };
+        if (clipEndPx - x <= TRIM_HANDLE_WIDTH) return { clip, track, zone: 'trimEnd' };
+
+        // Split body by Y: upper half = select, lower half = move
+        const trackTopY = RULER_HEIGHT + trackIndex * TRACK_HEIGHT - this.scrollOffsetY;
+        const midY = trackTopY + TRACK_HEIGHT / 2;
+        const zone = y < midY ? 'select' : 'move';
         return { clip, track, zone };
       }
     }
@@ -336,65 +364,64 @@ export class TimelineRenderer {
     // 2. Ignore clicks in the header area that missed buttons
     if (x < TRACK_HEADER_WIDTH) return;
 
-    // 3. Hit-test clips
+    // 3. Hit-test clips (Smart Tool: zone depends on Y position)
     const hit = this.hitTestClip(x, y);
     if (hit) {
       const { clip, track, zone } = hit;
 
-      // Select the clicked clip
-      this.timeline.selectedClipIds = [clip.id];
-      if (this.onClipSelect) this.onClipSelect(clip.id, track.id);
-
       if (zone === 'trimStart') {
+        this.timeline.selectedClipIds = [clip.id];
+        if (this.onClipSelect) this.onClipSelect(clip.id, track.id);
         this.drag = {
-          mode: 'trimStart',
-          clipId: clip.id,
-          trackId: track.id,
-          grabOffsetSamples: 0,
-          originalValue: clip.sourceStart,
-          startMouseX: x,
-          startMouseY: y,
+          mode: 'trimStart', clipId: clip.id, trackId: track.id,
+          grabOffsetSamples: 0, originalValue: clip.sourceStart,
+          startMouseX: x, startMouseY: y, hasDragged: false,
         };
-      } else if (zone === 'trimEnd') {
+        this.render();
+        return;
+      }
+
+      if (zone === 'trimEnd') {
+        this.timeline.selectedClipIds = [clip.id];
+        if (this.onClipSelect) this.onClipSelect(clip.id, track.id);
         this.drag = {
-          mode: 'trimEnd',
-          clipId: clip.id,
-          trackId: track.id,
-          grabOffsetSamples: 0,
-          originalValue: clip.sourceEnd,
-          startMouseX: x,
-          startMouseY: y,
+          mode: 'trimEnd', clipId: clip.id, trackId: track.id,
+          grabOffsetSamples: 0, originalValue: clip.sourceEnd,
+          startMouseX: x, startMouseY: y, hasDragged: false,
         };
-      } else {
-        // Body drag -> move
+        this.render();
+        return;
+      }
+
+      if (zone === 'move') {
+        // Lower half of track → move clip
+        this.timeline.selectedClipIds = [clip.id];
+        if (this.onClipSelect) this.onClipSelect(clip.id, track.id);
         const sampleAtMouse = this.pixelToSample(x);
         this.drag = {
-          mode: 'clipMove',
-          clipId: clip.id,
-          trackId: track.id,
+          mode: 'clipMove', clipId: clip.id, trackId: track.id,
           grabOffsetSamples: sampleAtMouse - clip.timelineOffset,
           originalValue: clip.timelineOffset,
-          startMouseX: x,
-          startMouseY: y,
+          startMouseX: x, startMouseY: y, hasDragged: false,
         };
+        this.render();
+        return;
       }
-      this.render();
-      return;
+
+      // zone === 'select' → fall through to selection logic below
     }
 
-    // 4. Click on empty area -> move playhead
+    // 4. Selection tool (empty space or upper half of clip)
     const sample = Math.max(0, this.pixelToSample(x));
     this.playheadSample = sample;
     this.timeline.playheadSample = sample;
+    this.selectionStartSample = null;
+    this.selectionEndSample = null;
     this.timeline.selectedClipIds = [];
     this.drag = {
-      mode: 'playhead',
-      clipId: '',
-      trackId: '',
-      grabOffsetSamples: 0,
-      originalValue: 0,
-      startMouseX: x,
-      startMouseY: y,
+      mode: 'selection', clipId: '', trackId: '',
+      grabOffsetSamples: 0, originalValue: sample,
+      startMouseX: x, startMouseY: y, hasDragged: false,
     };
     if (this.onPlayheadChange) this.onPlayheadChange(sample);
     this.render();
@@ -402,17 +429,27 @@ export class TimelineRenderer {
 
   private onMouseMove(e: MouseEvent): void {
     if (!this.timeline) return;
-    const { x } = this.clientToLocal(e);
+    const { x, y } = this.clientToLocal(e);
 
-    // Update cursor when not dragging
+    // Update cursor when not dragging (Smart Tool cursor)
     if (this.drag.mode === 'none') {
-      const { y } = this.clientToLocal(e);
-      const hit = this.hitTestClip(x, y);
-      if (hit) {
-        this.canvas.style.cursor =
-          hit.zone === 'trimStart' || hit.zone === 'trimEnd' ? 'col-resize' : 'grab';
-      } else {
+      if (x < TRACK_HEADER_WIDTH) {
         this.canvas.style.cursor = 'default';
+      } else {
+        const hit = this.hitTestClip(x, y);
+        if (hit) {
+          if (hit.zone === 'trimStart' || hit.zone === 'trimEnd') {
+            this.canvas.style.cursor = 'col-resize';
+          } else if (hit.zone === 'move') {
+            this.canvas.style.cursor = 'grab';
+          } else {
+            // 'select' — upper half
+            this.canvas.style.cursor = 'text';
+          }
+        } else {
+          // Empty space → selection tool
+          this.canvas.style.cursor = 'text';
+        }
       }
       return;
     }
@@ -420,11 +457,18 @@ export class TimelineRenderer {
     const deltaPixels = x - this.drag.startMouseX;
     const deltaSamples = Math.round(deltaPixels * this.samplesPerPixel);
 
-    if (this.drag.mode === 'playhead') {
-      const sample = Math.max(0, this.pixelToSample(x));
-      this.playheadSample = sample;
-      this.timeline.playheadSample = sample;
-      if (this.onPlayheadChange) this.onPlayheadChange(sample);
+    if (this.drag.mode === 'selection') {
+      const currentSample = Math.max(0, this.pixelToSample(x));
+      this.playheadSample = currentSample;
+      this.timeline.playheadSample = currentSample;
+      if (this.onPlayheadChange) this.onPlayheadChange(currentSample);
+
+      // Start creating selection after > 5px movement
+      if (Math.abs(deltaPixels) > 5) {
+        this.drag.hasDragged = true;
+        this.selectionStartSample = this.drag.originalValue;
+        this.selectionEndSample = currentSample;
+      }
       this.render();
       return;
     }
@@ -461,8 +505,28 @@ export class TimelineRenderer {
   }
 
   private onMouseUp(): void {
+    if (this.drag.mode === 'selection') {
+      if (this.drag.hasDragged) {
+        // Normalize selection range
+        if (this.selectionStartSample !== null && this.selectionEndSample !== null) {
+          if (this.selectionStartSample > this.selectionEndSample) {
+            [this.selectionStartSample, this.selectionEndSample] =
+              [this.selectionEndSample, this.selectionStartSample];
+          }
+          // Too small? Clear it
+          if (this.selectionEndSample - this.selectionStartSample < 10) {
+            this.selectionStartSample = null;
+            this.selectionEndSample = null;
+          }
+        }
+        if (this.onSelectionChange) this.onSelectionChange();
+        this.render();
+      } else {
+        // Click without drag: just set playhead, clear selection
+        if (this.onSelectionChange) this.onSelectionChange();
+      }
+    }
     this.drag.mode = 'none';
-    this.canvas.style.cursor = 'default';
   }
 
   // ==================================================================
@@ -475,6 +539,7 @@ export class TimelineRenderer {
 
     const { x } = this.clientToLocal(e);
     const isCmdHeld = e.metaKey || e.ctrlKey;
+    const isShiftHeld = e.shiftKey;
 
     // Cmd + wheel = zoom
     if (isCmdHeld) {
@@ -493,16 +558,18 @@ export class TimelineRenderer {
       return;
     }
 
-    const isHorizontal = Math.abs(e.deltaX) > Math.abs(e.deltaY) * 0.5;
+    // Native horizontal scroll (trackpad two-finger swipe) or Shift+wheel
+    const isNativeHorizontal = Math.abs(e.deltaX) > Math.abs(e.deltaY) * 0.5;
 
-    if (isHorizontal) {
-      // Horizontal scroll (trackpad swipe or shift+wheel)
-      this.scrollOffsetX += e.deltaX * this.samplesPerPixel * 0.5;
+    if (isNativeHorizontal || isShiftHeld) {
+      // Horizontal time-axis scroll
+      const delta = isNativeHorizontal ? e.deltaX : e.deltaY;
+      this.scrollOffsetX += delta * this.samplesPerPixel * 0.5;
       this.clampScroll();
       this.render();
       if (this.onScrollChange) this.onScrollChange();
     } else {
-      // Vertical scroll
+      // Vertical scroll (multi-track)
       this.scrollOffsetY += e.deltaY;
       this.clampScroll();
       this.render();
@@ -699,6 +766,19 @@ export class TimelineRenderer {
     ctx.clip();
     this.renderTrackLanes();
     ctx.restore();
+
+    // Time selection overlay (drawn above clips, below headers and playhead)
+    if (this.selectionStartSample !== null && this.selectionEndSample !== null) {
+      const selStart = Math.min(this.selectionStartSample, this.selectionEndSample);
+      const selEnd = Math.max(this.selectionStartSample, this.selectionEndSample);
+      const startPx = this.sampleToPixel(selStart);
+      const endPx = this.sampleToPixel(selEnd);
+      ctx.fillStyle = 'rgba(37, 99, 235, 0.2)';
+      ctx.fillRect(
+        Math.max(TRACK_HEADER_WIDTH, startPx), RULER_HEIGHT,
+        Math.min(w, endPx) - Math.max(TRACK_HEADER_WIDTH, startPx), h - RULER_HEIGHT,
+      );
+    }
 
     // Track headers on top (so they cover any clip overflow on the left)
     ctx.save();

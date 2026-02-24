@@ -92,15 +92,32 @@ export class WaveformRenderer {
     this.canvas.addEventListener('wheel', this.boundWheel, { passive: false });
   }
 
-  destroy(): void {
-    this.resizeObserver?.disconnect();
-    this.resizeObserver = null;
+  /**
+   * Non-destructively remove all event listeners and ResizeObserver.
+   * Use when switching to timeline mode — keeps audioBuffer/peaks intact.
+   */
+  detachListeners(): void {
     this.canvas.removeEventListener('mousedown', this.boundMouseDown);
     this.canvas.removeEventListener('mousemove', this.boundMouseMove);
     this.canvas.removeEventListener('mouseup', this.boundMouseUp);
     this.canvas.removeEventListener('mouseleave', this.boundMouseUp);
     this.canvas.removeEventListener('dblclick', this.boundDblClick);
     this.canvas.removeEventListener('wheel', this.boundWheel);
+    this.resizeObserver?.disconnect();
+    this.resizeObserver = null;
+    // Hide stale selection overlay
+    const info = document.getElementById('selectionInfo');
+    if (info) info.classList.remove('visible');
+  }
+
+  /** Re-attach event listeners and ResizeObserver (e.g. reverting to legacy mode). */
+  attachListeners(): void {
+    this.setupInteraction();
+    this.setupResize();
+  }
+
+  destroy(): void {
+    this.detachListeners();
     this.audioBuffer = null;
     this.peakCache = null;
     this.peaks = [];

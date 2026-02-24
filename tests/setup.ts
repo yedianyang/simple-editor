@@ -365,6 +365,121 @@ class MockAudioContext {
   }
 }
 
+// ==================== Mock ResizeObserver ====================
+
+class MockResizeObserver {
+  callback: ResizeObserverCallback;
+  observedElements: Element[] = [];
+
+  constructor(callback: ResizeObserverCallback) {
+    this.callback = callback;
+  }
+
+  observe(target: Element): void {
+    this.observedElements.push(target);
+  }
+
+  unobserve(target: Element): void {
+    this.observedElements = this.observedElements.filter(el => el !== target);
+  }
+
+  disconnect(): void {
+    this.observedElements = [];
+  }
+}
+
+// ==================== Mock CanvasRenderingContext2D ====================
+
+class MockCanvasRenderingContext2D {
+  canvas: HTMLCanvasElement;
+  fillStyle: string | CanvasGradient | CanvasPattern = '#000000';
+  strokeStyle: string | CanvasGradient | CanvasPattern = '#000000';
+  lineWidth = 1;
+  font = '10px sans-serif';
+  textAlign: CanvasTextAlign = 'start';
+  textBaseline: CanvasTextBaseline = 'alphabetic';
+  globalAlpha = 1.0;
+  shadowColor = 'rgba(0, 0, 0, 0)';
+  shadowBlur = 0;
+
+  constructor(canvas: HTMLCanvasElement) {
+    this.canvas = canvas;
+  }
+
+  // Drawing
+  fillRect(_x: number, _y: number, _w: number, _h: number): void {}
+  strokeRect(_x: number, _y: number, _w: number, _h: number): void {}
+  clearRect(_x: number, _y: number, _w: number, _h: number): void {}
+  fillText(_text: string, _x: number, _y: number): void {}
+  strokeText(_text: string, _x: number, _y: number): void {}
+
+  // Path
+  beginPath(): void {}
+  closePath(): void {}
+  moveTo(_x: number, _y: number): void {}
+  lineTo(_x: number, _y: number): void {}
+  quadraticCurveTo(_cpx: number, _cpy: number, _x: number, _y: number): void {}
+  bezierCurveTo(_cp1x: number, _cp1y: number, _cp2x: number, _cp2y: number, _x: number, _y: number): void {}
+  arc(_x: number, _y: number, _r: number, _s: number, _e: number): void {}
+  rect(_x: number, _y: number, _w: number, _h: number): void {}
+  stroke(): void {}
+  fill(): void {}
+  clip(): void {}
+
+  // Transform
+  setTransform(_a: number, _b: number, _c: number, _d: number, _e: number, _f: number): void {}
+  translate(_x: number, _y: number): void {}
+  rotate(_angle: number): void {}
+  scale(_x: number, _y: number): void {}
+  save(): void {}
+  restore(): void {}
+
+  // Line style
+  setLineDash(_segments: number[]): void {}
+  getLineDash(): number[] { return []; }
+
+  // Gradient
+  createLinearGradient(_x0: number, _y0: number, _x1: number, _y1: number): CanvasGradient {
+    return { addColorStop() {} } as unknown as CanvasGradient;
+  }
+  createRadialGradient(_x0: number, _y0: number, _r0: number, _x1: number, _y1: number, _r1: number): CanvasGradient {
+    return { addColorStop() {} } as unknown as CanvasGradient;
+  }
+
+  // ImageData
+  createImageData(width: number, height: number): ImageData {
+    const data = new Uint8ClampedArray(Math.max(0, width * height * 4));
+    return { data, width, height, colorSpace: 'srgb' as PredefinedColorSpace } as ImageData;
+  }
+  putImageData(_imageData: ImageData, _dx: number, _dy: number): void {}
+  getImageData(_sx: number, _sy: number, sw: number, sh: number): ImageData {
+    return this.createImageData(sw, sh);
+  }
+
+  // Measurement
+  measureText(_text: string): TextMetrics {
+    return { width: 0 } as TextMetrics;
+  }
+
+  drawImage(): void {}
+  isPointInPath(): boolean { return false; }
+}
+
+// ==================== Mock Worker ====================
+
+class MockWorker implements EventTarget {
+  onmessage: ((e: MessageEvent) => void) | null = null;
+  onerror: ((e: ErrorEvent) => void) | null = null;
+
+  constructor(_url?: string | URL, _options?: WorkerOptions) {}
+
+  postMessage(_data: unknown, _transfer?: Transferable[]): void {}
+  terminate(): void {}
+  addEventListener(_type: string, _listener: EventListenerOrEventListenerObject): void {}
+  removeEventListener(_type: string, _listener: EventListenerOrEventListenerObject): void {}
+  dispatchEvent(_event: Event): boolean { return true; }
+}
+
 // ==================== Install Global Mocks ====================
 
 // Expose mock classes for test assertions
@@ -383,11 +498,34 @@ export {
   MockChannelSplitterNode,
   MockChannelMergerNode,
   MockOfflineAudioContext,
+  MockResizeObserver,
+  MockCanvasRenderingContext2D,
+  MockWorker,
 };
 
 // Helper to set mock currentTime for tests
 export function setMockCurrentTime(time: number): void {
   _mockCurrentTime = time;
+}
+
+/**
+ * Create a canvas element inside a parent div with mocked getBoundingClientRect.
+ * Useful for renderer tests where jsdom doesn't perform layout.
+ */
+export function createMockCanvas(parentWidth = 800, parentHeight = 400): HTMLCanvasElement {
+  const parent = document.createElement('div');
+  const canvas = document.createElement('canvas');
+  parent.appendChild(canvas);
+  document.body.appendChild(parent);
+
+  parent.getBoundingClientRect = () => ({
+    x: 0, y: 0,
+    width: parentWidth, height: parentHeight,
+    top: 0, right: parentWidth, bottom: parentHeight, left: 0,
+    toJSON() {},
+  } as DOMRect);
+
+  return canvas;
 }
 
 // Assign to globalThis
@@ -405,6 +543,16 @@ export function setMockCurrentTime(time: number): void {
 (globalThis as any).StereoPannerNode = MockStereoPannerNode;
 (globalThis as any).ChannelSplitterNode = MockChannelSplitterNode;
 (globalThis as any).ChannelMergerNode = MockChannelMergerNode;
+(globalThis as any).ResizeObserver = MockResizeObserver;
+(globalThis as any).Worker = MockWorker;
+
+// Patch HTMLCanvasElement.getContext to return mock 2d context (jsdom returns null)
+(HTMLCanvasElement.prototype as any).getContext = function (contextId: string): unknown {
+  if (contextId === '2d') {
+    return new MockCanvasRenderingContext2D(this);
+  }
+  return null;
+};
 
 // Mock requestAnimationFrame / cancelAnimationFrame
 let _rafId = 0;
