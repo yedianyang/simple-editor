@@ -839,11 +839,19 @@ export class App {
   private showLoadingIndicator(fileName: string): void {
     const el = document.getElementById('fileInfo');
     if (el) el.textContent = `Loading ${fileName}...`;
+    const overlay = document.getElementById('loadingOverlay');
+    if (overlay) {
+      const text = overlay.querySelector('.loading-text');
+      if (text) text.textContent = `Loading ${fileName}...`;
+      overlay.style.display = 'flex';
+    }
   }
 
   private hideLoadingIndicator(): void {
     const el = document.getElementById('fileInfo');
     if (el) el.textContent = this.fileName || 'No file loaded';
+    const overlay = document.getElementById('loadingOverlay');
+    if (overlay) overlay.style.display = 'none';
   }
 
   private onAudioLoaded(audioBuffer: AudioBuffer, fileId: number | null, parsedData?: ParsedAudioData | null): void {

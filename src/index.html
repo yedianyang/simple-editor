@@ -1600,7 +1600,7 @@
     <!-- ============================
          Titlebar (macOS hiddenInset)
          ============================ -->
-    <div class="titlebar" id="titlebar">
+    <div class="titlebar" id="titlebar" data-tauri-drag-region
         <span class="titlebar-title">FieldCorder</span>
     </div>
 
@@ -2180,6 +2180,14 @@
                 <button id="metadataExportBtn" class="primary">Continue to Export</button>
             </div>
         </div>
+    </div>
+
+    <!-- ============================
+         Loading Overlay
+         ============================ -->
+    <div id="loadingOverlay" class="loading-overlay" style="display: none;">
+        <div class="loading-spinner"></div>
+        <span class="loading-text">Loading...</span>
     </div>
 
     <!-- ============================

@@ -178,7 +178,7 @@ export class CollapsiblePanel {
       this.container.classList.remove('collapsed');
       if (this.direction === 'horizontal') {
         this.container.style.width = this.size + 'px';
-        this.container.style.minWidth = '';
+        this.container.style.minWidth = this.size + 'px';
         this.container.style.overflow = '';
       } else {
         this.container.style.height = this.size + 'px';
@@ -227,7 +227,7 @@ export class CollapsiblePanel {
         this.collapsed = false;
         this.container.classList.remove('collapsed');
         if (this.direction === 'horizontal') {
-          this.container.style.minWidth = '';
+          this.container.style.minWidth = newSize + 'px';
           this.container.style.overflow = '';
         }
       }
@@ -236,6 +236,7 @@ export class CollapsiblePanel {
 
       if (this.direction === 'horizontal') {
         this.container.style.width = newSize + 'px';
+        this.container.style.minWidth = newSize + 'px';
       } else {
         this.container.style.height = newSize + 'px';
       }
