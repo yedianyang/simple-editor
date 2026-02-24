@@ -180,6 +180,16 @@ export class App {
         new MoveClipCommand(this.timelineModel, trackId, clipId, newOffset),
       );
       this.timelineRenderer?.render();
+
+      // Re-schedule playback to reflect move changes on already-playing sources
+      if (this.audioEngine.isPlaying && this.useTimeline) {
+        const currentSample = Math.floor(
+          this.audioEngine.getCurrentTime() * this.timelineModel.timeline.sampleRate,
+        );
+        this.audioEngine.playTimeline(
+          this.timelineModel.timeline, this.bufferPool, currentSample,
+        );
+      }
     };
 
     this.timelineRenderer.onClipTrim = (clipId, trackId, edge, newValue) => {
