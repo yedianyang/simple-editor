@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::PathBuf;
+use tauri::ipc::Response;
 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder, PredefinedMenuItem};
 use tauri::Emitter;
 
@@ -334,6 +335,39 @@ fn parse_wav_data(data: &[u8]) -> Result<AudioFileData, String> {
     })
 }
 
+/// Read and parse a WAV file, returning binary PCM data via IPC Response.
+/// Eliminates JSON serialization overhead for million-float arrays.
+///
+/// Binary layout:
+/// - [0..4]   sample_rate: u32 LE
+/// - [4..6]   num_channels: u16 LE
+/// - [6..8]   padding: u16 (0)
+/// - [8..16]  num_samples: u64 LE
+/// - [16..]   raw f32 PCM, channel-sequential: [ch0_all, ch1_all, ...]
+#[tauri::command]
+async fn read_audio_file_binary(path: String) -> Result<Response, String> {
+    let data = fs::read(&path).map_err(|e| format!("Failed to read '{}': {}", path, e))?;
+    let parsed = parse_wav_data(&data)?;
+
+    let total_floats = parsed.num_channels as usize * parsed.num_samples;
+    let mut buf = Vec::with_capacity(16 + total_floats * 4);
+
+    buf.extend_from_slice(&parsed.sample_rate.to_le_bytes());
+    buf.extend_from_slice(&parsed.num_channels.to_le_bytes());
+    buf.extend_from_slice(&0u16.to_le_bytes()); // padding for alignment
+    buf.extend_from_slice(&(parsed.num_samples as u64).to_le_bytes());
+
+    for ch_data in &parsed.channels {
+        // SAFETY: f32 has a well-defined 4-byte LE layout on all supported platforms.
+        let bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(ch_data.as_ptr() as *const u8, ch_data.len() * 4)
+        };
+        buf.extend_from_slice(bytes);
+    }
+
+    Ok(Response::new(buf))
+}
+
 // ── Folder Scanning ───────────────────────────────────────────────
 
 #[derive(serde::Serialize)]
@@ -570,6 +604,7 @@ pub fn run() {
             write_file,
             file_info,
             read_audio_file,
+            read_audio_file_binary,
             scan_folder,
             open_folder_dialog,
         ])
@@ -729,6 +764,46 @@ mod tests {
         assert_eq!(result.channels[0][1], 0.0); // Inf → 0.0
         assert_eq!(result.channels[0][2], 0.0); // -Inf → 0.0
         assert!((result.channels[0][3] - 0.3).abs() < 1e-6);
+    }
+
+    /// Test binary serialization layout matches the documented spec.
+    #[test]
+    fn test_binary_serialization_layout() {
+        let sample_l: f32 = 0.75;
+        let sample_r: f32 = -0.5;
+        let mut data = Vec::new();
+        data.extend_from_slice(&sample_l.to_le_bytes());
+        data.extend_from_slice(&sample_r.to_le_bytes());
+
+        let wav = build_wav(3, 32, 2, 44100, &data);
+        let parsed = parse_wav_data(&wav).unwrap();
+
+        // Serialize to binary using the same logic as read_audio_file_binary
+        let total_floats = parsed.num_channels as usize * parsed.num_samples;
+        let mut buf = Vec::with_capacity(16 + total_floats * 4);
+        buf.extend_from_slice(&parsed.sample_rate.to_le_bytes());
+        buf.extend_from_slice(&parsed.num_channels.to_le_bytes());
+        buf.extend_from_slice(&0u16.to_le_bytes());
+        buf.extend_from_slice(&(parsed.num_samples as u64).to_le_bytes());
+        for ch_data in &parsed.channels {
+            let bytes: &[u8] = unsafe {
+                std::slice::from_raw_parts(ch_data.as_ptr() as *const u8, ch_data.len() * 4)
+            };
+            buf.extend_from_slice(bytes);
+        }
+
+        // Verify header
+        assert_eq!(buf.len(), 16 + 2 * 4); // 16 header + 2 floats
+        assert_eq!(u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]), 44100);
+        assert_eq!(u16::from_le_bytes([buf[4], buf[5]]), 2);
+        assert_eq!(u16::from_le_bytes([buf[6], buf[7]]), 0); // padding
+        assert_eq!(u64::from_le_bytes([buf[8], buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15]]), 1);
+
+        // Verify PCM data: ch0 then ch1
+        let ch0_val = f32::from_le_bytes([buf[16], buf[17], buf[18], buf[19]]);
+        let ch1_val = f32::from_le_bytes([buf[20], buf[21], buf[22], buf[23]]);
+        assert!((ch0_val - 0.75).abs() < 1e-6);
+        assert!((ch1_val - (-0.5)).abs() < 1e-6);
     }
 
     #[test]
