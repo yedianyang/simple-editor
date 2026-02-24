@@ -168,8 +168,8 @@ export class CollapsiblePanel {
     if (this.collapsed) {
       this.container.classList.add('collapsed');
       if (this.direction === 'horizontal') {
-        this.container.style.width = '0';
-        this.container.style.minWidth = '0';
+        this.container.style.width = '28px';
+        this.container.style.minWidth = '28px';
         this.container.style.overflow = 'hidden';
       }
       // For vertical panels, the collapsed class is enough:
