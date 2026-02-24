@@ -12,6 +12,8 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
+INITIAL_PROMPT="执行启动流程：读取 CLAUDE.md，调用 TaskList 查看任务状态，汇报就绪或继续未完成任务。"
+
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${BLUE}  FieldCorder Claude Code Team${NC}"
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -39,9 +41,9 @@ if tmux has-session -t $SESSION 2>/dev/null; then
 fi
 
 tmux new-session -d -s $SESSION -c $PROJECT_DIR
-tmux send-keys -t $SESSION 'claude' Enter
 
-sleep 2
+# 带初始 prompt 启动 claude（自动触发启动流程）
+tmux send-keys -t $SESSION "claude --dangerously-skip-permissions \"$INITIAL_PROMPT\"" Enter
 
 echo -e "${GREEN}✅ Claude Code started: tmux session '$SESSION'${NC}"
 echo ""
@@ -50,15 +52,12 @@ echo "  模型：Lead = claude-opus-4-6 / Teammates = claude-sonnet-4-6"
 echo "  团队：main / generator / frontend / quality / docs"
 echo "  任务管理：TaskCreate / TaskList / TaskUpdate（内建工具）"
 echo "  通讯：SendMessage（内建工具）"
-echo "  协作：Jingxi → Metro → Lead → Teammates"
 echo ""
 echo -e "${BLUE}── Worktrees ──────────────────────────────────────${NC}"
-echo "  主目录（Lead+Generator）: $PROJECT_DIR"
-echo "  Frontend:  /Volumes/Metro-External/fieldcorder-frontend"
-echo "  Quality:   /Volumes/Metro-External/fieldcorder-quality"
-echo "  Docs:      /Volumes/Metro-External/fieldcorder-docs"
-echo ""
-echo "  并行工作时，在新 Terminal 窗口 cd 到对应目录后运行 claude"
+echo "  主目录（Lead）:   $PROJECT_DIR"
+echo "  Frontend:         /Volumes/Metro-External/fieldcorder-frontend"
+echo "  Quality:          /Volumes/Metro-External/fieldcorder-quality"
+echo "  Docs:             /Volumes/Metro-External/fieldcorder-docs"
 echo ""
 echo -e "${BLUE}── 操作 ───────────────────────────────────────────${NC}"
 echo "  进入 session:   tmux attach -t $SESSION"
@@ -66,7 +65,7 @@ echo "  后台分离:       Ctrl+B → D"
 echo "  查看历史:       Ctrl+B → [ (方向键滚动, Q 退出)"
 echo "  停止 session:   tmux kill-session -t $SESSION"
 echo ""
-echo -e "${YELLOW}Tip: 进入后直接说需求，Lead 会拆任务分配给 agents${NC}"
+echo -e "${YELLOW}Tip: 进入后 Lead 已自动开始启动流程${NC}"
 echo ""
 
 read -p "立即 attach 进入？[Y/n] " -n 1 -r
