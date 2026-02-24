@@ -185,6 +185,7 @@
             flex-direction: column;
             overflow: hidden;
             flex-shrink: 0;
+            position: relative;
         }
 
         .file-browser-header {
@@ -349,6 +350,7 @@
             flex-direction: column;
             overflow: hidden;
             min-width: 0;
+            position: relative;
         }
 
         /* Cue point lane */
@@ -496,6 +498,7 @@
             flex-direction: column;
             overflow-y: auto;
             flex-shrink: 0;
+            position: relative;
         }
 
         .sidebar-section {
@@ -1600,7 +1603,7 @@
     <!-- ============================
          Titlebar (macOS hiddenInset)
          ============================ -->
-    <div class="titlebar" id="titlebar" data-tauri-drag-region
+    <div class="titlebar" id="titlebar" data-tauri-drag-region>
         <span class="titlebar-title">FieldCorder</span>
     </div>
 
@@ -1729,6 +1732,12 @@
                         <canvas id="sonogramCanvas"></canvas>
                     </div>
                 </div>
+            </div>
+
+            <!-- Loading Overlay (positioned within editor-area) -->
+            <div id="loadingOverlay" class="loading-overlay" style="display: none;">
+                <div class="loading-spinner"></div>
+                <span class="loading-text">Loading...</span>
             </div>
         </div>
 
@@ -2180,14 +2189,6 @@
                 <button id="metadataExportBtn" class="primary">Continue to Export</button>
             </div>
         </div>
-    </div>
-
-    <!-- ============================
-         Loading Overlay
-         ============================ -->
-    <div id="loadingOverlay" class="loading-overlay" style="display: none;">
-        <div class="loading-spinner"></div>
-        <span class="loading-text">Loading...</span>
     </div>
 
     <!-- ============================

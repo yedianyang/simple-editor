@@ -273,6 +273,7 @@ button:focus-visible {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  position: relative;
   transition: width 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
@@ -473,11 +474,42 @@ button:focus-visible {
 /* Collapsed horizontal panels (sidebars) */
 .left-sidebar.collapsed,
 .right-sidebar.collapsed {
-  width: 0 !important;
-  min-width: 0 !important;
+  width: 28px !important;
+  min-width: 28px !important;
   overflow: hidden;
-  border-width: 0;
   padding: 0;
+}
+
+/* Hide sidebar content when collapsed, but keep the header visible */
+.left-sidebar.collapsed > *:not(.file-browser-header):not(.resize-handle),
+.right-sidebar.collapsed > *:not(.panel-header):not(.resize-handle) {
+  display: none !important;
+}
+
+/* Collapsed sidebar header: vertical text */
+.left-sidebar.collapsed .file-browser-header,
+.right-sidebar.collapsed .panel-header {
+  writing-mode: vertical-lr;
+  text-orientation: mixed;
+  width: 28px;
+  height: 100%;
+  padding: 10px 0;
+  justify-content: flex-start;
+  border-bottom: none;
+  border-right: none;
+}
+
+/* Hide extra buttons in collapsed header */
+.left-sidebar.collapsed .file-browser-header .btn-icon {
+  display: none;
+}
+
+/* Vertical title text in collapsed state */
+.left-sidebar.collapsed .file-browser-title,
+.right-sidebar.collapsed .panel-header-title {
+  writing-mode: vertical-lr;
+  text-orientation: mixed;
+  white-space: nowrap;
 }
 
 /* Collapsed vertical panel (bottom) */
@@ -722,6 +754,7 @@ button:focus-visible {
   display: flex;
   flex-direction: column;
   overflow-y: auto;
+  position: relative;
   transition: width 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
@@ -2305,7 +2338,7 @@ input[type="range"]::-moz-range-thumb {
 }
 
 .loading-overlay {
-  position: fixed;
+  position: absolute;
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);

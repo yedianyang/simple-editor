@@ -954,8 +954,10 @@ export class App {
       this.updateFileInfo();
       this.updateZoomInfo();
       this.updateChannelInfo();
+      this.hideLoadingIndicator();
     } catch (err: any) {
       console.error('Error in onAudioLoaded:', err);
+      this.hideLoadingIndicator();
       alert('Error displaying audio: ' + err.message);
     }
   }
