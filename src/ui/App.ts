@@ -137,6 +137,10 @@ export class App {
 
     this.timelineRenderer.onPlayheadChange = (sample) => {
       this.timelineModel.timeline.playheadSample = sample;
+      // Clear paused state so next play() starts from the new position
+      if (this.audioEngine.isPaused) {
+        this.audioEngine.isPaused = false;
+      }
       if (this.sonogramRenderer) {
         this.sonogramRenderer.setPlayheadPosition(sample);
       }
@@ -198,6 +202,16 @@ export class App {
       );
       this.timelineRenderer?.clearPeakCaches();
       this.timelineRenderer?.render();
+
+      // Re-schedule playback to reflect trim changes on already-playing sources
+      if (this.audioEngine.isPlaying && this.useTimeline) {
+        const currentSample = Math.floor(
+          this.audioEngine.getCurrentTime() * this.timelineModel.timeline.sampleRate,
+        );
+        this.audioEngine.playTimeline(
+          this.timelineModel.timeline, this.bufferPool, currentSample,
+        );
+      }
     };
 
     this.timelineRenderer.onClipSplit = (trackId, clipId, splitSample) => {
