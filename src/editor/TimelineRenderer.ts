@@ -2,13 +2,20 @@ import { Timeline, Track, Clip, CHANNEL_COLORS, formatTime } from '../core/types
 import { BufferPool } from '../core/BufferPool';
 
 // ---- Layout constants ----
-const TRACK_HEADER_WIDTH = 60;
+const TRACK_HEADER_WIDTH = 140;
 const TRACK_HEIGHT = 80;
 const RULER_HEIGHT = 24;
 const TRIM_HANDLE_WIDTH = 5;
 const CLIP_BORDER_RADIUS = 4;
 const MUTE_SOLO_BTN_SIZE = 14;
 const MUTE_SOLO_BTN_GAP = 2;
+
+// ---- Insert rack constants ----
+const INSERT_PILL_HEIGHT = 14;
+const INSERT_PILL_GAP = 2;
+const INSERT_PILL_X = 6;
+const INSERT_PILL_WIDTH = 128; // TRACK_HEADER_WIDTH - 12
+const INSERT_ADD_HEIGHT = 12;
 
 // ---- Color constants ----
 const COLOR_BG = '#1a1a1a';
@@ -111,6 +118,12 @@ export class TimelineRenderer {
   // Also expose split/delete for keyboard shortcuts
   onClipSplit: ((trackId: string, clipId: string, splitSample: number) => void) | null = null;
   onClipDelete: ((trackId: string, clipId: string) => void) | null = null;
+
+  // Insert rack callbacks
+  onInsertAdd: ((trackId: string) => void) | null = null;
+  onInsertClick: ((trackId: string, instanceId: string) => void) | null = null;
+  onInsertBypass: ((trackId: string, instanceId: string) => void) | null = null;
+  onInsertRemove: ((trackId: string, instanceId: string) => void) | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -342,6 +355,48 @@ export class TimelineRenderer {
     return null;
   }
 
+  /**
+   * Hit-test the insert rack area in a track header.
+   * Returns the action to take, or null.
+   */
+  private hitTestInsertRack(x: number, y: number): {
+    trackId: string; action: 'add' | 'click' | 'bypass' | 'remove'; instanceId?: string;
+  } | null {
+    if (!this.timeline || x >= TRACK_HEADER_WIDTH) return null;
+    const trackIndex = this.yToTrackIndex(y);
+    if (trackIndex < 0 || trackIndex >= this.timeline.tracks.length) return null;
+    const track = this.timeline.tracks[trackIndex];
+
+    const trackTopY = RULER_HEIGHT + trackIndex * TRACK_HEIGHT - this.scrollOffsetY;
+    // Insert rack starts below track name (topY + 22)
+    const rackStartY = trackTopY + 22;
+
+    for (let i = 0; i < track.inserts.length; i++) {
+      const pillY = rackStartY + i * (INSERT_PILL_HEIGHT + INSERT_PILL_GAP);
+      if (y >= pillY && y <= pillY + INSERT_PILL_HEIGHT) {
+        const insert = track.inserts[i];
+        // Right side: remove button (last 12px)
+        if (x >= INSERT_PILL_X + INSERT_PILL_WIDTH - 12) {
+          return { trackId: track.id, action: 'remove', instanceId: insert.instanceId };
+        }
+        // Second from right: bypass button (12px before remove)
+        if (x >= INSERT_PILL_X + INSERT_PILL_WIDTH - 24) {
+          return { trackId: track.id, action: 'bypass', instanceId: insert.instanceId };
+        }
+        // Rest of pill: click to open params
+        return { trackId: track.id, action: 'click', instanceId: insert.instanceId };
+      }
+    }
+
+    // [+] button after last pill
+    const addY = rackStartY + track.inserts.length * (INSERT_PILL_HEIGHT + INSERT_PILL_GAP);
+    if (y >= addY && y <= addY + INSERT_ADD_HEIGHT && x >= INSERT_PILL_X && x <= INSERT_PILL_X + 30) {
+      return { trackId: track.id, action: 'add' };
+    }
+
+    return null;
+  }
+
   // ==================================================================
   // Mouse handlers
   // ==================================================================
@@ -350,7 +405,23 @@ export class TimelineRenderer {
     if (!this.timeline) return;
     const { x, y } = this.clientToLocal(e);
 
-    // 1. Check mute/solo header buttons
+    // 1. Check insert rack in track headers
+    const insertHit = this.hitTestInsertRack(x, y);
+    if (insertHit) {
+      if (insertHit.action === 'add' && this.onInsertAdd) {
+        this.onInsertAdd(insertHit.trackId);
+      } else if (insertHit.action === 'click' && insertHit.instanceId && this.onInsertClick) {
+        this.onInsertClick(insertHit.trackId, insertHit.instanceId);
+      } else if (insertHit.action === 'bypass' && insertHit.instanceId && this.onInsertBypass) {
+        this.onInsertBypass(insertHit.trackId, insertHit.instanceId);
+      } else if (insertHit.action === 'remove' && insertHit.instanceId && this.onInsertRemove) {
+        this.onInsertRemove(insertHit.trackId, insertHit.instanceId);
+      }
+      this.render();
+      return;
+    }
+
+    // 2. Check mute/solo header buttons
     const btnHit = this.hitTestTrackButton(x, y);
     if (btnHit) {
       if (btnHit.button === 'mute' && this.onTrackMuteToggle) {
@@ -362,7 +433,7 @@ export class TimelineRenderer {
       return;
     }
 
-    // 2. Ignore clicks in the header area that missed buttons
+    // 3. Ignore clicks in the header area that missed buttons
     if (x < TRACK_HEADER_WIDTH) return;
 
     // 3. Hit-test clips (Smart Tool: zone depends on Y position)
@@ -950,6 +1021,9 @@ export class TimelineRenderer {
       ctx.fillText(nameText, 6, topY + 17);
       ctx.restore();
 
+      // Insert rack (compact pills below track name)
+      this.renderInsertRack(track, topY);
+
       // Mute / Solo buttons at bottom of header
       const btnY = topY + TRACK_HEIGHT - MUTE_SOLO_BTN_SIZE - 6;
       const muteX = 6;
@@ -973,6 +1047,90 @@ export class TimelineRenderer {
       ctx.fillStyle = track.solo ? '#fff' : '#999';
       ctx.fillText('S', soloX + MUTE_SOLO_BTN_SIZE / 2, btnY + MUTE_SOLO_BTN_SIZE - 3.5);
     }
+  }
+
+  // ==================================================================
+  // Insert rack rendering
+  // ==================================================================
+
+  private renderInsertRack(track: Track, topY: number): void {
+    const ctx = this.ctx;
+    const rackStartY = topY + 22;
+    const maxPills = 3; // max visible before M/S buttons overlap
+
+    const visibleInserts = track.inserts.slice(0, maxPills);
+
+    for (let i = 0; i < visibleInserts.length; i++) {
+      const insert = visibleInserts[i];
+      const pillY = rackStartY + i * (INSERT_PILL_HEIGHT + INSERT_PILL_GAP);
+      const pillW = INSERT_PILL_WIDTH;
+
+      // Pill background
+      ctx.fillStyle = insert.bypassed ? '#2a2a2a' : '#333';
+      ctx.beginPath();
+      ctx.roundRect(INSERT_PILL_X, pillY, pillW, INSERT_PILL_HEIGHT, 3);
+      ctx.fill();
+
+      // Plugin name
+      ctx.fillStyle = insert.bypassed ? '#555' : '#aaa';
+      ctx.font = '9px -apple-system, BlinkMacSystemFont, sans-serif';
+      ctx.textAlign = 'left';
+      const displayName = this.getPluginShortName(insert.pluginId);
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(INSERT_PILL_X + 3, pillY, pillW - 28, INSERT_PILL_HEIGHT);
+      ctx.clip();
+      ctx.fillText(displayName, INSERT_PILL_X + 4, pillY + 10);
+      ctx.restore();
+
+      // Bypass button "B" (right side)
+      const bx = INSERT_PILL_X + pillW - 24;
+      ctx.fillStyle = insert.bypassed ? '#666' : '#f59e0b';
+      ctx.font = 'bold 8px -apple-system, BlinkMacSystemFont, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('B', bx + 5, pillY + 10);
+
+      // Remove button "×" (far right)
+      const rx = INSERT_PILL_X + pillW - 12;
+      ctx.fillStyle = '#666';
+      ctx.fillText('×', rx + 5, pillY + 10);
+    }
+
+    // Overflow indicator
+    if (track.inserts.length > maxPills) {
+      const overflowY = rackStartY + maxPills * (INSERT_PILL_HEIGHT + INSERT_PILL_GAP);
+      ctx.fillStyle = '#555';
+      ctx.font = '8px -apple-system, BlinkMacSystemFont, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillText(`+${track.inserts.length - maxPills} more`, INSERT_PILL_X + 4, overflowY + 9);
+      return; // no room for [+] button
+    }
+
+    // [+] add button
+    const addY = rackStartY + visibleInserts.length * (INSERT_PILL_HEIGHT + INSERT_PILL_GAP);
+    // Only show if there's room before M/S buttons
+    const btnAreaY = topY + TRACK_HEIGHT - MUTE_SOLO_BTN_SIZE - 6;
+    if (addY + INSERT_ADD_HEIGHT < btnAreaY) {
+      ctx.fillStyle = '#333';
+      ctx.beginPath();
+      ctx.roundRect(INSERT_PILL_X, addY, 28, INSERT_ADD_HEIGHT, 3);
+      ctx.fill();
+      ctx.fillStyle = '#666';
+      ctx.font = '9px -apple-system, BlinkMacSystemFont, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('+', INSERT_PILL_X + 14, addY + 9);
+    }
+  }
+
+  private getPluginShortName(pluginId: string): string {
+    const names: Record<string, string> = {
+      'builtin:eq7': 'EQ7',
+      'builtin:compressor': 'Comp',
+      'builtin:gain': 'Gain',
+      'builtin:delay': 'Delay',
+      'builtin:reverb': 'Reverb',
+    };
+    return names[pluginId] || pluginId.replace('builtin:', '');
   }
 
   // ==================================================================

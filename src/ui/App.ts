@@ -276,6 +276,23 @@ export class App {
       }
     };
 
+    // Insert rack callbacks (timeline track headers)
+    this.timelineRenderer.onInsertAdd = (trackId) => {
+      this.pluginInsertTargetTrackId = trackId;
+      this.showPluginBrowser(trackId);
+    };
+    this.timelineRenderer.onInsertClick = (_trackId, instanceId) => {
+      this.pluginParameterPanel.show(instanceId);
+    };
+    this.timelineRenderer.onInsertBypass = (trackId, instanceId) => {
+      this.togglePluginBypass(trackId, instanceId);
+      this.timelineRenderer?.render();
+    };
+    this.timelineRenderer.onInsertRemove = (trackId, instanceId) => {
+      this.removePluginFromTrack(trackId, instanceId);
+      this.timelineRenderer?.render();
+    };
+
     this.timelineRenderer.onSelectionChange = () => {
       const sel = this.timelineRenderer?.getSelection();
       this.spectrogramRenderer.setSelection(sel ? sel.start : null, sel ? sel.end : null);
