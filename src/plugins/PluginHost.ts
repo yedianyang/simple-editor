@@ -506,6 +506,30 @@ export class PluginHost {
     input.connect(output);
   }
 
+  /**
+   * Wire a list of plugin instances in series between insertIn and insertOut.
+   * If no instances, connects insertIn directly to insertOut (bypass).
+   */
+  connectChain(instances: PluginInstance[], insertIn: GainNode, insertOut: GainNode): void {
+    // Disconnect insertIn from all destinations
+    try { insertIn.disconnect(); } catch { /* nothing connected */ }
+
+    if (instances.length === 0) {
+      insertIn.connect(insertOut);
+      return;
+    }
+
+    // Chain: insertIn → inst1_in, inst1_out → inst2_in, ..., instN_out → insertOut
+    let prev: AudioNode = insertIn;
+    for (const inst of instances) {
+      const pluginIn = inst.audioNode!;
+      const pluginOut = (pluginIn as any)._outputNode || pluginIn;
+      prev.connect(pluginIn);
+      prev = pluginOut;
+    }
+    prev.connect(insertOut);
+  }
+
   removeInstance(instanceId: string): void {
     const instance = this.instances.get(instanceId);
     if (!instance) return;

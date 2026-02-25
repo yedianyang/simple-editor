@@ -15,6 +15,7 @@ function makeTrack(id: string, overrides: Partial<Track> = {}): Track {
     mute: false,
     solo: false,
     channelIndex: 0,
+    inserts: [],
     ...overrides,
   };
 }

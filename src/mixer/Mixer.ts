@@ -472,6 +472,7 @@ export class Mixer {
         solo: s.solo,
         clips: [],
         channelIndex: 0,
+        inserts: [],
       })),
       masterVolume: this.masterVolume,
     };

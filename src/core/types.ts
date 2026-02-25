@@ -258,6 +258,13 @@ export interface Clip {
   muted: boolean;
 }
 
+export interface TrackInsert {
+  instanceId: string;       // PluginInstance.id
+  pluginId: string;         // PluginInfo.id (e.g. 'builtin:eq7')
+  parameters: PluginParameter[];
+  bypassed: boolean;
+}
+
 export interface Track {
   id: string;
   name: string;
@@ -268,6 +275,7 @@ export interface Track {
   mute: boolean;
   solo: boolean;
   channelIndex: number;
+  inserts: TrackInsert[];
 }
 
 export interface Timeline {

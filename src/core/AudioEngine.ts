@@ -1,4 +1,5 @@
-import { Track, FaderLaw, Timeline } from './types';
+import { Track, TrackInsert, FaderLaw, Timeline } from './types';
+import type { PluginHost } from '../plugins/PluginHost';
 import { BufferPool } from './BufferPool';
 
 /**
@@ -584,6 +585,24 @@ export class AudioEngine {
 
     nodeA.gain.value = gainA;
     nodeB.gain.value = gainB;
+  }
+
+  /**
+   * Rebuild the insert chain for a track.
+   * Wires non-bypassed plugin instances in series between insertIn and insertOut.
+   * If no active plugins, connects insertIn directly to insertOut.
+   */
+  rebuildInsertChain(trackId: string, inserts: TrackInsert[], pluginHost: PluginHost): void {
+    const insertIn = this.trackInsertInputs.get(trackId);
+    const insertOut = this.trackInsertOutputs.get(trackId);
+    if (!insertIn || !insertOut) return;
+
+    const activeInstances = inserts
+      .filter(ins => !ins.bypassed)
+      .map(ins => pluginHost.getInstance(ins.instanceId))
+      .filter((inst): inst is NonNullable<typeof inst> => inst != null && inst.audioNode != null);
+
+    pluginHost.connectChain(activeInstances, insertIn, insertOut);
   }
 
   cleanupTrackNodes(): void {

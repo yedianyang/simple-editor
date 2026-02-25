@@ -54,6 +54,7 @@ export class TimelineModel {
       mute: false,
       solo: false,
       channelIndex,
+      inserts: [],
     };
     this.timeline.tracks.push(track);
     return track;

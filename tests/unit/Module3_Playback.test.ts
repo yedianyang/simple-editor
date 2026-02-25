@@ -32,6 +32,7 @@ function makeTrack(id: string, clips: Clip[] = [], overrides: Partial<Track> = {
     mute: false,
     solo: false,
     channelIndex: 0,
+    inserts: [],
     ...overrides,
   };
 }
