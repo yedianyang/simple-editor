@@ -61,6 +61,25 @@ export interface PluginInstance {
   audioNode?: AudioNode;
 }
 
+export interface SerializedTrackInsert {
+  pluginId: string;
+  parameters: Array<{
+    id: number;
+    name: string;
+    value: number;
+    min: number;
+    max: number;
+    defaultValue: number;
+    unit?: string;
+  }>;
+  bypassed: boolean;
+}
+
+export interface SerializedTrack {
+  id: string;
+  inserts: SerializedTrackInsert[];
+}
+
 export interface ProjectData {
   version: number;
   fileName: string;
@@ -72,6 +91,7 @@ export interface ProjectData {
     channels: string[]; // base64 encoded
   };
   cuePoints: Array<{ sample: number; name: string }>;
+  tracks?: SerializedTrack[];
 }
 
 export interface CuePoint {
