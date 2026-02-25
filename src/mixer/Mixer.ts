@@ -1,4 +1,4 @@
-import { CHANNEL_COLORS, Track, FaderLaw } from '../core/types';
+import { CHANNEL_COLORS, Track, TrackInsert, FaderLaw } from '../core/types';
 import { AudioEngine } from '../core/AudioEngine';
 import { PluginHost } from '../plugins/PluginHost';
 
@@ -13,6 +13,7 @@ interface TrackStrip {
   pan: number;
   mute: boolean;
   solo: boolean;
+  inserts: TrackInsert[];
 }
 
 /**
@@ -39,7 +40,11 @@ export class Mixer {
   private crossfaderLaw: FaderLaw = 'equalPower';
 
   // Callbacks
-  onPluginInsertRequest: ((channelIndex: number) => void) | null = null;
+  onPluginAdd: ((trackId: string) => void) | null = null;
+  onPluginRemove: ((trackId: string, instanceId: string) => void) | null = null;
+  onPluginBypass: ((trackId: string, instanceId: string) => void) | null = null;
+  onPluginReorder: ((trackId: string, fromIndex: number, toIndex: number) => void) | null = null;
+  onPluginSelect: ((trackId: string, instanceId: string) => void) | null = null;
 
   constructor(container: HTMLElement, audioEngine: AudioEngine, pluginHost: PluginHost | null) {
     this.container = container;
@@ -62,6 +67,7 @@ export class Mixer {
       pan: t.pan,
       mute: t.mute,
       solo: t.solo,
+      inserts: t.inserts,
     }));
 
     // Reset crossfader if assigned tracks no longer exist
@@ -228,6 +234,18 @@ export class Mixer {
           <div class="mixer-strip-header" style="border-top: 3px solid ${strip.color}">
             <span class="mixer-strip-name">${strip.name}</span>
           </div>
+          <div class="mixer-strip-plugins" data-track-id="${strip.trackId}">
+            ${strip.inserts.map((insert, i) => `
+              <div class="mixer-plugin-slot ${insert.bypassed ? 'bypassed' : ''}"
+                   data-instance-id="${insert.instanceId}" data-slot-index="${i}"
+                   draggable="true">
+                <span class="mixer-plugin-name" data-instance-id="${insert.instanceId}">${this.getPluginDisplayName(insert.pluginId)}</span>
+                <button class="mixer-plugin-bypass ${insert.bypassed ? 'active' : ''}" data-instance-id="${insert.instanceId}" data-track-id="${strip.trackId}" title="Bypass">B</button>
+                <button class="mixer-plugin-remove" data-instance-id="${insert.instanceId}" data-track-id="${strip.trackId}" title="Remove">&times;</button>
+              </div>
+            `).join('')}
+            <button class="mixer-plugin-add" data-track-id="${strip.trackId}">+ Insert</button>
+          </div>
           <div class="mixer-strip-pan">
             <input type="range" class="mixer-pan-knob" min="-100" max="100" step="1"
                    value="${Math.round(strip.pan * 100)}" data-track-id="${strip.trackId}">
@@ -368,6 +386,9 @@ export class Mixer {
       egBtn.addEventListener('click', () => this.setFaderLaw('equalGain'));
     }
 
+    // Plugin insert slots
+    this.attachPluginListeners();
+
     // Crossfader controls
     this.attachCrossfaderListeners();
   }
@@ -418,6 +439,109 @@ export class Mixer {
     if (xEgBtn) {
       xEgBtn.addEventListener('click', () => this.setCrossfaderLaw('equalGain'));
     }
+  }
+
+  // ==================== Plugin Helpers ====================
+
+  private getPluginDisplayName(pluginId: string): string {
+    // 'builtin:eq7' → 'EQ7', 'builtin:compressor' → 'Comp', etc.
+    const shortNames: Record<string, string> = {
+      'builtin:eq7': 'EQ7',
+      'builtin:compressor': 'Comp',
+      'builtin:gain': 'Gain',
+      'builtin:delay': 'Delay',
+      'builtin:reverb': 'Reverb',
+    };
+    if (shortNames[pluginId]) return shortNames[pluginId];
+    // For external plugins, take the last segment
+    const parts = pluginId.split(':');
+    return parts[parts.length - 1].substring(0, 8);
+  }
+
+  private attachPluginListeners(): void {
+    // Add plugin button
+    this.container.querySelectorAll('.mixer-plugin-add').forEach(el => {
+      el.addEventListener('click', (e) => {
+        const trackId = (e.target as HTMLElement).dataset.trackId!;
+        if (this.onPluginAdd) this.onPluginAdd(trackId);
+      });
+    });
+
+    // Remove plugin button
+    this.container.querySelectorAll('.mixer-plugin-remove').forEach(el => {
+      el.addEventListener('click', (e) => {
+        const btn = e.target as HTMLElement;
+        const instanceId = btn.dataset.instanceId!;
+        const trackId = btn.dataset.trackId!;
+        if (this.onPluginRemove) this.onPluginRemove(trackId, instanceId);
+      });
+    });
+
+    // Bypass plugin button
+    this.container.querySelectorAll('.mixer-plugin-bypass').forEach(el => {
+      el.addEventListener('click', (e) => {
+        const btn = e.target as HTMLElement;
+        const instanceId = btn.dataset.instanceId!;
+        const trackId = btn.dataset.trackId!;
+        if (this.onPluginBypass) this.onPluginBypass(trackId, instanceId);
+      });
+    });
+
+    // Click plugin name → open parameter panel
+    this.container.querySelectorAll('.mixer-plugin-name').forEach(el => {
+      el.addEventListener('click', (e) => {
+        const span = e.target as HTMLElement;
+        const instanceId = span.dataset.instanceId!;
+        const slot = span.closest('.mixer-plugin-slot') as HTMLElement;
+        const trackId = slot?.closest('.mixer-strip-plugins')?.getAttribute('data-track-id');
+        if (trackId && this.onPluginSelect) this.onPluginSelect(trackId, instanceId);
+      });
+    });
+
+    // Drag-to-reorder
+    this.container.querySelectorAll('.mixer-plugin-slot').forEach(el => {
+      const slot = el as HTMLElement;
+
+      slot.addEventListener('dragstart', (e) => {
+        const de = e as DragEvent;
+        if (de.dataTransfer) {
+          de.dataTransfer.effectAllowed = 'move';
+          de.dataTransfer.setData('text/plain', slot.dataset.slotIndex || '');
+        }
+        slot.classList.add('dragging');
+      });
+
+      slot.addEventListener('dragend', () => {
+        slot.classList.remove('dragging');
+        // Clean up all drag-over indicators
+        this.container.querySelectorAll('.drag-over').forEach(el2 =>
+          el2.classList.remove('drag-over'));
+      });
+
+      slot.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        (e as DragEvent).dataTransfer!.dropEffect = 'move';
+        slot.classList.add('drag-over');
+      });
+
+      slot.addEventListener('dragleave', () => {
+        slot.classList.remove('drag-over');
+      });
+
+      slot.addEventListener('drop', (e) => {
+        e.preventDefault();
+        slot.classList.remove('drag-over');
+        const de = e as DragEvent;
+        const fromIndex = parseInt(de.dataTransfer?.getData('text/plain') || '-1');
+        const toIndex = parseInt(slot.dataset.slotIndex || '-1');
+        if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) return;
+
+        const trackId = slot.closest('.mixer-strip-plugins')?.getAttribute('data-track-id');
+        if (trackId && this.onPluginReorder) {
+          this.onPluginReorder(trackId, fromIndex, toIndex);
+        }
+      });
+    });
   }
 
   // ==================== Metering ====================
@@ -472,7 +596,7 @@ export class Mixer {
         solo: s.solo,
         clips: [],
         channelIndex: 0,
-        inserts: [],
+        inserts: s.inserts,
       })),
       masterVolume: this.masterVolume,
     };

@@ -15,14 +15,12 @@ describe('PluginHost — Audio Effects', () => {
   // ==================== Plugin Registry ====================
 
   describe('Plugin Registry', () => {
-    it('lists 7 built-in plugins', () => {
+    it('lists 5 built-in plugins', () => {
       const plugins = pluginHost.getAvailablePlugins();
-      expect(plugins).toHaveLength(7);
+      expect(plugins).toHaveLength(5);
 
       const ids = plugins.map(p => p.id);
-      expect(ids).toContain('builtin:eq3');
-      expect(ids).toContain('builtin:hpf');
-      expect(ids).toContain('builtin:lpf');
+      expect(ids).toContain('builtin:eq7');
       expect(ids).toContain('builtin:compressor');
       expect(ids).toContain('builtin:gain');
       expect(ids).toContain('builtin:delay');
@@ -31,11 +29,11 @@ describe('PluginHost — Audio Effects', () => {
 
     it('addScannedPlugins deduplicates by id', () => {
       const extra: PluginInfo[] = [{
-        id: 'builtin:eq3', name: 'Duplicate EQ', path: '/dup',
+        id: 'builtin:eq7', name: 'Duplicate EQ', path: '/dup',
         type: 'effect', format: 'WebAudio',
       }];
       pluginHost.addScannedPlugins(extra);
-      expect(pluginHost.getAvailablePlugins()).toHaveLength(7);
+      expect(pluginHost.getAvailablePlugins()).toHaveLength(5);
     });
 
     it('addScannedPlugins deduplicates by path', () => {
@@ -45,7 +43,7 @@ describe('PluginHost — Audio Effects', () => {
       }];
       pluginHost.addScannedPlugins(extra);
       // All builtin plugins have path='', so this should be deduped
-      expect(pluginHost.getAvailablePlugins()).toHaveLength(7);
+      expect(pluginHost.getAvailablePlugins()).toHaveLength(5);
     });
 
     it('addScannedPlugins adds truly new plugins', () => {
@@ -54,7 +52,7 @@ describe('PluginHost — Audio Effects', () => {
         type: 'effect', format: 'VST3',
       }];
       pluginHost.addScannedPlugins(extra);
-      expect(pluginHost.getAvailablePlugins()).toHaveLength(8);
+      expect(pluginHost.getAvailablePlugins()).toHaveLength(6);
     });
   });
 
@@ -181,68 +179,116 @@ describe('PluginHost — Audio Effects', () => {
     });
   });
 
-  // ==================== 2.3 EQ3 Plugin ====================
+  // ==================== 2.3 EQ7 Plugin ====================
 
-  describe('2.3 EQ3 Plugin', () => {
-    const eq3Info: PluginInfo = {
-      id: 'builtin:eq3', name: '3-Band EQ', path: '',
+  describe('2.3 EQ7 Plugin', () => {
+    const eq7Info: PluginInfo = {
+      id: 'builtin:eq7', name: '7-Band EQ', path: '',
       type: 'effect', format: 'WebAudio',
     };
 
-    it('2.3.1 - Mid Gain +12dB sets mid node gain', async () => {
-      const instance = await pluginHost.createInstance(eq3Info);
-      pluginHost.setParameter(instance.id, 3, 12); // Mid Gain = +12dB
-
-      const node = instance.audioNode as any;
-      expect(node._midNode.gain.value).toBe(12);
-    });
-
-    it('2.3.2 - Mid Freq 2000Hz sets mid node frequency', async () => {
-      const instance = await pluginHost.createInstance(eq3Info);
-      pluginHost.setParameter(instance.id, 2, 2000); // Mid Freq = 2000Hz
-
-      const node = instance.audioNode as any;
-      expect(node._midNode.frequency.value).toBe(2000);
-    });
-
-    it('2.3.3 - High Gain +12dB sets high node gain', async () => {
-      const instance = await pluginHost.createInstance(eq3Info);
-      pluginHost.setParameter(instance.id, 6, 12); // High Gain = +12dB
-
-      const node = instance.audioNode as any;
-      expect(node._outputNode.gain.value).toBe(12);
-    });
-
-    it('2.3.4 - High Freq 8000Hz sets high node frequency', async () => {
-      const instance = await pluginHost.createInstance(eq3Info);
-      pluginHost.setParameter(instance.id, 5, 8000); // High Freq = 8000Hz
-
-      const node = instance.audioNode as any;
-      expect(node._outputNode.frequency.value).toBe(8000);
-    });
-
-    it('2.3.5 - Low Gain -24dB sets low node gain', async () => {
-      const instance = await pluginHost.createInstance(eq3Info);
-      pluginHost.setParameter(instance.id, 1, -24); // Low Gain = -24dB
-
-      // Low node is the audioNode itself (first biquad in chain)
-      const node = instance.audioNode as any;
-      expect(node.gain.value).toBe(-24);
-    });
-
-    it('EQ3 chain: low → mid → high (3 connected biquad filters)', async () => {
-      const instance = await pluginHost.createInstance(eq3Info);
+    it('2.3.1 - creates 9-node filter chain (HP + 7 bands + LP)', async () => {
+      const instance = await pluginHost.createInstance(eq7Info);
       const node = instance.audioNode as any;
 
-      // low = audioNode, mid = _midNode, high = _outputNode
-      expect(node).toBeDefined();
-      expect(node._midNode).toBeDefined();
+      expect(node._filters).toBeDefined();
+      expect(node._filters).toHaveLength(9);
       expect(node._outputNode).toBeDefined();
 
-      // Verify low is connected to mid (via mock _connections array)
-      expect(node._connections).toContain(node._midNode);
-      // mid connected to high
-      expect(node._midNode._connections).toContain(node._outputNode);
+      // HP is audioNode (first filter), LP is _outputNode (last filter)
+      expect(node._filters[0]).toBe(instance.audioNode);
+      expect(node._filters[8]).toBe(node._outputNode);
+    });
+
+    it('2.3.2 - has 32 parameters total', async () => {
+      const instance = await pluginHost.createInstance(eq7Info);
+      expect(instance.parameters).toHaveLength(32);
+
+      // Verify param IDs are 0-31
+      const ids = instance.parameters.map(p => p.id);
+      for (let i = 0; i < 32; i++) {
+        expect(ids).toContain(i);
+      }
+    });
+
+    it('2.3.3 - Band 4 gain +12dB sets peaking filter gain', async () => {
+      const instance = await pluginHost.createInstance(eq7Info);
+      // Band 4: base = 2 + 3*4 = 14, gain = 14+2 = 16
+      pluginHost.setParameter(instance.id, 16, 12);
+
+      const filters = (instance.audioNode as any)._filters;
+      // Band 4 = filters[4] (index 0=HP, 1-7=bands, 8=LP)
+      expect(filters[4].gain.value).toBe(12);
+    });
+
+    it('2.3.4 - Band 2 freq 3000Hz updates filter frequency', async () => {
+      const instance = await pluginHost.createInstance(eq7Info);
+      // Band 2: base = 2 + 1*4 = 6, freq = 6+1 = 7
+      pluginHost.setParameter(instance.id, 7, 3000);
+
+      const filters = (instance.audioNode as any)._filters;
+      expect(filters[2].frequency.value).toBe(3000);
+    });
+
+    it('2.3.5 - HP enabled sets frequency to stored value', async () => {
+      const instance = await pluginHost.createInstance(eq7Info);
+      const filters = (instance.audioNode as any)._filters;
+
+      // HP starts disabled, freq at 10Hz (transparent)
+      expect(filters[0].frequency.value).toBe(10);
+
+      // Enable HP (id=0, value=1)
+      pluginHost.setParameter(instance.id, 0, 1);
+      // Should apply stored HP freq (default 80Hz)
+      expect(filters[0].frequency.value).toBe(80);
+    });
+
+    it('2.3.6 - LP enabled sets frequency to stored value', async () => {
+      const instance = await pluginHost.createInstance(eq7Info);
+      const filters = (instance.audioNode as any)._filters;
+
+      // LP starts disabled, freq at 22050Hz (transparent)
+      expect(filters[8].frequency.value).toBe(22050);
+
+      // Enable LP (id=30, value=1)
+      pluginHost.setParameter(instance.id, 30, 1);
+      // Should apply stored LP freq (default 8000Hz)
+      expect(filters[8].frequency.value).toBe(8000);
+    });
+
+    it('2.3.7 - disabled band ignores gain changes', async () => {
+      const instance = await pluginHost.createInstance(eq7Info);
+      const filters = (instance.audioNode as any)._filters;
+
+      // Disable Band 1 (id=2, value=0)
+      pluginHost.setParameter(instance.id, 2, 0);
+      expect(filters[1].gain.value).toBe(0);
+
+      // Try to set Band 1 gain (id=4) — should be ignored since disabled
+      pluginHost.setParameter(instance.id, 4, 12);
+      expect(filters[1].gain.value).toBe(0);
+    });
+
+    it('2.3.8 - filter chain is connected HP → bands → LP', async () => {
+      const instance = await pluginHost.createInstance(eq7Info);
+      const filters = (instance.audioNode as any)._filters;
+
+      // Verify each filter is connected to the next (via mock _connections)
+      for (let i = 0; i < filters.length - 1; i++) {
+        expect(filters[i]._connections).toContain(filters[i + 1]);
+      }
+    });
+
+    it('2.3.9 - Band 1 is lowshelf, Band 7 is highshelf', async () => {
+      const instance = await pluginHost.createInstance(eq7Info);
+      const filters = (instance.audioNode as any)._filters;
+
+      expect(filters[1].type).toBe('lowshelf');
+      expect(filters[7].type).toBe('highshelf');
+      // Bands 2-6 are peaking
+      for (let i = 2; i <= 6; i++) {
+        expect(filters[i].type).toBe('peaking');
+      }
     });
   });
 
@@ -377,42 +423,4 @@ describe('PluginHost — Audio Effects', () => {
     });
   });
 
-  describe('HPF / LPF Plugins', () => {
-    it('HPF creates highpass filter with correct defaults', async () => {
-      const info: PluginInfo = {
-        id: 'builtin:hpf', name: 'High Pass Filter', path: '',
-        type: 'effect', format: 'WebAudio',
-      };
-      const inst = await pluginHost.createInstance(info);
-      const node = inst.audioNode as any;
-
-      expect(node.type).toBe('highpass');
-      expect(node.frequency.value).toBe(80);
-      expect(node.Q.value).toBe(0.707);
-    });
-
-    it('LPF creates lowpass filter with correct defaults', async () => {
-      const info: PluginInfo = {
-        id: 'builtin:lpf', name: 'Low Pass Filter', path: '',
-        type: 'effect', format: 'WebAudio',
-      };
-      const inst = await pluginHost.createInstance(info);
-      const node = inst.audioNode as any;
-
-      expect(node.type).toBe('lowpass');
-      expect(node.frequency.value).toBe(8000);
-    });
-
-    it('setParameter updates filter frequency', async () => {
-      const info: PluginInfo = {
-        id: 'builtin:hpf', name: 'High Pass Filter', path: '',
-        type: 'effect', format: 'WebAudio',
-      };
-      const inst = await pluginHost.createInstance(info);
-      pluginHost.setParameter(inst.id, 0, 200);
-
-      const node = inst.audioNode as any;
-      expect(node.frequency.value).toBe(200);
-    });
-  });
 });
