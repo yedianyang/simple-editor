@@ -1492,6 +1492,7 @@ export class App {
       track.inserts.push(insert);
       this.audioEngine.rebuildInsertChain(trackId, track.inserts, this.pluginHost);
       this.mixer.setupTracks(this.timelineModel.timeline.tracks);
+      this.timelineRenderer?.render();
     } catch (err) {
       console.error('Failed to insert plugin:', err);
     }
@@ -1511,6 +1512,7 @@ export class App {
     this.pluginHost.removeInstance(instanceId);
     this.audioEngine.rebuildInsertChain(trackId, track.inserts, this.pluginHost);
     this.mixer.setupTracks(this.timelineModel.timeline.tracks);
+    this.timelineRenderer?.render();
 
     // Hide parameter panel if it was showing this instance
     if (this.pluginParameterPanel.getCurrentInstanceId() === instanceId) {
@@ -1528,6 +1530,7 @@ export class App {
     insert.bypassed = !insert.bypassed;
     this.audioEngine.rebuildInsertChain(trackId, track.inserts, this.pluginHost);
     this.mixer.setupTracks(this.timelineModel.timeline.tracks);
+    this.timelineRenderer?.render();
   }
 
   private reorderTrackPlugins(trackId: string, fromIndex: number, toIndex: number): void {
@@ -1541,6 +1544,7 @@ export class App {
     inserts.splice(toIndex, 0, moved);
     this.audioEngine.rebuildInsertChain(trackId, inserts, this.pluginHost);
     this.mixer.setupTracks(this.timelineModel.timeline.tracks);
+    this.timelineRenderer?.render();
   }
 
   // ==================== File Browser ====================
