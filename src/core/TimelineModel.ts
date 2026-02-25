@@ -191,6 +191,12 @@ export class TimelineModel {
     this.recalcTotalLength();
   }
 
+  addEmptyTrack(): Track {
+    const idx = this.timeline.tracks.length;
+    const color = CHANNEL_COLORS[idx % CHANNEL_COLORS.length];
+    return this.addTrack(`Track ${idx + 1}`, color, idx);
+  }
+
   getTotalLength(): number {
     return this.timeline.totalLength;
   }

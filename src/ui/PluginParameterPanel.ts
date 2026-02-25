@@ -1,5 +1,6 @@
 import { PluginHost } from '../plugins/PluginHost';
 import { PluginInstance, PluginParameter } from '../core/types';
+import { EQ7Panel } from '../plugins/EQ7Panel';
 
 /**
  * Floating panel that displays plugin parameters as sliders.
@@ -11,6 +12,10 @@ export class PluginParameterPanel {
   private pluginHost: PluginHost | null = null;
   /** Guards against the click-outside listener closing the panel in the same event that opened it. */
   private openedThisFrame = false;
+  private panelDragging = false;
+  private dragOffsetX = 0;
+  private dragOffsetY = 0;
+  private eq7Panel: EQ7Panel | null = null;
 
   constructor() {
     this.container = document.createElement('div');
@@ -21,11 +26,30 @@ export class PluginParameterPanel {
     // Close when clicking outside (skip if panel was just opened this frame)
     document.addEventListener('mousedown', (e) => {
       if (this.openedThisFrame) return;
+      const target = e.target as Node;
+      // Check if EQ7 panel is open and click is inside it
+      if (this.eq7Panel?.isVisible() && this.eq7Panel.containsElement(target)) return;
+      if (this.eq7Panel?.isVisible()) {
+        this.hide();
+        return;
+      }
       if (this.container.style.display !== 'none' &&
-          !this.container.contains(e.target as Node)) {
+          !this.container.contains(target)) {
         this.hide();
       }
     });
+
+    // Drag support for repositioning the panel
+    document.addEventListener('mousemove', (e) => {
+      if (!this.panelDragging) return;
+      let left = e.clientX - this.dragOffsetX;
+      let top = e.clientY - this.dragOffsetY;
+      left = Math.max(0, Math.min(window.innerWidth - 320, left));
+      top = Math.max(0, Math.min(window.innerHeight - 40, top));
+      this.container.style.left = left + 'px';
+      this.container.style.top = top + 'px';
+    });
+    document.addEventListener('mouseup', () => { this.panelDragging = false; });
   }
 
   setPluginHost(pluginHost: PluginHost): void {
@@ -45,6 +69,32 @@ export class PluginParameterPanel {
     if (!instance) return;
 
     this.currentInstanceId = instanceId;
+
+    // Delegate to EQ7 graphical panel
+    if (instance.pluginInfo.id === 'builtin:eq7') {
+      if (!this.eq7Panel) this.eq7Panel = new EQ7Panel();
+      this.eq7Panel.setPluginHost(this.pluginHost);
+      this.container.style.display = 'none';
+
+      let left: number, top: number;
+      if (anchorEl) {
+        const rect = anchorEl.getBoundingClientRect();
+        left = rect.right + 8;
+        top = rect.top;
+      } else if (position) {
+        left = position.x + 8;
+        top = position.y;
+      } else {
+        left = 100;
+        top = 100;
+      }
+
+      this.eq7Panel.show(instance, instanceId, left, top);
+      this.openedThisFrame = true;
+      requestAnimationFrame(() => { this.openedThisFrame = false; });
+      return;
+    }
+
     this.renderParameters(instance);
 
     const panelWidth = 320;
@@ -96,6 +146,7 @@ export class PluginParameterPanel {
     this.container.style.display = 'none';
     this.container.style.pointerEvents = 'none';
     this.currentInstanceId = null;
+    this.eq7Panel?.hide();
   }
 
   isVisible(): boolean {
@@ -139,6 +190,19 @@ export class PluginParameterPanel {
     const closeBtn = this.container.querySelector('.plugin-param-close');
     if (closeBtn) {
       closeBtn.addEventListener('click', () => this.hide());
+    }
+
+    // Drag header to reposition panel
+    const header = this.container.querySelector('.plugin-param-header') as HTMLElement | null;
+    if (header) {
+      header.addEventListener('mousedown', (e) => {
+        if ((e.target as HTMLElement).closest('.plugin-param-close')) return;
+        this.panelDragging = true;
+        const rect = this.container.getBoundingClientRect();
+        this.dragOffsetX = e.clientX - rect.left;
+        this.dragOffsetY = e.clientY - rect.top;
+        e.preventDefault();
+      });
     }
 
     // Slider input events

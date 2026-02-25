@@ -724,7 +724,7 @@ export class App {
           return;
         case 'n':
           e.preventDefault();
-          if (e.shiftKey && this.audioEngine.audioBuffer) this.showNormalizeModal();
+          if (e.shiftKey) this.addEmptyTrack();
           return;
         case 'b':
           e.preventDefault();
@@ -1930,6 +1930,14 @@ export class App {
       library: '',
       keywords: '',
     };
+  }
+
+  addEmptyTrack(): void {
+    if (!this.timelineModel.timeline) return;
+    this.timelineModel.addEmptyTrack();
+    this.audioEngine.setupTrackRouting(this.timelineModel.timeline.tracks);
+    this.mixer.setupTracks(this.timelineModel.timeline.tracks);
+    this.timelineRenderer?.render();
   }
 
   showNormalizeModal(): void { this.showModal('normalizeModal'); }
