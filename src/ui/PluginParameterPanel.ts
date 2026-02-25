@@ -9,6 +9,8 @@ export class PluginParameterPanel {
   private container: HTMLElement;
   private currentInstanceId: string | null = null;
   private pluginHost: PluginHost | null = null;
+  /** Guards against the click-outside listener closing the panel in the same event that opened it. */
+  private openedThisFrame = false;
 
   constructor() {
     this.container = document.createElement('div');
@@ -16,8 +18,9 @@ export class PluginParameterPanel {
     this.container.style.display = 'none';
     document.body.appendChild(this.container);
 
-    // Close when clicking outside
+    // Close when clicking outside (skip if panel was just opened this frame)
     document.addEventListener('mousedown', (e) => {
+      if (this.openedThisFrame) return;
       if (this.container.style.display !== 'none' &&
           !this.container.contains(e.target as Node)) {
         this.hide();
@@ -31,6 +34,13 @@ export class PluginParameterPanel {
 
   show(instanceId: string, anchorEl?: HTMLElement, position?: { x: number; y: number }): void {
     if (!this.pluginHost) return;
+
+    // Toggle: clicking the same plugin again closes the panel
+    if (this.currentInstanceId === instanceId && this.container.style.display !== 'none') {
+      this.hide();
+      return;
+    }
+
     const instance = this.pluginHost.getInstance(instanceId);
     if (!instance) return;
 
@@ -76,6 +86,10 @@ export class PluginParameterPanel {
 
     this.container.style.pointerEvents = 'auto';
     this.container.style.display = 'block';
+
+    // Prevent the click-outside listener from immediately closing us
+    this.openedThisFrame = true;
+    requestAnimationFrame(() => { this.openedThisFrame = false; });
   }
 
   hide(): void {
