@@ -8,12 +8,11 @@ import { PluginInfo, PluginInstance, PluginParameter } from '../core/types';
  * 2. Web Audio mode: Uses built-in Web Audio API effects as fallback
  *
  * Built-in Web Audio effects include:
- * - Parametric EQ (3-band)
- * - High/Low Pass Filter
+ * - 7-Band Parametric EQ (HP + 7 peaking bands + LP)
  * - Compressor
- * - Reverb (convolution)
  * - Gain
  * - Delay
+ * - Reverb (convolution)
  */
 export class PluginHost {
   private audioContext: AudioContext;
@@ -24,30 +23,12 @@ export class PluginHost {
   // Built-in Web Audio plugins
   private static readonly BUILTIN_PLUGINS: PluginInfo[] = [
     {
-      id: 'builtin:eq3',
-      name: '3-Band EQ',
+      id: 'builtin:eq7',
+      name: '7-Band EQ',
       path: '',
       type: 'effect',
       format: 'WebAudio',
       category: 'EQ',
-      vendor: 'FieldCorder',
-    },
-    {
-      id: 'builtin:hpf',
-      name: 'High Pass Filter',
-      path: '',
-      type: 'effect',
-      format: 'WebAudio',
-      category: 'Filter',
-      vendor: 'FieldCorder',
-    },
-    {
-      id: 'builtin:lpf',
-      name: 'Low Pass Filter',
-      path: '',
-      type: 'effect',
-      format: 'WebAudio',
-      category: 'Filter',
       vendor: 'FieldCorder',
     },
     {
@@ -191,66 +172,58 @@ export class PluginHost {
     let parameters: PluginParameter[] = [];
 
     switch (pluginInfo.id) {
-      case 'builtin:eq3': {
-        // 3-band EQ using biquad filters
-        const low = this.audioContext.createBiquadFilter();
-        low.type = 'lowshelf';
-        low.frequency.value = 250;
-        low.gain.value = 0;
+      case 'builtin:eq7': {
+        // 7-band parametric EQ: HP → 7 peaking bands → LP
+        const hp = this.audioContext.createBiquadFilter();
+        hp.type = 'highpass';
+        hp.frequency.value = 20;  // effectively off
+        hp.Q.value = 0.707;
 
-        const mid = this.audioContext.createBiquadFilter();
-        mid.type = 'peaking';
-        mid.frequency.value = 1000;
-        mid.Q.value = 1.0;
-        mid.gain.value = 0;
+        const bands: BiquadFilterNode[] = [];
+        const defaultFreqs = [60, 170, 500, 1000, 2500, 6000, 12000];
+        for (let i = 0; i < 7; i++) {
+          const band = this.audioContext.createBiquadFilter();
+          band.type = 'peaking';
+          band.frequency.value = defaultFreqs[i];
+          band.gain.value = 0;
+          band.Q.value = 1.0;
+          bands.push(band);
+        }
 
-        const high = this.audioContext.createBiquadFilter();
-        high.type = 'highshelf';
-        high.frequency.value = 4000;
-        high.gain.value = 0;
+        const lp = this.audioContext.createBiquadFilter();
+        lp.type = 'lowpass';
+        lp.frequency.value = 20000;  // effectively off
+        lp.Q.value = 0.707;
 
-        low.connect(mid);
-        mid.connect(high);
+        // Chain: hp → b1 → b2 → b3 → b4 → b5 → b6 → b7 → lp
+        hp.connect(bands[0]);
+        for (let i = 0; i < bands.length - 1; i++) {
+          bands[i].connect(bands[i + 1]);
+        }
+        bands[bands.length - 1].connect(lp);
 
-        audioNode = low;
-        (audioNode as any)._midNode = mid;
-        (audioNode as any)._outputNode = high;
+        audioNode = hp;
+        (audioNode as any)._bands = bands;
+        (audioNode as any)._lpNode = lp;
+        (audioNode as any)._outputNode = lp;
 
+        // 25 parameters: 2 (HP) + 7×3 (bands) + 2 (LP)
         parameters = [
-          { id: 0, name: 'Low Freq', value: 250, min: 20, max: 500, defaultValue: 250, unit: 'Hz' },
-          { id: 1, name: 'Low Gain', value: 0, min: -24, max: 24, defaultValue: 0, unit: 'dB' },
-          { id: 2, name: 'Mid Freq', value: 1000, min: 200, max: 5000, defaultValue: 1000, unit: 'Hz' },
-          { id: 3, name: 'Mid Gain', value: 0, min: -24, max: 24, defaultValue: 0, unit: 'dB' },
-          { id: 4, name: 'Mid Q', value: 1.0, min: 0.1, max: 10, defaultValue: 1.0 },
-          { id: 5, name: 'High Freq', value: 4000, min: 2000, max: 16000, defaultValue: 4000, unit: 'Hz' },
-          { id: 6, name: 'High Gain', value: 0, min: -24, max: 24, defaultValue: 0, unit: 'dB' },
+          { id: 0, name: 'HP Freq', value: 20, min: 20, max: 2000, defaultValue: 20, unit: 'Hz' },
+          { id: 1, name: 'HP Q', value: 0.707, min: 0.1, max: 10, defaultValue: 0.707 },
         ];
-        break;
-      }
-
-      case 'builtin:hpf': {
-        const filter = this.audioContext.createBiquadFilter();
-        filter.type = 'highpass';
-        filter.frequency.value = 80;
-        filter.Q.value = 0.707;
-        audioNode = filter;
-        parameters = [
-          { id: 0, name: 'Frequency', value: 80, min: 20, max: 2000, defaultValue: 80, unit: 'Hz' },
-          { id: 1, name: 'Q', value: 0.707, min: 0.1, max: 10, defaultValue: 0.707 },
-        ];
-        break;
-      }
-
-      case 'builtin:lpf': {
-        const filter = this.audioContext.createBiquadFilter();
-        filter.type = 'lowpass';
-        filter.frequency.value = 8000;
-        filter.Q.value = 0.707;
-        audioNode = filter;
-        parameters = [
-          { id: 0, name: 'Frequency', value: 8000, min: 200, max: 20000, defaultValue: 8000, unit: 'Hz' },
-          { id: 1, name: 'Q', value: 0.707, min: 0.1, max: 10, defaultValue: 0.707 },
-        ];
+        for (let i = 0; i < 7; i++) {
+          const base = 2 + i * 3;
+          parameters.push(
+            { id: base, name: `B${i + 1} Freq`, value: defaultFreqs[i], min: 20, max: 20000, defaultValue: defaultFreqs[i], unit: 'Hz' },
+            { id: base + 1, name: `B${i + 1} Gain`, value: 0, min: -24, max: 24, defaultValue: 0, unit: 'dB' },
+            { id: base + 2, name: `B${i + 1} Q`, value: 1.0, min: 0.1, max: 10, defaultValue: 1.0 },
+          );
+        }
+        parameters.push(
+          { id: 23, name: 'LP Freq', value: 20000, min: 200, max: 20000, defaultValue: 20000, unit: 'Hz' },
+          { id: 24, name: 'LP Q', value: 0.707, min: 0.1, max: 10, defaultValue: 0.707 },
+        );
         break;
       }
 
@@ -414,22 +387,24 @@ export class PluginHost {
     if (!node) return;
 
     switch (instance.pluginInfo.id) {
-      case 'builtin:eq3': {
-        // node = low, _midNode = mid, _outputNode = high
+      case 'builtin:eq7': {
+        // HP: id 0 = freq, id 1 = Q
         if (paramId === 0) node.frequency.value = value;
-        else if (paramId === 1) node.gain.value = value;
-        else if (paramId === 2 && node._midNode) node._midNode.frequency.value = value;
-        else if (paramId === 3 && node._midNode) node._midNode.gain.value = value;
-        else if (paramId === 4 && node._midNode) node._midNode.Q.value = value;
-        else if (paramId === 5 && node._outputNode) node._outputNode.frequency.value = value;
-        else if (paramId === 6 && node._outputNode) node._outputNode.gain.value = value;
-        break;
-      }
-      case 'builtin:hpf':
-      case 'builtin:lpf': {
-        const filter = node as BiquadFilterNode;
-        if (paramId === 0) filter.frequency.value = value;
-        else if (paramId === 1) filter.Q.value = value;
+        else if (paramId === 1) node.Q.value = value;
+        // Bands 1-7: id 2-22, groups of 3 (freq, gain, Q)
+        else if (paramId >= 2 && paramId <= 22) {
+          const bandIndex = Math.floor((paramId - 2) / 3);
+          const bandParam = (paramId - 2) % 3;
+          const band = node._bands?.[bandIndex];
+          if (band) {
+            if (bandParam === 0) band.frequency.value = value;
+            else if (bandParam === 1) band.gain.value = value;
+            else if (bandParam === 2) band.Q.value = value;
+          }
+        }
+        // LP: id 23 = freq, id 24 = Q
+        else if (paramId === 23 && node._lpNode) node._lpNode.frequency.value = value;
+        else if (paramId === 24 && node._lpNode) node._lpNode.Q.value = value;
         break;
       }
       case 'builtin:compressor': {
