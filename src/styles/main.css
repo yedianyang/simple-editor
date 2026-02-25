@@ -1196,20 +1196,40 @@ button:focus-visible {
 .mixer-strip-plugins {
   padding: 2px 4px;
   flex-shrink: 0;
-  max-height: 60px;
+  max-height: 80px;
   overflow-y: auto;
 }
 
 .mixer-plugin-slot {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 2px;
   background-color: #333;
-  border-radius: 2px;
+  border-radius: 3px;
   padding: 2px 4px;
   margin-bottom: 2px;
   font-size: 9px;
   color: #aaa;
+  cursor: grab;
+  height: 20px;
+  border: 1px solid transparent;
+  transition: opacity 0.1s;
+}
+
+.mixer-plugin-slot:hover {
+  background-color: #3a3a3a;
+}
+
+.mixer-plugin-slot.bypassed {
+  opacity: 0.4;
+}
+
+.mixer-plugin-slot.dragging {
+  opacity: 0.3;
+}
+
+.mixer-plugin-slot.drag-over {
+  border-top: 2px solid #3b82f6;
 }
 
 .mixer-plugin-name {
@@ -1217,12 +1237,38 @@ button:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  cursor: pointer;
+}
+
+.mixer-plugin-name:hover {
+  color: #e0e0e0;
+}
+
+.mixer-plugin-bypass {
+  background: none;
+  border: none;
+  color: #555;
+  font-size: 8px;
+  font-weight: 700;
+  padding: 0 2px;
+  cursor: pointer;
+  line-height: 1;
+  border-radius: 2px;
+}
+
+.mixer-plugin-bypass:hover {
+  color: #f59e0b;
+  background: none;
+}
+
+.mixer-plugin-bypass.active {
+  color: #f59e0b;
 }
 
 .mixer-plugin-remove {
   background: none;
   border: none;
-  color: #666;
+  color: #555;
   font-size: 12px;
   padding: 0 2px;
   cursor: pointer;
@@ -1250,6 +1296,106 @@ button:focus-visible {
   border-color: #666;
   color: #999;
   background: none;
+}
+
+/* Plugin Parameter Panel (floating) */
+.plugin-param-panel {
+  position: fixed;
+  width: 320px;
+  background-color: #242424;
+  border: 1px solid #3a3a3a;
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  z-index: 1000;
+  font-size: 12px;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.plugin-param-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid #333;
+}
+
+.plugin-param-title {
+  font-weight: 600;
+  font-size: 12px;
+  color: #e0e0e0;
+}
+
+.plugin-param-close {
+  background: none;
+  border: none;
+  color: #666;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+}
+
+.plugin-param-close:hover {
+  color: #ccc;
+  background: none;
+}
+
+.plugin-param-body {
+  padding: 8px 12px;
+}
+
+.plugin-param-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.plugin-param-label {
+  width: 70px;
+  font-size: 10px;
+  color: #999;
+  flex-shrink: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plugin-param-slider {
+  flex: 1;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  background: #444;
+  border-radius: 2px;
+  outline: none;
+}
+
+.plugin-param-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #3b82f6;
+  cursor: pointer;
+}
+
+.plugin-param-value {
+  width: 60px;
+  font-size: 10px;
+  color: #aaa;
+  text-align: right;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.plugin-param-empty {
+  padding: 16px;
+  text-align: center;
+  color: #666;
+  font-style: italic;
 }
 
 /* Fader section */

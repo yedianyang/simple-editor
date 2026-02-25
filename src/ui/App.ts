@@ -1,5 +1,6 @@
 import { AudioEngine } from '../core/AudioEngine';
-import { formatTime, CHANNEL_NAMES, PluginInfo, ExportMetadata } from '../core/types';
+import { formatTime, CHANNEL_NAMES, PluginInfo, TrackInsert, ExportMetadata } from '../core/types';
+import { PluginParameterPanel } from './PluginParameterPanel';
 import { AudioEditor } from '../editor/AudioEditor';
 import { WaveformRenderer } from '../editor/WaveformRenderer';
 import { SpectrogramRenderer } from '../editor/SpectrogramRenderer';
@@ -46,11 +47,13 @@ export class App {
   cuePointRenderer: CuePointRenderer;
   mixer: Mixer;
   pluginHost: PluginHost | null = null;
+  pluginParameterPanel: PluginParameterPanel;
   metadataManager: MetadataManager;
   pendingCuePointSample: number | undefined;
   meterAnimationFrame = 0;
   private pendingExportMetadata: ExportMetadata | null = null;
   private pendingUCSFilename: string | null = null;
+  private pluginInsertTargetTrackId: string | null = null;
 
   // ---- Timeline / Multi-track ----
   timelineModel: TimelineModel;
@@ -99,6 +102,7 @@ export class App {
       null // Will be set after audio context init
     );
 
+    this.pluginParameterPanel = new PluginParameterPanel();
     this.metadataManager = new MetadataManager();
 
     // Timeline / multi-track
@@ -401,9 +405,25 @@ export class App {
       this.stopRealtimeAnalysis();
     };
 
-    // Mixer plugin insert request
-    this.mixer.onPluginInsertRequest = (channelIndex) => {
-      this.showPluginBrowser(channelIndex);
+    // Mixer plugin callbacks
+    this.mixer.onPluginAdd = (trackId) => {
+      this.pluginInsertTargetTrackId = trackId;
+      this.showPluginBrowser(trackId);
+    };
+    this.mixer.onPluginRemove = (trackId, instanceId) => {
+      this.removePluginFromTrack(trackId, instanceId);
+    };
+    this.mixer.onPluginBypass = (trackId, instanceId) => {
+      this.togglePluginBypass(trackId, instanceId);
+    };
+    this.mixer.onPluginReorder = (trackId, fromIndex, toIndex) => {
+      this.reorderTrackPlugins(trackId, fromIndex, toIndex);
+    };
+    this.mixer.onPluginSelect = (_trackId, instanceId) => {
+      const slot = document.querySelector(
+        `.mixer-plugin-slot[data-instance-id="${instanceId}"]`
+      ) as HTMLElement | null;
+      this.pluginParameterPanel.show(instanceId, slot ?? undefined);
     };
   }
 
@@ -852,6 +872,7 @@ export class App {
       if (!this.pluginHost) {
         this.pluginHost = new PluginHost(this.audioEngine.audioContext!);
         this.mixer.pluginHost = this.pluginHost;
+        this.pluginParameterPanel.setPluginHost(this.pluginHost);
       }
 
       this.undoManager.setAudioContext(this.audioEngine.audioContext!);
@@ -1371,18 +1392,22 @@ export class App {
     if (modal.classList.contains('visible')) {
       this.hideModal('pluginBrowserModal');
     } else {
+      this.pluginInsertTargetTrackId = null;
       this.showPluginBrowser(null);
     }
   }
 
-  showPluginBrowser(channelIndex: number | null): void {
+  showPluginBrowser(trackId: string | null): void {
     const modal = document.getElementById('pluginBrowserModal');
     if (!modal) return;
 
-    // Ensure pluginHost exists for browsing (create with a temporary context if needed)
+    if (trackId) this.pluginInsertTargetTrackId = trackId;
+
+    // Ensure pluginHost exists for browsing
     if (!this.pluginHost && this.audioEngine.audioContext) {
       this.pluginHost = new PluginHost(this.audioEngine.audioContext);
       this.mixer.pluginHost = this.pluginHost;
+      this.pluginParameterPanel.setPluginHost(this.pluginHost);
     }
 
     const pluginList = document.getElementById('pluginList')!;
@@ -1403,11 +1428,9 @@ export class App {
           <span class="plugin-item-format">${plugin.format}</span>
           <span class="plugin-item-category">${plugin.category || ''}</span>
         `;
-        if (channelIndex !== null) {
-          item.addEventListener('click', () => {
-            this.hideModal('pluginBrowserModal');
-          });
-        }
+        item.addEventListener('click', () => {
+          this.insertPluginToTrack(plugin);
+        });
         pluginList.appendChild(item);
       });
     }
@@ -1426,6 +1449,81 @@ export class App {
     }
 
     modal.classList.add('visible');
+  }
+
+  private async insertPluginToTrack(pluginInfo: PluginInfo): Promise<void> {
+    const trackId = this.pluginInsertTargetTrackId;
+    if (!trackId || !this.pluginHost) {
+      this.hideModal('pluginBrowserModal');
+      return;
+    }
+
+    const track = this.timelineModel.timeline.tracks.find(t => t.id === trackId);
+    if (!track) {
+      this.hideModal('pluginBrowserModal');
+      return;
+    }
+
+    try {
+      const instance = await this.pluginHost.createInstance(pluginInfo);
+      const insert: TrackInsert = {
+        instanceId: instance.id,
+        pluginId: pluginInfo.id,
+        parameters: instance.parameters,
+        bypassed: false,
+      };
+      track.inserts.push(insert);
+      this.audioEngine.rebuildInsertChain(trackId, track.inserts, this.pluginHost);
+      this.mixer.setupTracks(this.timelineModel.timeline.tracks);
+    } catch (err) {
+      console.error('Failed to insert plugin:', err);
+    }
+
+    this.hideModal('pluginBrowserModal');
+    this.pluginInsertTargetTrackId = null;
+  }
+
+  private removePluginFromTrack(trackId: string, instanceId: string): void {
+    const track = this.timelineModel.timeline.tracks.find(t => t.id === trackId);
+    if (!track || !this.pluginHost) return;
+
+    const idx = track.inserts.findIndex(ins => ins.instanceId === instanceId);
+    if (idx < 0) return;
+
+    track.inserts.splice(idx, 1);
+    this.pluginHost.removeInstance(instanceId);
+    this.audioEngine.rebuildInsertChain(trackId, track.inserts, this.pluginHost);
+    this.mixer.setupTracks(this.timelineModel.timeline.tracks);
+
+    // Hide parameter panel if it was showing this instance
+    if (this.pluginParameterPanel.getCurrentInstanceId() === instanceId) {
+      this.pluginParameterPanel.hide();
+    }
+  }
+
+  private togglePluginBypass(trackId: string, instanceId: string): void {
+    const track = this.timelineModel.timeline.tracks.find(t => t.id === trackId);
+    if (!track || !this.pluginHost) return;
+
+    const insert = track.inserts.find(ins => ins.instanceId === instanceId);
+    if (!insert) return;
+
+    insert.bypassed = !insert.bypassed;
+    this.audioEngine.rebuildInsertChain(trackId, track.inserts, this.pluginHost);
+    this.mixer.setupTracks(this.timelineModel.timeline.tracks);
+  }
+
+  private reorderTrackPlugins(trackId: string, fromIndex: number, toIndex: number): void {
+    const track = this.timelineModel.timeline.tracks.find(t => t.id === trackId);
+    if (!track || !this.pluginHost) return;
+
+    const inserts = track.inserts;
+    if (fromIndex < 0 || fromIndex >= inserts.length || toIndex < 0 || toIndex >= inserts.length) return;
+
+    const [moved] = inserts.splice(fromIndex, 1);
+    inserts.splice(toIndex, 0, moved);
+    this.audioEngine.rebuildInsertChain(trackId, inserts, this.pluginHost);
+    this.mixer.setupTracks(this.timelineModel.timeline.tracks);
   }
 
   // ==================== File Browser ====================
