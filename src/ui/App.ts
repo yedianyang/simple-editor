@@ -281,8 +281,8 @@ export class App {
       this.pluginInsertTargetTrackId = trackId;
       this.showPluginBrowser(trackId);
     };
-    this.timelineRenderer.onInsertClick = (_trackId, instanceId) => {
-      this.pluginParameterPanel.show(instanceId);
+    this.timelineRenderer.onInsertClick = (_trackId, instanceId, screenX, screenY) => {
+      this.pluginParameterPanel.show(instanceId, undefined, { x: screenX, y: screenY });
     };
     this.timelineRenderer.onInsertBypass = (trackId, instanceId) => {
       this.togglePluginBypass(trackId, instanceId);
@@ -1491,7 +1491,7 @@ export class App {
       };
       track.inserts.push(insert);
       this.audioEngine.rebuildInsertChain(trackId, track.inserts, this.pluginHost);
-      this.mixer.setupTracks(this.timelineModel.timeline.tracks);
+      this.mixer.updateStripsUI(this.timelineModel.timeline.tracks);
       this.timelineRenderer?.render();
     } catch (err) {
       console.error('Failed to insert plugin:', err);
@@ -1511,7 +1511,7 @@ export class App {
     track.inserts.splice(idx, 1);
     this.pluginHost.removeInstance(instanceId);
     this.audioEngine.rebuildInsertChain(trackId, track.inserts, this.pluginHost);
-    this.mixer.setupTracks(this.timelineModel.timeline.tracks);
+    this.mixer.updateStripsUI(this.timelineModel.timeline.tracks);
     this.timelineRenderer?.render();
 
     // Hide parameter panel if it was showing this instance
@@ -1529,7 +1529,7 @@ export class App {
 
     insert.bypassed = !insert.bypassed;
     this.audioEngine.rebuildInsertChain(trackId, track.inserts, this.pluginHost);
-    this.mixer.setupTracks(this.timelineModel.timeline.tracks);
+    this.mixer.updateStripsUI(this.timelineModel.timeline.tracks);
     this.timelineRenderer?.render();
   }
 
@@ -1543,7 +1543,7 @@ export class App {
     const [moved] = inserts.splice(fromIndex, 1);
     inserts.splice(toIndex, 0, moved);
     this.audioEngine.rebuildInsertChain(trackId, inserts, this.pluginHost);
-    this.mixer.setupTracks(this.timelineModel.timeline.tracks);
+    this.mixer.updateStripsUI(this.timelineModel.timeline.tracks);
     this.timelineRenderer?.render();
   }
 

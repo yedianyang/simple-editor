@@ -29,7 +29,7 @@ export class PluginParameterPanel {
     this.pluginHost = pluginHost;
   }
 
-  show(instanceId: string, anchorEl?: HTMLElement): void {
+  show(instanceId: string, anchorEl?: HTMLElement, position?: { x: number; y: number }): void {
     if (!this.pluginHost) return;
     const instance = this.pluginHost.getInstance(instanceId);
     if (!instance) return;
@@ -37,16 +37,15 @@ export class PluginParameterPanel {
     this.currentInstanceId = instanceId;
     this.renderParameters(instance);
 
-    // Position near the anchor element
-    if (anchorEl) {
-      const rect = anchorEl.getBoundingClientRect();
-      const panelWidth = 320;
-      const panelHeight = this.container.offsetHeight || 200;
+    const panelWidth = 320;
+    const panelHeight = this.container.offsetHeight || 200;
 
+    if (anchorEl) {
+      // Position near the anchor element
+      const rect = anchorEl.getBoundingClientRect();
       let left = rect.right + 8;
       let top = rect.top;
 
-      // Keep within viewport
       if (left + panelWidth > window.innerWidth) {
         left = rect.left - panelWidth - 8;
       }
@@ -57,13 +56,31 @@ export class PluginParameterPanel {
 
       this.container.style.left = `${left}px`;
       this.container.style.top = `${top}px`;
+    } else if (position) {
+      // Position near click coordinates (e.g. from canvas click)
+      let left = position.x + 8;
+      let top = position.y;
+
+      if (left + panelWidth > window.innerWidth) {
+        left = position.x - panelWidth - 8;
+      }
+      if (top + panelHeight > window.innerHeight) {
+        top = window.innerHeight - panelHeight - 8;
+      }
+      if (top < 0) top = 8;
+      if (left < 0) left = 8;
+
+      this.container.style.left = `${left}px`;
+      this.container.style.top = `${top}px`;
     }
 
+    this.container.style.pointerEvents = 'auto';
     this.container.style.display = 'block';
   }
 
   hide(): void {
     this.container.style.display = 'none';
+    this.container.style.pointerEvents = 'none';
     this.currentInstanceId = null;
   }
 

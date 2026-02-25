@@ -121,7 +121,7 @@ export class TimelineRenderer {
 
   // Insert rack callbacks
   onInsertAdd: ((trackId: string) => void) | null = null;
-  onInsertClick: ((trackId: string, instanceId: string) => void) | null = null;
+  onInsertClick: ((trackId: string, instanceId: string, screenX: number, screenY: number) => void) | null = null;
   onInsertBypass: ((trackId: string, instanceId: string) => void) | null = null;
   onInsertRemove: ((trackId: string, instanceId: string) => void) | null = null;
 
@@ -411,7 +411,7 @@ export class TimelineRenderer {
       if (insertHit.action === 'add' && this.onInsertAdd) {
         this.onInsertAdd(insertHit.trackId);
       } else if (insertHit.action === 'click' && insertHit.instanceId && this.onInsertClick) {
-        this.onInsertClick(insertHit.trackId, insertHit.instanceId);
+        this.onInsertClick(insertHit.trackId, insertHit.instanceId, e.clientX, e.clientY);
       } else if (insertHit.action === 'bypass' && insertHit.instanceId && this.onInsertBypass) {
         this.onInsertBypass(insertHit.trackId, insertHit.instanceId);
       } else if (insertHit.action === 'remove' && insertHit.instanceId && this.onInsertRemove) {

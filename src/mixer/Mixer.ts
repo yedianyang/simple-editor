@@ -135,6 +135,25 @@ export class Mixer {
     return pan < 0 ? `L${Math.abs(Math.round(pan * 100))}` : `R${Math.round(pan * 100)}`;
   }
 
+  /**
+   * Update mixer strip UI from tracks WITHOUT recreating audio routing nodes.
+   * Use this after plugin insert changes (add/remove/bypass/reorder) where
+   * rebuildInsertChain() has already rewired the audio graph.
+   */
+  updateStripsUI(tracks: Track[]): void {
+    this.trackStrips = tracks.map(t => ({
+      trackId: t.id,
+      name: t.name,
+      color: t.color,
+      volume: t.volume,
+      pan: t.pan,
+      mute: t.mute,
+      solo: t.solo,
+      inserts: t.inserts,
+    }));
+    this.render();
+  }
+
   // ==================== Shared ====================
 
   setMasterVolume(db: number): void {
