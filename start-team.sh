@@ -12,7 +12,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-INITIAL_PROMPT="执行启动流程：读取 CLAUDE.md，调用 TaskList 查看任务状态，汇报就绪或继续未完成任务。"
+INITIAL_PROMPT="执行启动流程：1) 读取 CLAUDE.md 2) 运行测试套件（npm test -- --run && cd src-tauri && cargo test）汇报通过/失败数 3) 调用 TaskList 查看任务状态 4) 汇报就绪或继续未完成任务。"
 
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${BLUE}  FieldCorder Claude Code Team${NC}"

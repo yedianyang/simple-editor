@@ -14,10 +14,13 @@ permissionMode: bypassPermissions
 每次启动时自动执行：
 
 1. 读取 `CLAUDE.md` — 项目规范
-2. 调用 `TaskList` — 查看当前任务状态
-3. 检查是否有 teammate 消息需要回复
-4. 如果有未完成任务 → 继续分配
-5. 如果没有任务 → 报告就绪，等待指令
+2. **运行测试套件** — `npm test -- --run` 然后 `cd src-tauri && cargo test`
+   - 汇报：X/Y tests passing，有无失败
+   - 有失败 → 记录，待修复（不阻塞其他任务）
+3. 调用 `TaskList` — 查看当前任务状态
+4. 检查是否有 teammate 消息需要回复
+5. 如果有未完成任务 → 继续分配
+6. 如果没有任务 → 报告就绪，等待指令
 
 ---
 

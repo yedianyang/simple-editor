@@ -61,6 +61,9 @@ npm run build:frontend # 仅构建前端
 # TypeScript — 类型检查
 npx tsc --noEmit
 
+# JS 测试套件（vitest）
+npm test -- --run
+
 # Rust — 编译 + 测试 + lint
 cd src-tauri && cargo check && cargo test && cargo clippy -- -D warnings
 
@@ -70,6 +73,7 @@ npm run build:frontend
 
 **什么算"通过"：**
 - `tsc --noEmit` — 零类型错误
+- `npm test -- --run` — 全绿（84+ tests）
 - `cargo check` — 零编译错误
 - `cargo test` — 全绿
 - `cargo clippy -- -D warnings` — 零警告
