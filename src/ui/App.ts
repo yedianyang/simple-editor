@@ -132,7 +132,9 @@ export class App {
     this.setupInlineMetadata();
     this.setupExportSection();
     this.setupCollapsiblePanels();
-    this.updateUI();
+
+    // Start with a blank project so the timeline is visible immediately
+    this.newBlankProject();
   }
 
   // ==================== Timeline Callbacks ====================
@@ -638,6 +640,7 @@ export class App {
 
     // Menu actions
     const menuActions: Record<string, () => void> = {
+      'new-project': () => this.newBlankProject(),
       'export': () => this.showExportModal(),
       'save-project': () => this.saveProject(),
       'undo': () => this.undo(),
@@ -733,6 +736,7 @@ export class App {
         case 'n':
           e.preventDefault();
           if (e.shiftKey) this.addEmptyTrack();
+          else this.newBlankProject();
           return;
         case 'b':
           e.preventDefault();
@@ -1969,6 +1973,27 @@ export class App {
     };
   }
 
+  newBlankProject(): void {
+    this.audioEngine.stop();
+    this.audioEngine.stopTimeline();
+    this.audioEngine.audioBuffer = null;
+    this.bufferPool.clear();
+    this.timelineModel.createTimeline(48000);
+    this.timelineUndoManager.clear();
+    this.waveformRenderer.disabled = true;
+    this.waveformRenderer.detachListeners();
+    if (this.timelineRenderer) {
+      this.timelineRenderer.setTimeline(this.timelineModel.timeline, this.bufferPool);
+      this.timelineRenderer.render();
+    }
+    this.mixer.setupTracks([]);
+    this.audioEngine.cleanupTrackNodes();
+    this.fileName = null;
+    this.updateUI();
+    this.updateFileInfo();
+    this.updatePositionInfo(0);
+  }
+
   addEmptyTrack(): void {
     if (!this.timelineModel.timeline) return;
     this.timelineModel.addEmptyTrack();
@@ -2078,6 +2103,7 @@ export class App {
 
   updateUI(): void {
     const hasAudio = !!this.audioEngine.audioBuffer;
+    const hasTimeline = this.timelineModel.timeline.tracks.length > 0;
     const hasSelection = this.waveformRenderer.hasSelection();
     const isPlaying = this.audioEngine.isPlaying;
 
@@ -2089,9 +2115,9 @@ export class App {
     setDisabled('exportBtn', !hasAudio);
     setDisabled('saveProjectBtn', !hasAudio);
     setDisabled('addCueBtn', !hasAudio);
-    setDisabled('playBtn', !hasAudio);
+    setDisabled('playBtn', !hasAudio && !hasTimeline);
     setDisabled('pauseBtn', !isPlaying);
-    setDisabled('stopBtn', !hasAudio);
+    setDisabled('stopBtn', !hasAudio && !hasTimeline);
     setDisabled('loopBtn', !hasAudio);
     setDisabled('zoomInBtn', !hasAudio);
     setDisabled('zoomOutBtn', !hasAudio);

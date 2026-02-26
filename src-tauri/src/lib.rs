@@ -481,6 +481,8 @@ fn setup_menu(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 
     // ── File menu ─────────────────────────────────────────────
     let file_menu = SubmenuBuilder::new(handle, "File")
+        .item(&item!(handle, "new-project", "New Project", "CmdOrCtrl+N"))
+        .separator()
         .item(&item!(handle, "import", "Import Audio...", "CmdOrCtrl+O"))
         .item(&item!(handle, "import-folder", "Import Folder...", "CmdOrCtrl+Shift+O"))
         .separator()
