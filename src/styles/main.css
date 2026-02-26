@@ -1515,6 +1515,24 @@ button:focus-visible {
   border-color: #555;
 }
 
+.eq7-band-slope {
+  font-size: 8px;
+  color: #aaa;
+  background: #2a2a2a;
+  border: 1px solid #3a3a3a;
+  border-radius: 3px;
+  padding: 2px 4px;
+  cursor: pointer;
+  width: 100%;
+  text-align: center;
+}
+
+.eq7-band-slope:hover {
+  background: #333;
+  color: #ddd;
+  border-color: #555;
+}
+
 /* Fader section */
 .mixer-strip-fader {
   flex: 1;

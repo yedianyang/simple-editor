@@ -173,8 +173,8 @@ export class PluginHost {
 
     switch (pluginInfo.id) {
       case 'builtin:eq7': {
-        // 7-band parametric EQ: HP → Band1(LS) → Band2-6(PK) → Band7(HS) → LP
-        // 9 BiquadFilter nodes in series, 32 parameters total
+        // 7-band parametric EQ with cascaded HP/LP for variable slope
+        // HP(4 stages) → Band1(LS) → Band2-6(PK) → Band7(HS) → LP(4 stages)
         const bandDefaults: { type: BiquadFilterType; freq: number }[] = [
           { type: 'lowshelf', freq: 80 },
           { type: 'peaking', freq: 200 },
@@ -185,11 +185,15 @@ export class PluginHost {
           { type: 'highshelf', freq: 12000 },
         ];
 
-        // HP filter (disabled by default — freq at 10Hz = transparent)
-        const hp = this.audioContext.createBiquadFilter();
-        hp.type = 'highpass';
-        hp.frequency.value = 10;
-        hp.Q.value = 0.707;
+        // HP: 4 cascaded highpass filters (disabled = 1Hz passthrough)
+        const hpFilters: BiquadFilterNode[] = [];
+        for (let i = 0; i < 4; i++) {
+          const hp = this.audioContext.createBiquadFilter();
+          hp.type = 'highpass';
+          hp.frequency.value = 1;
+          hp.Q.value = 0.707;
+          hpFilters.push(hp);
+        }
 
         // 7 band filters
         const bands: BiquadFilterNode[] = [];
@@ -202,26 +206,33 @@ export class PluginHost {
           bands.push(band);
         }
 
-        // LP filter (disabled by default — freq at 22050Hz = transparent)
-        const lp = this.audioContext.createBiquadFilter();
-        lp.type = 'lowpass';
-        lp.frequency.value = 22050;
-        lp.Q.value = 0.707;
+        // LP: 4 cascaded lowpass filters (disabled = 22050Hz passthrough)
+        const lpFilters: BiquadFilterNode[] = [];
+        for (let i = 0; i < 4; i++) {
+          const lp = this.audioContext.createBiquadFilter();
+          lp.type = 'lowpass';
+          lp.frequency.value = 22050;
+          lp.Q.value = 0.707;
+          lpFilters.push(lp);
+        }
 
-        // Chain: HP → Band1 → Band2 → ... → Band7 → LP
-        const allFilters = [hp, ...bands, lp];
+        // Chain: hp0→hp1→hp2→hp3→b1→...→b7→lp0→lp1→lp2→lp3
+        const allFilters = [...hpFilters, ...bands, ...lpFilters];
         for (let i = 0; i < allFilters.length - 1; i++) {
           allFilters[i].connect(allFilters[i + 1]);
         }
 
-        audioNode = hp;
-        (audioNode as any)._filters = allFilters; // [hp, b1..b7, lp] — index 0-8
-        (audioNode as any)._outputNode = lp;
+        audioNode = hpFilters[0];
+        (audioNode as any)._hpFilters = hpFilters;
+        (audioNode as any)._bandFilters = bands;
+        (audioNode as any)._lpFilters = lpFilters;
+        (audioNode as any)._allFilters = allFilters;
+        (audioNode as any)._outputNode = lpFilters[3];
 
-        // 34 params: HP(enabled,freq,Q) + 7×Band(enabled,freq,gain,Q) + LP(enabled,freq,Q)
+        // 36 params: HP(enabled,freq) + 7×Band(enabled,freq,gain,Q) + LP(enabled,freq) + HP Q + LP Q + HP Slope + LP Slope
         parameters = [
           { id: 0, name: 'HP Enabled', value: 0, min: 0, max: 1, defaultValue: 0 },
-          { id: 1, name: 'HP Freq', value: 80, min: 20, max: 1000, defaultValue: 80, unit: 'Hz' },
+          { id: 1, name: 'HP Freq', value: 20, min: 20, max: 1000, defaultValue: 20, unit: 'Hz' },
         ];
         const bandNames = ['Band 1', 'Band 2', 'Band 3', 'Band 4', 'Band 5', 'Band 6', 'Band 7'];
         for (let i = 0; i < 7; i++) {
@@ -235,9 +246,11 @@ export class PluginHost {
         }
         parameters.push(
           { id: 30, name: 'LP Enabled', value: 0, min: 0, max: 1, defaultValue: 0 },
-          { id: 31, name: 'LP Freq', value: 8000, min: 200, max: 20000, defaultValue: 8000, unit: 'Hz' },
+          { id: 31, name: 'LP Freq', value: 20000, min: 200, max: 20000, defaultValue: 20000, unit: 'Hz' },
           { id: 32, name: 'HP Q', value: 0.707, min: 0.1, max: 10, defaultValue: 0.707 },
           { id: 33, name: 'LP Q', value: 0.707, min: 0.1, max: 10, defaultValue: 0.707 },
+          { id: 34, name: 'HP Slope', value: 12, min: 12, max: 48, defaultValue: 12 },
+          { id: 35, name: 'LP Slope', value: 12, min: 12, max: 48, defaultValue: 12 },
         );
         break;
       }
@@ -403,26 +416,43 @@ export class PluginHost {
 
     switch (instance.pluginInfo.id) {
       case 'builtin:eq7': {
-        const filters: BiquadFilterNode[] | undefined = node._filters;
-        if (!filters) break;
-        // HP: id 0 = enabled, id 1 = freq
+        const hpFilters: BiquadFilterNode[] | undefined = node._hpFilters;
+        const bandFilters: BiquadFilterNode[] | undefined = node._bandFilters;
+        const lpFilters: BiquadFilterNode[] | undefined = node._lpFilters;
+        if (!hpFilters || !bandFilters || !lpFilters) break;
+
+        const getVal = (id: number, fallback: number) =>
+          instance.parameters.find(p => p.id === id)?.value ?? fallback;
+
+        // HP: id 0=enabled, id 1=freq, id 32=Q, id 34=slope
         if (paramId === 0) {
-          // Enabled toggle: move HP freq to actual value or 10Hz (transparent)
-          const hpFreq = instance.parameters.find(p => p.id === 1)?.value ?? 80;
-          filters[0].frequency.value = value >= 0.5 ? hpFreq : 10;
+          const hpFreq = getVal(1, 20);
+          const activeCount = Math.round(getVal(34, 12) / 12);
+          for (let i = 0; i < 4; i++) {
+            hpFilters[i].frequency.value = (value >= 0.5 && i < activeCount) ? hpFreq : 1;
+          }
         } else if (paramId === 1) {
-          // Only apply if HP is enabled
-          const hpEnabled = instance.parameters.find(p => p.id === 0)?.value ?? 0;
-          if (hpEnabled >= 0.5) filters[0].frequency.value = value;
+          if (getVal(0, 0) >= 0.5) {
+            const activeCount = Math.round(getVal(34, 12) / 12);
+            for (let i = 0; i < activeCount; i++) hpFilters[i].frequency.value = value;
+          }
+        } else if (paramId === 32) {
+          for (const f of hpFilters) f.Q.value = value;
+        } else if (paramId === 34) {
+          const hpEnabled = getVal(0, 0) >= 0.5;
+          const hpFreq = getVal(1, 20);
+          const activeCount = Math.round(value / 12);
+          for (let i = 0; i < 4; i++) {
+            hpFilters[i].frequency.value = (hpEnabled && i < activeCount) ? hpFreq : 1;
+          }
         }
         // Bands 1-7: ids 2-29, groups of 4 (enabled, freq, gain, Q)
         else if (paramId >= 2 && paramId <= 29) {
-          const bandIndex = Math.floor((paramId - 2) / 4);  // 0-6
-          const bandParam = (paramId - 2) % 4;               // 0=enabled, 1=freq, 2=gain, 3=Q
-          const filter = filters[bandIndex + 1];              // filters[1..7]
+          const bandIndex = Math.floor((paramId - 2) / 4);
+          const bandParam = (paramId - 2) % 4;
+          const filter = bandFilters[bandIndex];
           if (filter) {
             if (bandParam === 0) {
-              // Enabled toggle: set gain to 0 when disabled
               if (value < 0.5) filter.gain.value = 0;
               else {
                 const gainParam = instance.parameters.find(p => p.id === 2 + bandIndex * 4 + 2);
@@ -436,21 +466,27 @@ export class PluginHost {
             else if (bandParam === 3) filter.Q.value = value;
           }
         }
-        // LP: id 30 = enabled, id 31 = freq
+        // LP: id 30=enabled, id 31=freq, id 33=Q, id 35=slope
         else if (paramId === 30) {
-          const lpFreq = instance.parameters.find(p => p.id === 31)?.value ?? 8000;
-          filters[8].frequency.value = value >= 0.5 ? lpFreq : 22050;
+          const lpFreq = getVal(31, 20000);
+          const activeCount = Math.round(getVal(35, 12) / 12);
+          for (let i = 0; i < 4; i++) {
+            lpFilters[i].frequency.value = (value >= 0.5 && i < activeCount) ? lpFreq : 22050;
+          }
         } else if (paramId === 31) {
-          const lpEnabled = instance.parameters.find(p => p.id === 30)?.value ?? 0;
-          if (lpEnabled >= 0.5) filters[8].frequency.value = value;
-        }
-        // HP Q: id 32
-        else if (paramId === 32) {
-          filters[0].Q.value = value;
-        }
-        // LP Q: id 33
-        else if (paramId === 33) {
-          filters[8].Q.value = value;
+          if (getVal(30, 0) >= 0.5) {
+            const activeCount = Math.round(getVal(35, 12) / 12);
+            for (let i = 0; i < activeCount; i++) lpFilters[i].frequency.value = value;
+          }
+        } else if (paramId === 33) {
+          for (const f of lpFilters) f.Q.value = value;
+        } else if (paramId === 35) {
+          const lpEnabled = getVal(30, 0) >= 0.5;
+          const lpFreq = getVal(31, 20000);
+          const activeCount = Math.round(value / 12);
+          for (let i = 0; i < 4; i++) {
+            lpFilters[i].frequency.value = (lpEnabled && i < activeCount) ? lpFreq : 22050;
+          }
         }
         break;
       }

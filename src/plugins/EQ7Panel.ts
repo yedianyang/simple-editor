@@ -35,6 +35,7 @@ const BAND_COLORS = [
 ];
 
 const BAND_LABELS = ['HP', '1', '2', '3', '4', '5', '6', '7', 'LP'];
+const SLOPE_OPTIONS = [12, 24, 48];
 
 // Pre-compute log-spaced frequency array
 const freqArray = new Float32Array(NUM_POINTS);
@@ -47,9 +48,9 @@ interface BandState {
   freq: number;
   gain: number;
   q: number;
+  slope: number; // 12, 24, 48 (HP/LP only)
 }
 
-/** Which value is being drag-adjusted in the band strip */
 interface StripDrag {
   band: number;
   param: 'freq' | 'gain' | 'q';
@@ -73,9 +74,7 @@ export class EQ7Panel {
   private dragOffsetX = 0;
   private dragOffsetY = 0;
 
-  /** Active click-drag on a band strip value */
   private stripDrag: StripDrag | null = null;
-
   private animFrameId = 0;
 
   constructor() {
@@ -131,12 +130,8 @@ export class EQ7Panel {
         this.container.style.left = left + 'px';
         this.container.style.top = top + 'px';
       }
-      if (this.draggedBand >= 0) {
-        this.onDragMove(e);
-      }
-      if (this.stripDrag) {
-        this.onStripDragMove(e);
-      }
+      if (this.draggedBand >= 0) this.onDragMove(e);
+      if (this.stripDrag) this.onStripDragMove(e);
     });
 
     document.addEventListener('mouseup', () => {
@@ -154,7 +149,6 @@ export class EQ7Panel {
     this.instance = instance;
     this.instanceId = instanceId;
 
-    // Position
     if (left + PANEL_WIDTH > window.innerWidth) left = window.innerWidth - PANEL_WIDTH - 8;
     if (top + PANEL_HEIGHT > window.innerHeight) top = window.innerHeight - PANEL_HEIGHT - 8;
     if (left < 0) left = 8;
@@ -189,50 +183,52 @@ export class EQ7Panel {
 
   private getBandStates(): BandState[] {
     if (!this.instance) return [];
-    const params = this.instance.parameters;
+    const p = (id: number, fb: number) => this.instance!.parameters.find(x => x.id === id)?.value ?? fb;
     const states: BandState[] = [];
 
-    // HP (index 0): enabled=0, freq=1, Q=32
+    // HP (index 0)
     states.push({
-      enabled: (params.find(p => p.id === 0)?.value ?? 0) >= 0.5,
-      freq: params.find(p => p.id === 1)?.value ?? 80,
+      enabled: p(0, 0) >= 0.5,
+      freq: p(1, 20),
       gain: 0,
-      q: params.find(p => p.id === 32)?.value ?? 0.707,
+      q: p(32, 0.707),
+      slope: p(34, 12),
     });
 
     // Bands 1-7 (index 1-7)
     for (let i = 0; i < 7; i++) {
       const base = 2 + i * 4;
       states.push({
-        enabled: (params.find(p => p.id === base)?.value ?? 1) >= 0.5,
-        freq: params.find(p => p.id === base + 1)?.value ?? 1000,
-        gain: params.find(p => p.id === base + 2)?.value ?? 0,
-        q: params.find(p => p.id === base + 3)?.value ?? 1.0,
+        enabled: p(base, 1) >= 0.5,
+        freq: p(base + 1, 1000),
+        gain: p(base + 2, 0),
+        q: p(base + 3, 1.0),
+        slope: 0,
       });
     }
 
-    // LP (index 8): enabled=30, freq=31, Q=33
+    // LP (index 8)
     states.push({
-      enabled: (params.find(p => p.id === 30)?.value ?? 0) >= 0.5,
-      freq: params.find(p => p.id === 31)?.value ?? 8000,
+      enabled: p(30, 0) >= 0.5,
+      freq: p(31, 20000),
       gain: 0,
-      q: params.find(p => p.id === 33)?.value ?? 0.707,
+      q: p(33, 0.707),
+      slope: p(35, 12),
     });
 
     return states;
   }
 
-  /** Get the plugin parameter ID for a given band and param type */
   private getParamId(band: number, param: 'freq' | 'gain' | 'q'): number {
     if (band === 0) {
       if (param === 'freq') return 1;
       if (param === 'q') return 32;
-      return -1; // HP has no gain
+      return -1;
     }
     if (band === 8) {
       if (param === 'freq') return 31;
       if (param === 'q') return 33;
-      return -1; // LP has no gain
+      return -1;
     }
     const base = 2 + (band - 1) * 4;
     if (param === 'freq') return base + 1;
@@ -262,19 +258,46 @@ export class EQ7Panel {
 
   // ---- Frequency response ----
 
+  /** Returns 9 response arrays: [HP combined, Band1..7, LP combined] */
   private getFilterResponses(): Float32Array[] {
     if (!this.instance?.audioNode) return [];
-    const filters: BiquadFilterNode[] | undefined = (this.instance.audioNode as any)._filters;
-    if (!filters) return [];
+    const node = this.instance.audioNode as any;
+    const hpFilters: BiquadFilterNode[] = node._hpFilters;
+    const bandFilters: BiquadFilterNode[] = node._bandFilters;
+    const lpFilters: BiquadFilterNode[] = node._lpFilters;
+    if (!hpFilters || !bandFilters || !lpFilters) return [];
 
     const responses: Float32Array[] = [];
-    for (const filter of filters) {
+
+    // HP: multiply all 4 stages
+    const hpMag = new Float32Array(NUM_POINTS).fill(1);
+    for (const f of hpFilters) {
       const mag = new Float32Array(NUM_POINTS);
       const phase = new Float32Array(NUM_POINTS);
-      filter.getFrequencyResponse(freqArray, mag, phase);
+      f.getFrequencyResponse(freqArray, mag, phase);
+      for (let i = 0; i < NUM_POINTS; i++) hpMag[i] *= mag[i];
+    }
+    responses.push(hpMag);
+
+    // 7 bands: individual
+    for (const f of bandFilters) {
+      const mag = new Float32Array(NUM_POINTS);
+      const phase = new Float32Array(NUM_POINTS);
+      f.getFrequencyResponse(freqArray, mag, phase);
       responses.push(mag);
     }
-    return responses;
+
+    // LP: multiply all 4 stages
+    const lpMag = new Float32Array(NUM_POINTS).fill(1);
+    for (const f of lpFilters) {
+      const mag = new Float32Array(NUM_POINTS);
+      const phase = new Float32Array(NUM_POINTS);
+      f.getFrequencyResponse(freqArray, mag, phase);
+      for (let i = 0; i < NUM_POINTS; i++) lpMag[i] *= mag[i];
+    }
+    responses.push(lpMag);
+
+    return responses; // 9 entries
   }
 
   // ---- Canvas rendering ----
@@ -293,18 +316,17 @@ export class EQ7Panel {
     const w = this.canvas.width;
     const h = this.canvas.height;
 
-    // Background
     ctx.fillStyle = '#1a1a1a';
     ctx.fillRect(0, 0, w, h);
-
     this.renderGrid();
 
     const responses = this.getFilterResponses();
     if (responses.length === 0) return;
     const bandStates = this.getBandStates();
 
-    // Per-band curves
+    // Per-band curves (skip disabled HP/LP — they're passthrough noise)
     for (let b = 0; b < responses.length; b++) {
+      if ((b === 0 || b === 8) && !bandStates[b].enabled) continue;
       ctx.strokeStyle = BAND_COLORS[b];
       ctx.globalAlpha = 0.38;
       ctx.lineWidth = 1;
@@ -319,11 +341,14 @@ export class EQ7Panel {
       ctx.globalAlpha = 1;
     }
 
-    // Combined response
+    // Combined response (skip disabled HP/LP for clean flat line)
     const combined = new Float32Array(NUM_POINTS);
     for (let i = 0; i < NUM_POINTS; i++) {
       let mag = 1;
-      for (const resp of responses) mag *= resp[i];
+      for (let b = 0; b < responses.length; b++) {
+        if ((b === 0 || b === 8) && !bandStates[b].enabled) continue;
+        mag *= responses[b][i];
+      }
       combined[i] = 20 * Math.log10(Math.max(mag, 0.0001));
     }
 
@@ -333,8 +358,7 @@ export class EQ7Panel {
     ctx.moveTo(GRAPH_LEFT, zeroY);
     for (let i = 0; i < NUM_POINTS; i++) {
       const x = GRAPH_LEFT + (i / (NUM_POINTS - 1)) * GRAPH_WIDTH;
-      const y = this.gainToY(combined[i]);
-      ctx.lineTo(x, y);
+      ctx.lineTo(x, this.gainToY(combined[i]));
     }
     ctx.lineTo(GRAPH_RIGHT, zeroY);
     ctx.closePath();
@@ -360,7 +384,6 @@ export class EQ7Panel {
     for (let b = 0; b < 9; b++) {
       const state = bandStates[b];
       const cx = this.freqToX(state.freq);
-      // HP/LP: y at 0dB, bands: y at their gain
       const cy = (b === 0 || b === 8) ? zeroY : this.gainToY(state.gain);
       const r = (this.hoveredBand === b || this.draggedBand === b) ? 10 : 8;
 
@@ -375,7 +398,6 @@ export class EQ7Panel {
         ctx.stroke();
       }
 
-      // Label
       ctx.fillStyle = state.enabled ? '#fff' : BAND_COLORS[b];
       ctx.font = 'bold 8px -apple-system, BlinkMacSystemFont, sans-serif';
       ctx.textAlign = 'center';
@@ -388,7 +410,6 @@ export class EQ7Panel {
   private renderGrid(): void {
     const ctx = this.ctx;
 
-    // Frequency grid lines
     const freqLines = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
     const freqLabels = ['20', '50', '100', '200', '500', '1k', '2k', '5k', '10k', '20k'];
     ctx.strokeStyle = '#2a2a2a';
@@ -406,7 +427,6 @@ export class EQ7Panel {
       ctx.fillText(freqLabels[i], x, GRAPH_BOTTOM + 12);
     }
 
-    // dB grid lines
     const dbLines = [-24, -18, -12, -6, 0, 6, 12, 18, 24];
     ctx.textAlign = 'right';
     for (const db of dbLines) {
@@ -439,7 +459,8 @@ export class EQ7Panel {
           style="border-color:${color};${state.enabled ? `background:${color}` : ''}">${state.enabled ? 'ON' : 'OFF'}</button>
         <button class="eq7-band-val" data-band="${b}" data-param="freq">${this.formatFreq(state.freq)}</button>
         ${isHPLP
-          ? `<button class="eq7-band-val" data-band="${b}" data-param="q">Q${state.q.toFixed(2)}</button>`
+          ? `<button class="eq7-band-val" data-band="${b}" data-param="q">Q${state.q.toFixed(2)}</button>
+        <button class="eq7-band-slope" data-band="${b}">${Math.round(state.slope)}dB</button>`
           : `<button class="eq7-band-val" data-band="${b}" data-param="gain">${state.gain >= 0 ? '+' : ''}${state.gain.toFixed(1)}dB</button>
         <button class="eq7-band-val" data-band="${b}" data-param="q">Q${state.q.toFixed(1)}</button>`}
       </div>`;
@@ -465,12 +486,19 @@ export class EQ7Panel {
         const currentParam = this.instance?.parameters.find(p => p.id === paramId);
         if (!currentParam) return;
         this.stripDrag = {
-          band,
-          param,
+          band, param,
           startY: (e as MouseEvent).clientY,
           startValue: currentParam.value,
         };
         e.preventDefault();
+      });
+    });
+
+    // Slope cycling button
+    this.bandControls.querySelectorAll('.eq7-band-slope').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const band = parseInt((e.currentTarget as HTMLElement).dataset.band!);
+        this.cycleSlope(band);
       });
     });
   }
@@ -480,12 +508,22 @@ export class EQ7Panel {
     return Math.round(f) + 'Hz';
   }
 
+  private cycleSlope(band: number): void {
+    const paramId = band === 0 ? 34 : band === 8 ? 35 : -1;
+    if (paramId < 0) return;
+    const current = this.instance?.parameters.find(p => p.id === paramId)?.value ?? 12;
+    const idx = SLOPE_OPTIONS.indexOf(Math.round(current));
+    const next = SLOPE_OPTIONS[(idx + 1) % SLOPE_OPTIONS.length];
+    this.setParam(paramId, next);
+    this.renderBandControls();
+  }
+
   // ---- Strip drag interaction ----
 
   private onStripDragMove(e: MouseEvent): void {
     const sd = this.stripDrag;
     if (!sd) return;
-    const dy = sd.startY - e.clientY; // positive = dragging up = increase
+    const dy = sd.startY - e.clientY;
 
     const paramId = this.getParamId(sd.band, sd.param);
     if (paramId < 0) return;
@@ -494,14 +532,11 @@ export class EQ7Panel {
 
     let newValue: number;
     if (sd.param === 'freq') {
-      // Log-scale: each pixel = small multiplier
       const factor = Math.pow(1.008, dy);
       newValue = Math.max(paramDef.min, Math.min(paramDef.max, sd.startValue * factor));
     } else if (sd.param === 'gain') {
-      // Linear: ~0.2 dB per pixel
       newValue = Math.max(paramDef.min, Math.min(paramDef.max, sd.startValue + dy * 0.2));
     } else {
-      // Q: log-scale
       const factor = Math.pow(1.01, dy);
       newValue = Math.max(paramDef.min, Math.min(paramDef.max, sd.startValue * factor));
     }
@@ -542,7 +577,7 @@ export class EQ7Panel {
   }
 
   private onCanvasMouseMove(e: MouseEvent): void {
-    if (this.draggedBand >= 0) return; // handled by document mousemove
+    if (this.draggedBand >= 0) return;
     this.hoveredBand = this.hitTestBand(e);
   }
 
@@ -555,17 +590,13 @@ export class EQ7Panel {
     const mx = e.clientX - rect.left;
     const my = e.clientY - rect.top;
 
-    // Frequency from X
     const newFreq = Math.max(MIN_FREQ, Math.min(MAX_FREQ, this.xToFreq(mx)));
 
     if (band === 0) {
-      // HP: freq only (param id 1)
       this.setParam(1, Math.min(newFreq, 1000));
     } else if (band === 8) {
-      // LP: freq only (param id 31)
       this.setParam(31, Math.max(newFreq, 200));
     } else {
-      // Band 1-7: freq + gain
       const base = 2 + (band - 1) * 4;
       this.setParam(base + 1, newFreq);
       const newGain = Math.max(MIN_DB, Math.min(MAX_DB, this.yToGain(my)));
@@ -579,7 +610,6 @@ export class EQ7Panel {
     if (band < 0) return;
     e.preventDefault();
 
-    // Q adjustment for all bands (HP=32, LP=33, bands=base+3)
     let paramId: number;
     if (band === 0) paramId = 32;
     else if (band === 8) paramId = 33;
@@ -596,9 +626,7 @@ export class EQ7Panel {
 
   private onCanvasDblClick(e: MouseEvent): void {
     const band = this.hitTestBand(e);
-    if (band >= 0) {
-      this.toggleBandEnable(band);
-    }
+    if (band >= 0) this.toggleBandEnable(band);
   }
 
   private toggleBandEnable(band: number): void {
@@ -610,15 +638,13 @@ export class EQ7Panel {
 
     const param = this.instance.parameters.find(p => p.id === paramId);
     if (!param) return;
-    const newVal = param.value >= 0.5 ? 0 : 1;
-    this.setParam(paramId, newVal);
+    this.setParam(paramId, param.value >= 0.5 ? 0 : 1);
     this.renderBandControls();
   }
 
   private setParam(paramId: number, value: number): void {
     if (!this.pluginHost || !this.instanceId) return;
     this.pluginHost.setParameter(this.instanceId, paramId, value);
-    // Update local parameter cache
     const param = this.instance?.parameters.find(p => p.id === paramId);
     if (param) param.value = value;
   }
