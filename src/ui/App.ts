@@ -1325,9 +1325,38 @@ export class App {
   startMixerMeters(): void {
     const updateMeters = () => {
       this.mixer.updateMeters();
+      this.updateTimelineMeters();
       this.meterAnimationFrame = requestAnimationFrame(updateMeters);
     };
     updateMeters();
+  }
+
+  private updateTimelineMeters(): void {
+    if (!this.timelineRenderer || !this.timelineModel.timeline) return;
+    const data = new Float32Array(1024);
+    let needsRender = false;
+    for (const track of this.timelineModel.timeline.tracks) {
+      const analyser = this.audioEngine.getTrackAnalyser(track.id);
+      const prevDb = this.timelineRenderer.trackMeterLevels.get(track.id) ?? -60;
+      if (!analyser) {
+        if (prevDb > -60) {
+          this.timelineRenderer.trackMeterLevels.set(track.id, -60);
+          needsRender = true;
+        }
+        continue;
+      }
+      analyser.getFloatTimeDomainData(data);
+      let peak = 0;
+      for (let j = 0; j < data.length; j++) {
+        const abs = Math.abs(data[j]);
+        if (abs > peak) peak = abs;
+      }
+      const db = peak > 0 ? 20 * Math.log10(peak) : -60;
+      // Only flag render if level changed by > 0.5 dB
+      if (Math.abs(db - prevDb) > 0.5) needsRender = true;
+      this.timelineRenderer.trackMeterLevels.set(track.id, db);
+    }
+    if (needsRender) this.timelineRenderer.render();
   }
 
   stopMixerMeters(): void {

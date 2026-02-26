@@ -14,7 +14,9 @@ const MUTE_SOLO_BTN_GAP = 2;
 const INSERT_PILL_HEIGHT = 14;
 const INSERT_PILL_GAP = 1;
 const INSERT_PILL_X = 50;
-const INSERT_PILL_WIDTH = 86;
+const INSERT_PILL_WIDTH = 76;
+const METER_X = 130;      // vertical meter strip X position
+const METER_WIDTH = 6;    // meter strip width
 const INSERT_ADD_HEIGHT = 12;
 const MAX_INSERT_PILLS = 5;
 
@@ -105,6 +107,9 @@ export class TimelineRenderer {
 
   /** Index of the track the clip is being dragged over (-1 = none). */
   private dropTargetTrackIndex = -1;
+
+  /** Per-track meter levels in dB, updated externally from the animation loop. */
+  trackMeterLevels: Map<string, number> = new Map();
 
   // ---- Callbacks ----
   onPlayheadChange: ((sample: number) => void) | null = null;
@@ -1033,6 +1038,9 @@ export class TimelineRenderer {
       // Insert rack (right column, 5 pill slots)
       this.renderInsertRack(track, topY);
 
+      // Vertical meter strip (right of insert rack)
+      this.renderTrackMeter(track, topY);
+
       // Mute / Solo buttons (left column bottom)
       const btnY = topY + 60;
       const muteX = 6;
@@ -1078,14 +1086,14 @@ export class TimelineRenderer {
       ctx.roundRect(INSERT_PILL_X, pillY, INSERT_PILL_WIDTH, INSERT_PILL_HEIGHT, 3);
       ctx.fill();
 
-      // Plugin name (clipped to 58px)
+      // Plugin name (clipped to fit pill width minus bypass button)
       ctx.fillStyle = insert.bypassed ? '#555' : '#aaa';
       ctx.font = '9px -apple-system, BlinkMacSystemFont, sans-serif';
       ctx.textAlign = 'left';
       const displayName = this.getPluginShortName(insert.pluginId);
       ctx.save();
       ctx.beginPath();
-      ctx.rect(INSERT_PILL_X + 3, pillY, 58, INSERT_PILL_HEIGHT);
+      ctx.rect(INSERT_PILL_X + 3, pillY, INSERT_PILL_WIDTH - 18, INSERT_PILL_HEIGHT);
       ctx.clip();
       ctx.fillText(displayName, INSERT_PILL_X + 4, pillY + 9);
       ctx.restore();
@@ -1109,6 +1117,36 @@ export class TimelineRenderer {
       ctx.font = '9px -apple-system, BlinkMacSystemFont, sans-serif';
       ctx.textAlign = 'center';
       ctx.fillText('+', INSERT_PILL_X + 14, addY + 8);
+    }
+  }
+
+  private renderTrackMeter(track: Track, topY: number): void {
+    const ctx = this.ctx;
+    const db = this.trackMeterLevels.get(track.id) ?? -60;
+    const meterTop = topY + 6;
+    const meterHeight = 68;  // full meter height (almost full track)
+
+    // Meter background (dark well)
+    ctx.fillStyle = '#111';
+    ctx.beginPath();
+    ctx.roundRect(METER_X, meterTop, METER_WIDTH, meterHeight, 2);
+    ctx.fill();
+
+    // Meter fill: map -60..+12 dB to 0..100%
+    const percent = Math.max(0, Math.min(100, (db + 60) / 72 * 100));
+    const fillHeight = meterHeight * percent / 100;
+
+    if (fillHeight > 0) {
+      // Color: green → yellow → red
+      let color: string;
+      if (db >= -1) color = '#ef4444';
+      else if (db >= -6) color = '#f59e0b';
+      else color = '#10b981';
+
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.roundRect(METER_X, meterTop + meterHeight - fillHeight, METER_WIDTH, fillHeight, 2);
+      ctx.fill();
     }
   }
 
