@@ -639,6 +639,7 @@ export class App {
       'delete': () => this.deleteSelection(),
       'trim': () => this.trim(),
       'normalize': () => this.showNormalizeModal(),
+      'new-track': () => this.addEmptyTrack(),
       'fade-in': () => this.fadeIn(),
       'fade-out': () => this.fadeOut(),
       'gain': () => this.showGainModal(),

@@ -1495,12 +1495,24 @@ button:focus-visible {
   background: none;
 }
 
-.eq7-band-freq,
-.eq7-band-gain,
-.eq7-band-q {
+.eq7-band-val {
   font-size: 9px;
-  color: #888;
+  color: #aaa;
   font-variant-numeric: tabular-nums;
+  background: #2a2a2a;
+  border: 1px solid #3a3a3a;
+  border-radius: 3px;
+  padding: 2px 4px;
+  cursor: ns-resize;
+  min-width: 0;
+  width: 100%;
+  text-align: center;
+}
+
+.eq7-band-val:hover {
+  background: #333;
+  color: #ddd;
+  border-color: #555;
 }
 
 /* Fader section */

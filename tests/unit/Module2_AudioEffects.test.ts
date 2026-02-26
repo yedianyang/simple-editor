@@ -200,15 +200,17 @@ describe('PluginHost — Audio Effects', () => {
       expect(node._filters[8]).toBe(node._outputNode);
     });
 
-    it('2.3.2 - has 32 parameters total', async () => {
+    it('2.3.2 - has 34 parameters total (32 + HP Q + LP Q)', async () => {
       const instance = await pluginHost.createInstance(eq7Info);
-      expect(instance.parameters).toHaveLength(32);
+      expect(instance.parameters).toHaveLength(34);
 
-      // Verify param IDs are 0-31
+      // Verify param IDs: 0-31 + 32 (HP Q) + 33 (LP Q)
       const ids = instance.parameters.map(p => p.id);
       for (let i = 0; i < 32; i++) {
         expect(ids).toContain(i);
       }
+      expect(ids).toContain(32); // HP Q
+      expect(ids).toContain(33); // LP Q
     });
 
     it('2.3.3 - Band 4 gain +12dB sets peaking filter gain', async () => {

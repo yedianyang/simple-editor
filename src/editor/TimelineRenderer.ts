@@ -11,11 +11,11 @@ const MUTE_SOLO_BTN_SIZE = 14;
 const MUTE_SOLO_BTN_GAP = 2;
 
 // ---- Insert rack constants ----
-const INSERT_PILL_HEIGHT = 12;
+const INSERT_PILL_HEIGHT = 14;
 const INSERT_PILL_GAP = 1;
 const INSERT_PILL_X = 50;
 const INSERT_PILL_WIDTH = 86;
-const INSERT_ADD_HEIGHT = 11;
+const INSERT_ADD_HEIGHT = 12;
 const MAX_INSERT_PILLS = 5;
 
 // ---- Color constants ----
@@ -369,7 +369,7 @@ export class TimelineRenderer {
     const track = this.timeline.tracks[trackIndex];
 
     const trackTopY = RULER_HEIGHT + trackIndex * TRACK_HEIGHT - this.scrollOffsetY;
-    const rackStartY = trackTopY + 4;
+    const rackStartY = trackTopY + 6;
 
     const visibleCount = Math.min(track.inserts.length, MAX_INSERT_PILLS);
     for (let i = 0; i < visibleCount; i++) {
@@ -1052,7 +1052,7 @@ export class TimelineRenderer {
 
   private renderInsertRack(track: Track, topY: number): void {
     const ctx = this.ctx;
-    const rackStartY = topY + 4;
+    const rackStartY = topY + 6;
 
     const visibleInserts = track.inserts.slice(0, MAX_INSERT_PILLS);
 

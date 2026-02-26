@@ -218,7 +218,7 @@ export class PluginHost {
         (audioNode as any)._filters = allFilters; // [hp, b1..b7, lp] — index 0-8
         (audioNode as any)._outputNode = lp;
 
-        // 32 params: HP(enabled,freq) + 7×Band(enabled,freq,gain,Q) + LP(enabled,freq)
+        // 34 params: HP(enabled,freq,Q) + 7×Band(enabled,freq,gain,Q) + LP(enabled,freq,Q)
         parameters = [
           { id: 0, name: 'HP Enabled', value: 0, min: 0, max: 1, defaultValue: 0 },
           { id: 1, name: 'HP Freq', value: 80, min: 20, max: 1000, defaultValue: 80, unit: 'Hz' },
@@ -236,6 +236,8 @@ export class PluginHost {
         parameters.push(
           { id: 30, name: 'LP Enabled', value: 0, min: 0, max: 1, defaultValue: 0 },
           { id: 31, name: 'LP Freq', value: 8000, min: 200, max: 20000, defaultValue: 8000, unit: 'Hz' },
+          { id: 32, name: 'HP Q', value: 0.707, min: 0.1, max: 10, defaultValue: 0.707 },
+          { id: 33, name: 'LP Q', value: 0.707, min: 0.1, max: 10, defaultValue: 0.707 },
         );
         break;
       }
@@ -441,6 +443,14 @@ export class PluginHost {
         } else if (paramId === 31) {
           const lpEnabled = instance.parameters.find(p => p.id === 30)?.value ?? 0;
           if (lpEnabled >= 0.5) filters[8].frequency.value = value;
+        }
+        // HP Q: id 32
+        else if (paramId === 32) {
+          filters[0].Q.value = value;
+        }
+        // LP Q: id 33
+        else if (paramId === 33) {
+          filters[8].Q.value = value;
         }
         break;
       }
