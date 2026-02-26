@@ -26,6 +26,28 @@ export interface AudioFileInfo {
   extension: string;
 }
 
+/** Metadata from WAV file header chunks (BEXT, iXML, fmt). */
+export interface AudioFileMeta {
+  path: string;
+  name: string;
+  extension: string;
+  size: number;
+  // WAV-specific (null for non-WAV)
+  channels: number | null;
+  sample_rate: number | null;
+  bits_per_sample: number | null;
+  duration_secs: number | null;
+  // BWF BEXT metadata
+  bext_description: string | null;
+  bext_originator: string | null;
+  bext_originator_ref: string | null;
+  bext_date: string | null;
+  bext_time: string | null;
+  bext_coding_history: string | null;
+  // iXML raw content
+  ixml: string | null;
+}
+
 export interface AppAPI {
   // File system
   /** @deprecated Use readLargeFile() or readLargeAudioFile() for large files. */
@@ -61,6 +83,10 @@ export interface AppAPI {
   // Folder scanning
   scanFolder(path: string): Promise<AudioFileInfo[]>;
   openFolderDialog(): Promise<string>;
+
+  // Audio metadata (header-only, no PCM loading)
+  readFileMetadata(path: string): Promise<AudioFileMeta>;
+  scanAudioFolder(path: string): Promise<AudioFileMeta[]>;
 
   // Large file reading via custom protocol (raw bytes)
   readLargeFile(path: string): Promise<ArrayBuffer>;
@@ -250,6 +276,15 @@ export function createTauriAPI(): AppAPI {
 
     async openFolderDialog(): Promise<string> {
       return invoke<string>('open_folder_dialog');
+    },
+
+    // ── Audio metadata (header-only) ──────────────────────────────
+    async readFileMetadata(path: string): Promise<AudioFileMeta> {
+      return invoke<AudioFileMeta>('read_file_metadata', { path });
+    },
+
+    async scanAudioFolder(path: string): Promise<AudioFileMeta[]> {
+      return invoke<AudioFileMeta[]>('scan_audio_folder', { path });
     },
 
     // ── Large file via custom protocol ────────────────────────────

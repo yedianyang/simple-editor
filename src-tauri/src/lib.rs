@@ -404,6 +404,303 @@ async fn read_audio_file_binary(path: String) -> Result<Response, String> {
     Ok(Response::new(buf))
 }
 
+// ── Audio File Metadata Scanner ───────────────────────────────────
+
+/// Metadata extracted from a WAV file's header chunks (no PCM data loaded).
+#[derive(serde::Serialize, Clone, Default)]
+struct AudioFileMeta {
+    path: String,
+    name: String,
+    extension: String,
+    size: u64,
+    // WAV-specific (None for non-WAV)
+    channels: Option<u16>,
+    sample_rate: Option<u32>,
+    bits_per_sample: Option<u16>,
+    duration_secs: Option<f64>,
+    // BWF BEXT metadata
+    bext_description: Option<String>,
+    bext_originator: Option<String>,
+    bext_originator_ref: Option<String>,
+    bext_date: Option<String>,
+    bext_time: Option<String>,
+    bext_coding_history: Option<String>,
+    // iXML raw content
+    ixml: Option<String>,
+}
+
+/// Read a fixed-length ASCII/Latin-1 field from BEXT, trimming trailing nulls and whitespace.
+fn read_bext_field(data: &[u8], offset: usize, len: usize) -> Option<String> {
+    if offset + len > data.len() {
+        return None;
+    }
+    let raw = &data[offset..offset + len];
+    let s = String::from_utf8_lossy(raw);
+    let trimmed = s.trim_end_matches('\0').trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// Extract metadata from WAV file bytes (header chunks only, no PCM decoding).
+/// Reads fmt, data (size only), bext, and iXML chunks.
+fn extract_wav_metadata(data: &[u8]) -> Option<AudioFileMeta> {
+    if data.len() < 44 {
+        return None;
+    }
+    if &data[0..4] != b"RIFF" || &data[8..12] != b"WAVE" {
+        return None;
+    }
+
+    let mut meta = AudioFileMeta::default();
+    let mut channels: u16 = 0;
+    let mut sample_rate: u32 = 0;
+    let mut bits_per_sample: u16 = 0;
+    let mut data_chunk_size: u64 = 0;
+
+    let mut offset: usize = 12;
+    while offset + 8 <= data.len() {
+        let chunk_id = &data[offset..offset + 4];
+        let chunk_size = u32::from_le_bytes([
+            data[offset + 4],
+            data[offset + 5],
+            data[offset + 6],
+            data[offset + 7],
+        ]) as usize;
+
+        let chunk_data_start = offset + 8;
+
+        match chunk_id {
+            b"fmt " => {
+                if chunk_data_start + 16 > data.len() {
+                    break;
+                }
+                let fmt_code = u16::from_le_bytes([data[chunk_data_start], data[chunk_data_start + 1]]);
+                channels = u16::from_le_bytes([data[chunk_data_start + 2], data[chunk_data_start + 3]]);
+                sample_rate = u32::from_le_bytes([
+                    data[chunk_data_start + 4],
+                    data[chunk_data_start + 5],
+                    data[chunk_data_start + 6],
+                    data[chunk_data_start + 7],
+                ]);
+                bits_per_sample = u16::from_le_bytes([data[chunk_data_start + 14], data[chunk_data_start + 15]]);
+
+                // WAVE_FORMAT_EXTENSIBLE: extract valid bits per sample
+                if fmt_code == 0xFFFE && chunk_data_start + 40 <= data.len() {
+                    let valid_bits = u16::from_le_bytes([data[chunk_data_start + 18], data[chunk_data_start + 19]]);
+                    if valid_bits > 0 {
+                        bits_per_sample = valid_bits;
+                    }
+                }
+            }
+            b"data" => {
+                data_chunk_size = chunk_size as u64;
+            }
+            b"bext" => {
+                // BWF BEXT chunk layout (EBU Tech 3285):
+                //   0..256   description (ASCII)
+                //   256..288 originator (ASCII)
+                //   288..320 originatorReference (ASCII)
+                //   320..330 originationDate (ASCII, yyyy-mm-dd)
+                //   330..338 originationTime (ASCII, hh:mm:ss)
+                //   338..346 timeReference (u64 LE)
+                //   346..348 version (u16 LE)
+                //   ...
+                //   602+     codingHistory (free text, rest of chunk)
+                meta.bext_description = read_bext_field(data, chunk_data_start, 256);
+                meta.bext_originator = read_bext_field(data, chunk_data_start + 256, 32);
+                meta.bext_originator_ref = read_bext_field(data, chunk_data_start + 288, 32);
+                meta.bext_date = read_bext_field(data, chunk_data_start + 320, 10);
+                meta.bext_time = read_bext_field(data, chunk_data_start + 330, 8);
+
+                // Coding history starts at offset 602 within the bext chunk data
+                let coding_start = chunk_data_start + 602;
+                let coding_end = chunk_data_start + chunk_size;
+                if coding_start < coding_end && coding_end <= data.len() {
+                    let raw = &data[coding_start..coding_end];
+                    let s = String::from_utf8_lossy(raw);
+                    let trimmed = s.trim_end_matches('\0').trim();
+                    if !trimmed.is_empty() {
+                        meta.bext_coding_history = Some(trimmed.to_string());
+                    }
+                }
+            }
+            b"iXML" => {
+                let end = (chunk_data_start + chunk_size).min(data.len());
+                if chunk_data_start < end {
+                    let raw = &data[chunk_data_start..end];
+                    let s = String::from_utf8_lossy(raw);
+                    let trimmed = s.trim_end_matches('\0').trim();
+                    if !trimmed.is_empty() {
+                        meta.ixml = Some(trimmed.to_string());
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        // Chunks are word-aligned (pad to even)
+        offset += 8 + chunk_size + (chunk_size % 2);
+    }
+
+    if channels > 0 && sample_rate > 0 {
+        meta.channels = Some(channels);
+        meta.sample_rate = Some(sample_rate);
+        meta.bits_per_sample = Some(bits_per_sample);
+
+        let bytes_per_sample = (bits_per_sample as u64) / 8;
+        let frame_size = bytes_per_sample * channels as u64;
+        if frame_size > 0 && sample_rate > 0 {
+            let num_frames = data_chunk_size / frame_size;
+            meta.duration_secs = Some(num_frames as f64 / sample_rate as f64);
+        }
+    }
+
+    // If we only have format_code without channels/rate, treat as unparseable
+    if meta.channels.is_none()
+        && meta.bext_description.is_none()
+        && meta.ixml.is_none()
+    {
+        return None;
+    }
+
+    Some(meta)
+}
+
+/// Read metadata for a single audio file.
+#[tauri::command]
+fn read_file_metadata(path: String) -> Result<AudioFileMeta, String> {
+    use std::io::Read;
+
+    let p = PathBuf::from(&path);
+    if !p.is_file() {
+        return Err(format!("'{}' is not a file", path));
+    }
+
+    let file_meta = fs::metadata(&p)
+        .map_err(|e| format!("Failed to stat '{}': {}", path, e))?;
+
+    let name = p.file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let ext = p.extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    let mut result = AudioFileMeta {
+        path: path.clone(),
+        name,
+        extension: ext.clone(),
+        size: file_meta.len(),
+        ..Default::default()
+    };
+
+    // Only parse WAV metadata
+    if ext == "wav" || ext == "wave" {
+        // Read first 128KB for metadata (all header chunks come before data)
+        let mut buf = vec![0u8; 131_072.min(file_meta.len() as usize)];
+        let mut file = fs::File::open(&p)
+            .map_err(|e| format!("Failed to open '{}': {}", path, e))?;
+        let bytes_read = file.read(&mut buf)
+            .map_err(|e| format!("Failed to read '{}': {}", path, e))?;
+        buf.truncate(bytes_read);
+
+        if let Some(wav_meta) = extract_wav_metadata(&buf) {
+            result.channels = wav_meta.channels;
+            result.sample_rate = wav_meta.sample_rate;
+            result.bits_per_sample = wav_meta.bits_per_sample;
+            result.duration_secs = wav_meta.duration_secs;
+            result.bext_description = wav_meta.bext_description;
+            result.bext_originator = wav_meta.bext_originator;
+            result.bext_originator_ref = wav_meta.bext_originator_ref;
+            result.bext_date = wav_meta.bext_date;
+            result.bext_time = wav_meta.bext_time;
+            result.bext_coding_history = wav_meta.bext_coding_history;
+            result.ixml = wav_meta.ixml;
+        }
+    }
+
+    Ok(result)
+}
+
+/// Scan a directory for audio files with metadata. Returns entries sorted by name.
+#[tauri::command]
+async fn scan_audio_folder(path: String) -> Result<Vec<AudioFileMeta>, String> {
+    use std::io::Read;
+
+    let dir = PathBuf::from(&path);
+    if !dir.is_dir() {
+        return Err(format!("'{}' is not a directory", path));
+    }
+
+    let entries = fs::read_dir(&dir)
+        .map_err(|e| format!("Failed to read directory '{}': {}", path, e))?;
+
+    let mut files: Vec<AudioFileMeta> = Vec::new();
+
+    for entry in entries.flatten() {
+        let entry_path = entry.path();
+        if !entry_path.is_file() {
+            continue;
+        }
+        let ext = entry_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+
+        if !AUDIO_EXTENSIONS.contains(&ext.as_str()) {
+            continue;
+        }
+
+        let name = entry_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+
+        let mut meta = AudioFileMeta {
+            path: entry_path.to_string_lossy().to_string(),
+            name,
+            extension: ext.clone(),
+            size,
+            ..Default::default()
+        };
+
+        // Extract WAV metadata from header
+        if ext == "wav" || ext == "wave" {
+            if let Ok(mut file) = fs::File::open(&entry_path) {
+                let read_size = 131_072_usize.min(size as usize);
+                let mut buf = vec![0u8; read_size];
+                if let Ok(n) = file.read(&mut buf) {
+                    buf.truncate(n);
+                    if let Some(wav_meta) = extract_wav_metadata(&buf) {
+                        meta.channels = wav_meta.channels;
+                        meta.sample_rate = wav_meta.sample_rate;
+                        meta.bits_per_sample = wav_meta.bits_per_sample;
+                        meta.duration_secs = wav_meta.duration_secs;
+                        meta.bext_description = wav_meta.bext_description;
+                        meta.bext_originator = wav_meta.bext_originator;
+                        meta.bext_originator_ref = wav_meta.bext_originator_ref;
+                        meta.bext_date = wav_meta.bext_date;
+                        meta.bext_time = wav_meta.bext_time;
+                        meta.bext_coding_history = wav_meta.bext_coding_history;
+                        meta.ixml = wav_meta.ixml;
+                    }
+                }
+            }
+        }
+
+        files.push(meta);
+    }
+
+    files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(files)
+}
+
 // ── Folder Scanning ───────────────────────────────────────────────
 
 #[derive(serde::Serialize)]
@@ -645,6 +942,8 @@ pub fn run() {
             file_info,
             read_audio_file,
             read_audio_file_binary,
+            read_file_metadata,
+            scan_audio_folder,
             scan_folder,
             open_folder_dialog,
         ])
@@ -861,5 +1160,163 @@ mod tests {
         assert_eq!(result.num_samples, 2);
         assert!((result.channels[0][0] - 0.5).abs() < 0.001);
         assert!((result.channels[0][1] - (-0.5)).abs() < 0.001);
+    }
+
+    // ── Metadata scanner tests ───────────────────────────────────
+
+    /// Build a WAV with extra chunks (bext, iXML) for metadata testing.
+    fn build_wav_with_metadata(
+        channels: u16,
+        sample_rate: u32,
+        bits_per_sample: u16,
+        pcm_data: &[u8],
+        bext: Option<&[u8]>,
+        ixml: Option<&[u8]>,
+    ) -> Vec<u8> {
+        let fmt_chunk_size: u32 = 16;
+        let block_align = channels * (bits_per_sample / 8);
+        let byte_rate = sample_rate * block_align as u32;
+
+        let mut buf = Vec::new();
+        // Placeholder RIFF header (size filled later)
+        buf.extend_from_slice(b"RIFF");
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf.extend_from_slice(b"WAVE");
+
+        // fmt chunk
+        buf.extend_from_slice(b"fmt ");
+        buf.extend_from_slice(&fmt_chunk_size.to_le_bytes());
+        buf.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        buf.extend_from_slice(&channels.to_le_bytes());
+        buf.extend_from_slice(&sample_rate.to_le_bytes());
+        buf.extend_from_slice(&byte_rate.to_le_bytes());
+        buf.extend_from_slice(&block_align.to_le_bytes());
+        buf.extend_from_slice(&bits_per_sample.to_le_bytes());
+
+        // bext chunk
+        if let Some(bext_data) = bext {
+            buf.extend_from_slice(b"bext");
+            buf.extend_from_slice(&(bext_data.len() as u32).to_le_bytes());
+            buf.extend_from_slice(bext_data);
+            if bext_data.len() % 2 != 0 {
+                buf.push(0); // word-align
+            }
+        }
+
+        // iXML chunk
+        if let Some(ixml_data) = ixml {
+            buf.extend_from_slice(b"iXML");
+            buf.extend_from_slice(&(ixml_data.len() as u32).to_le_bytes());
+            buf.extend_from_slice(ixml_data);
+            if ixml_data.len() % 2 != 0 {
+                buf.push(0);
+            }
+        }
+
+        // data chunk
+        buf.extend_from_slice(b"data");
+        buf.extend_from_slice(&(pcm_data.len() as u32).to_le_bytes());
+        buf.extend_from_slice(pcm_data);
+
+        // Fill in RIFF size
+        let riff_size = (buf.len() - 8) as u32;
+        buf[4..8].copy_from_slice(&riff_size.to_le_bytes());
+
+        buf
+    }
+
+    #[test]
+    fn test_extract_wav_metadata_basic() {
+        // 2ch, 48kHz, 16-bit, 100 frames = 400 bytes of PCM
+        let pcm = vec![0u8; 400];
+        let wav = build_wav_with_metadata(2, 48000, 16, &pcm, None, None);
+
+        let meta = extract_wav_metadata(&wav).unwrap();
+        assert_eq!(meta.channels, Some(2));
+        assert_eq!(meta.sample_rate, Some(48000));
+        assert_eq!(meta.bits_per_sample, Some(16));
+        // 400 bytes / (2ch * 2 bytes) = 100 frames, 100/48000 ≈ 0.00208s
+        assert!((meta.duration_secs.unwrap() - 100.0 / 48000.0).abs() < 1e-6);
+        assert!(meta.bext_description.is_none());
+        assert!(meta.ixml.is_none());
+    }
+
+    #[test]
+    fn test_extract_wav_metadata_with_bext() {
+        // Build a minimal BEXT chunk (need at least 602 bytes for coding_history)
+        let mut bext = vec![0u8; 700];
+        // description at offset 0..256
+        let desc = b"Field recording - city ambience";
+        bext[..desc.len()].copy_from_slice(desc);
+        // originator at offset 256..288
+        let orig = b"FieldCorder";
+        bext[256..256 + orig.len()].copy_from_slice(orig);
+        // originator_ref at offset 288..320
+        let orig_ref = b"FC-20260226-001";
+        bext[288..288 + orig_ref.len()].copy_from_slice(orig_ref);
+        // date at offset 320..330
+        let date = b"2026-02-26";
+        bext[320..330].copy_from_slice(date);
+        // time at offset 330..338
+        let time = b"14:30:00";
+        bext[330..338].copy_from_slice(time);
+        // coding_history at offset 602+
+        let coding = b"A=PCM,F=48000,W=24,M=stereo";
+        bext[602..602 + coding.len()].copy_from_slice(coding);
+
+        let pcm = vec![0u8; 48]; // small data chunk
+        let wav = build_wav_with_metadata(1, 48000, 16, &pcm, Some(&bext), None);
+
+        let meta = extract_wav_metadata(&wav).unwrap();
+        assert_eq!(meta.bext_description.as_deref(), Some("Field recording - city ambience"));
+        assert_eq!(meta.bext_originator.as_deref(), Some("FieldCorder"));
+        assert_eq!(meta.bext_originator_ref.as_deref(), Some("FC-20260226-001"));
+        assert_eq!(meta.bext_date.as_deref(), Some("2026-02-26"));
+        assert_eq!(meta.bext_time.as_deref(), Some("14:30:00"));
+        assert_eq!(meta.bext_coding_history.as_deref(), Some("A=PCM,F=48000,W=24,M=stereo"));
+    }
+
+    #[test]
+    fn test_extract_wav_metadata_with_ixml() {
+        let ixml_content = b"<?xml version=\"1.0\"?><BWFXML><IXML_VERSION>1.0</IXML_VERSION><PROJECT>TestProject</PROJECT></BWFXML>";
+        let pcm = vec![0u8; 48];
+        let wav = build_wav_with_metadata(1, 44100, 16, &pcm, None, Some(ixml_content));
+
+        let meta = extract_wav_metadata(&wav).unwrap();
+        assert!(meta.ixml.is_some());
+        assert!(meta.ixml.as_ref().unwrap().contains("<PROJECT>TestProject</PROJECT>"));
+    }
+
+    #[test]
+    fn test_extract_wav_metadata_non_wav_returns_none() {
+        // Not a RIFF file
+        let data = b"NOT_A_WAV_FILE_AT_ALL_JUST_RANDOM_BYTES_HERE_OK";
+        assert!(extract_wav_metadata(data).is_none());
+    }
+
+    #[test]
+    fn test_extract_wav_metadata_duration_calculation() {
+        // 1ch, 44100 Hz, 16-bit, 44100 frames = 88200 bytes → exactly 1.0 second
+        let pcm = vec![0u8; 88200];
+        let wav = build_wav_with_metadata(1, 44100, 16, &pcm, None, None);
+
+        let meta = extract_wav_metadata(&wav).unwrap();
+        assert!((meta.duration_secs.unwrap() - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_read_bext_field_trims_nulls() {
+        let mut data = vec![0u8; 32];
+        data[0..5].copy_from_slice(b"Hello");
+        // Rest is null bytes
+        let result = read_bext_field(&data, 0, 32);
+        assert_eq!(result.as_deref(), Some("Hello"));
+    }
+
+    #[test]
+    fn test_read_bext_field_empty() {
+        let data = vec![0u8; 32];
+        let result = read_bext_field(&data, 0, 32);
+        assert!(result.is_none());
     }
 }
