@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::PathBuf;
-use tauri::ipc::Response;
+use tauri::ipc::{Request, Response};
 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder, PredefinedMenuItem};
 use tauri::Emitter;
 
@@ -78,6 +78,42 @@ fn write_file(path: String, contents: Vec<u8>) -> Result<(), String> {
             .map_err(|e| format!("Failed to create directories for '{}': {}", path, e))?;
     }
     fs::write(&path, &contents).map_err(|e| format!("Failed to write '{}': {}", path, e))
+}
+
+/// Write binary data to a file via raw IPC (no JSON serialization overhead).
+/// The file path is passed in the `x-file-path` request header.
+/// Binary body is received directly as raw bytes.
+/// Returns the number of bytes written for verification.
+#[tauri::command]
+fn write_binary_file(request: Request<'_>) -> Result<u64, String> {
+    let path = request
+        .headers()
+        .get("x-file-path")
+        .ok_or("Missing x-file-path header")?
+        .to_str()
+        .map_err(|e| format!("Invalid path header: {}", e))?
+        .to_string();
+
+    let bytes = match request.body() {
+        tauri::ipc::InvokeBody::Raw(data) => data.as_slice(),
+        tauri::ipc::InvokeBody::Json(_) => {
+            return Err("Expected raw binary body, got JSON".into());
+        }
+    };
+
+    let dest = PathBuf::from(&path);
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create directories for '{}': {}", path, e))?;
+    }
+
+    fs::write(&dest, bytes)
+        .map_err(|e| format!("Failed to write '{}': {}", path, e))?;
+
+    let meta = fs::metadata(&dest)
+        .map_err(|e| format!("Failed to stat '{}' after write: {}", path, e))?;
+
+    Ok(meta.len())
 }
 
 /// Get file metadata (size, exists, is_dir).
@@ -605,6 +641,7 @@ pub fn run() {
             read_file_bytes,
             read_file_text,
             write_file,
+            write_binary_file,
             file_info,
             read_audio_file,
             read_audio_file_binary,

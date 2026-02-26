@@ -96,14 +96,38 @@ export function createTauriAPI(): AppAPI {
     },
 
     async writeFile(path: string, data: ArrayBuffer): Promise<void> {
+      const bytes = new Uint8Array(data);
+      const expectedSize = bytes.byteLength;
+
       try {
-        await fsWriteFile(path, new Uint8Array(data));
+        await fsWriteFile(path, bytes);
       } catch (e) {
-        // Fallback to custom Rust command if plugin-fs scope rejects the path
-        console.warn('[writeFile] plugin-fs failed, falling back to invoke:', e);
-        const bytes = new Uint8Array(data);
-        const contents = Array.from(bytes);
-        await invoke('write_file', { path, contents });
+        // Fallback: raw binary IPC — sends bytes directly without JSON serialization
+        console.warn('[writeFile] plugin-fs failed, using binary IPC fallback:', e);
+        const writtenSize = await invoke<number>(
+          'write_binary_file',
+          bytes,
+          { headers: { 'x-file-path': path } }
+        );
+        if (writtenSize !== expectedSize) {
+          throw new Error(
+            `Binary write size mismatch: expected ${expectedSize}, got ${writtenSize}`
+          );
+        }
+      }
+
+      // Verify written file size matches expected
+      const info = await invoke<{ exists: boolean; size: number; is_dir: boolean }>(
+        'file_info', { path }
+      );
+      if (!info.exists) {
+        throw new Error(`File verification failed: ${path} not found after write`);
+      }
+      console.log(`[writeFile] verified: expected=${expectedSize}, actual=${info.size}`);
+      if (info.size !== expectedSize) {
+        throw new Error(
+          `File size verification failed: expected ${expectedSize} bytes, wrote ${info.size}`
+        );
       }
     },
 
