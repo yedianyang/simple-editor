@@ -18,6 +18,7 @@ import { ProjectManager } from './ProjectManager';
 import { UndoManager } from '../utils/UndoManager';
 import { FileHandler } from '../utils/FileHandler';
 import { BufferPool } from '../core/BufferPool';
+import { encodeWavAsync } from '../core/WavEncoder';
 import { TimelineModel } from '../core/TimelineModel';
 import {
   TimelineUndoManager,
@@ -2050,11 +2051,44 @@ export class App {
       baseName = baseName.replace(/[_-]+$/, '').replace(/[_-]{2,}/g, '_');
       if (!baseName) baseName = this.fileName?.replace(/\.[^/.]+$/, '') || 'audio';
 
+      // Gather inline metadata for quick export
+      const exportMeta = this.gatherInlineMetadata();
+      const chans: Float32Array[] = [];
+      for (let c = 0; c < buffer.numberOfChannels; c++) {
+        chans.push(buffer.getChannelData(c));
+      }
+      const wavMeta = {
+        description: exportMeta.bpiDescription,
+        originator: exportMeta.originator,
+        originatorRef: exportMeta.originatorRef,
+        project: exportMeta.project,
+        scene: exportMeta.scene,
+        take: exportMeta.take,
+        tape: exportMeta.tape,
+        note: exportMeta.note,
+        circled: exportMeta.circled,
+        wildTrack: exportMeta.wildTrack,
+        trackNames: exportMeta.trackNames,
+        ucsCategory: exportMeta.ucsCategory,
+        ucsSubCategory: exportMeta.ucsSubCategory,
+        ucsCatId: exportMeta.ucsCatId,
+        ucsFxName: exportMeta.ucsFxName,
+        ucsCreatorId: exportMeta.ucsCreatorId,
+        ucsSourceId: exportMeta.ucsSourceId,
+        recordist: exportMeta.recordist,
+        microphone: exportMeta.microphone,
+        micPerspective: exportMeta.micPerspective,
+        location: exportMeta.location,
+        library: exportMeta.library,
+        keywords: exportMeta.keywords,
+      };
+
       // Async encoding — yields to main thread to keep UI responsive
-      const blob = await FileHandler.exportWAVAsync(buffer, 24, 'none', undefined, (progress) => {
-        if (btn) btn.textContent = `Exporting ${Math.round(progress * 100)}%...`;
-      });
-      const arrayBuf = await blob.arrayBuffer();
+      const wavBytes = await encodeWavAsync(
+        { sampleRate: buffer.sampleRate, bitDepth: 24, channels: chans, dither: 'none', metadata: wavMeta },
+        (progress) => { if (btn) btn.textContent = `Exporting ${Math.round(progress * 100)}%...`; },
+      );
+      const arrayBuf = wavBytes.buffer as ArrayBuffer;
       const fullPath = `${folder}/${baseName}.wav`;
 
       if (btn) btn.textContent = 'Writing...';
@@ -2232,15 +2266,47 @@ export class App {
         fileNameSuffix = '_selection';
       }
 
-      const metadata = this.pendingExportMetadata || undefined;
+      const exportMeta = this.pendingExportMetadata || undefined;
 
       let blob: Blob;
       let extension: string;
 
       if (format === 'wav') {
-        blob = await FileHandler.exportWAVAsync(bufferToExport, bitDepth, dither, metadata, (progress) => {
-          if (confirmBtn) confirmBtn.textContent = `Exporting ${Math.round(progress * 100)}%...`;
-        });
+        // Extract Float32 channels from AudioBuffer for standalone encoder
+        const chans: Float32Array[] = [];
+        for (let c = 0; c < bufferToExport.numberOfChannels; c++) {
+          chans.push(bufferToExport.getChannelData(c));
+        }
+        const wavMeta = exportMeta ? {
+          description: exportMeta.bpiDescription,
+          originator: exportMeta.originator,
+          originatorRef: exportMeta.originatorRef,
+          project: exportMeta.project,
+          scene: exportMeta.scene,
+          take: exportMeta.take,
+          tape: exportMeta.tape,
+          note: exportMeta.note,
+          circled: exportMeta.circled,
+          wildTrack: exportMeta.wildTrack,
+          trackNames: exportMeta.trackNames,
+          ucsCategory: exportMeta.ucsCategory,
+          ucsSubCategory: exportMeta.ucsSubCategory,
+          ucsCatId: exportMeta.ucsCatId,
+          ucsFxName: exportMeta.ucsFxName,
+          ucsCreatorId: exportMeta.ucsCreatorId,
+          ucsSourceId: exportMeta.ucsSourceId,
+          recordist: exportMeta.recordist,
+          microphone: exportMeta.microphone,
+          micPerspective: exportMeta.micPerspective,
+          location: exportMeta.location,
+          library: exportMeta.library,
+          keywords: exportMeta.keywords,
+        } : undefined;
+        const wavBytes = await encodeWavAsync(
+          { sampleRate: bufferToExport.sampleRate, bitDepth: bitDepth as 16 | 24 | 32, channels: chans, dither: dither as 'none' | 'tpdf' | 'shaped', metadata: wavMeta },
+          (progress) => { if (confirmBtn) confirmBtn.textContent = `Exporting ${Math.round(progress * 100)}%...`; },
+        );
+        blob = new Blob([wavBytes.buffer as ArrayBuffer], { type: 'audio/wav' });
         extension = '.wav';
       } else {
         // AIF export — yield first so button text updates
