@@ -22,6 +22,7 @@ import { TimelineModel } from '../core/TimelineModel';
 import {
   TimelineUndoManager,
   MoveClipCommand,
+  MoveClipToTrackCommand,
   SplitClipCommand,
   DeleteClipCommand,
   TrimClipCommand,
@@ -179,10 +180,16 @@ export class App {
       this.updateUI();
     };
 
-    this.timelineRenderer.onClipMove = (clipId, trackId, newOffset) => {
-      this.timelineUndoManager.push(
-        new MoveClipCommand(this.timelineModel, trackId, clipId, newOffset),
-      );
+    this.timelineRenderer.onClipMove = (clipId, sourceTrackId, targetTrackId, newOffset) => {
+      if (sourceTrackId === targetTrackId) {
+        this.timelineUndoManager.push(
+          new MoveClipCommand(this.timelineModel, sourceTrackId, clipId, newOffset),
+        );
+      } else {
+        this.timelineUndoManager.push(
+          new MoveClipToTrackCommand(this.timelineModel, sourceTrackId, targetTrackId, clipId, newOffset),
+        );
+      }
       this.timelineRenderer?.render();
 
       // Pro Tools style: don't stop playback during drag, just mark for re-schedule on mouseup

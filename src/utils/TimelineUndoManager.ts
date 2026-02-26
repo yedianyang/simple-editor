@@ -84,6 +84,40 @@ export class MoveClipCommand implements TimelineCommand {
   }
 }
 
+export class MoveClipToTrackCommand implements TimelineCommand {
+  description: string;
+  private prevTrackId: string;
+  private prevOffset: number;
+
+  constructor(
+    private model: TimelineModel,
+    private sourceTrackId: string,
+    private targetTrackId: string,
+    private clipId: string,
+    private newOffset: number,
+  ) {
+    this.prevTrackId = sourceTrackId;
+    this.prevOffset = 0;
+    this.description = `Move clip to track`;
+  }
+
+  execute(): void {
+    const clip = this.findClip(this.prevTrackId);
+    if (clip) this.prevOffset = clip.timelineOffset;
+    this.model.moveClipToTrack(this.prevTrackId, this.targetTrackId, this.clipId, this.newOffset);
+    this.prevTrackId = this.sourceTrackId;
+  }
+
+  undo(): void {
+    this.model.moveClipToTrack(this.targetTrackId, this.sourceTrackId, this.clipId, this.prevOffset);
+  }
+
+  private findClip(trackId: string): Clip | undefined {
+    const track = this.model.timeline.tracks.find(t => t.id === trackId);
+    return track?.clips.find(c => c.id === this.clipId);
+  }
+}
+
 export class SplitClipCommand implements TimelineCommand {
   description: string;
   private originalClip: Clip | null = null;

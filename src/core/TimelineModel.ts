@@ -93,6 +93,23 @@ export class TimelineModel {
     this.recalcTotalLength();
   }
 
+  moveClipToTrack(sourceTrackId: string, targetTrackId: string, clipId: string, newOffset: number): void {
+    if (sourceTrackId === targetTrackId) {
+      this.moveClip(sourceTrackId, clipId, newOffset);
+      return;
+    }
+    const srcTrack = this.findTrack(sourceTrackId);
+    const dstTrack = this.findTrack(targetTrackId);
+    if (!srcTrack || !dstTrack) return;
+    const clipIdx = srcTrack.clips.findIndex(c => c.id === clipId);
+    if (clipIdx === -1) return;
+    const clip = srcTrack.clips[clipIdx];
+    srcTrack.clips.splice(clipIdx, 1);
+    clip.timelineOffset = Math.max(0, newOffset);
+    dstTrack.clips.push(clip);
+    this.recalcTotalLength();
+  }
+
   splitClip(trackId: string, clipId: string, splitSample: number): [Clip, Clip] | null {
     const track = this.findTrack(trackId);
     if (!track) return null;

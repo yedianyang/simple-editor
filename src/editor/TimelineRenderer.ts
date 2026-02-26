@@ -103,10 +103,13 @@ export class TimelineRenderer {
     hasDragged: false,
   };
 
+  /** Index of the track the clip is being dragged over (-1 = none). */
+  private dropTargetTrackIndex = -1;
+
   // ---- Callbacks ----
   onPlayheadChange: ((sample: number) => void) | null = null;
   onClipSelect: ((clipId: string, trackId: string) => void) | null = null;
-  onClipMove: ((clipId: string, trackId: string, newOffset: number) => void) | null = null;
+  onClipMove: ((clipId: string, sourceTrackId: string, targetTrackId: string, newOffset: number) => void) | null = null;
   onClipTrim: ((clipId: string, trackId: string, edge: 'start' | 'end', newValue: number) => void) | null = null;
   onTrackMuteToggle: ((trackId: string) => void) | null = null;
   onTrackSoloToggle: ((trackId: string) => void) | null = null;
@@ -547,9 +550,17 @@ export class TimelineRenderer {
     if (this.drag.mode === 'clipMove') {
       this.canvas.style.cursor = 'grabbing';
       const newOffset = Math.max(0, this.drag.originalValue + deltaSamples);
+      // Detect target track from Y position
+      const targetIdx = this.yToTrackIndex(y);
+      const tracks = this.timeline!.tracks;
+      const validTarget = targetIdx >= 0 && targetIdx < tracks.length;
+      this.dropTargetTrackIndex = validTarget ? targetIdx : -1;
+      const targetTrackId = validTarget ? tracks[targetIdx].id : this.drag.trackId;
       if (this.onClipMove) {
-        this.onClipMove(this.drag.clipId, this.drag.trackId, newOffset);
+        this.onClipMove(this.drag.clipId, this.drag.trackId, targetTrackId, newOffset);
       }
+      // After cross-track move, the clip now lives in the target track
+      this.drag.trackId = targetTrackId;
       this.render();
       return;
     }
@@ -600,6 +611,7 @@ export class TimelineRenderer {
     // Fire onDragEnd for clip move / trim drags (not selection)
     const wasClipDrag = this.drag.mode === 'clipMove' ||
       this.drag.mode === 'trimStart' || this.drag.mode === 'trimEnd';
+    this.dropTargetTrackIndex = -1;
     this.drag.mode = 'none';
     if (wasClipDrag && this.onDragEnd) {
       this.onDragEnd();
@@ -1127,8 +1139,12 @@ export class TimelineRenderer {
 
       if (bottomY < RULER_HEIGHT || topY > this.height) continue;
 
-      // Lane background (alternating colors)
-      ctx.fillStyle = i % 2 === 0 ? COLOR_TRACK_EVEN : COLOR_TRACK_ODD;
+      // Lane background (alternating colors, highlight drop target)
+      if (this.dropTargetTrackIndex === i && this.drag.mode === 'clipMove') {
+        ctx.fillStyle = '#1e2a3a';  // subtle blue highlight for drop target
+      } else {
+        ctx.fillStyle = i % 2 === 0 ? COLOR_TRACK_EVEN : COLOR_TRACK_ODD;
+      }
       ctx.fillRect(TRACK_HEADER_WIDTH, topY, w - TRACK_HEADER_WIDTH, TRACK_HEIGHT);
 
       // Lane bottom border
