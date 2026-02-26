@@ -1,5 +1,5 @@
 import { AudioEngine } from '../core/AudioEngine';
-import { formatTime, CHANNEL_NAMES, PluginInfo, TrackInsert, ExportMetadata } from '../core/types';
+import { formatTime, CHANNEL_NAMES, PluginInfo, TrackInsert, ExportMetadata, Clip } from '../core/types';
 import { PluginParameterPanel } from './PluginParameterPanel';
 import { AudioEditor } from '../editor/AudioEditor';
 import { WaveformRenderer } from '../editor/WaveformRenderer';
@@ -21,11 +21,9 @@ import { BufferPool } from '../core/BufferPool';
 import { TimelineModel } from '../core/TimelineModel';
 import {
   TimelineUndoManager,
-  MoveClipCommand,
-  MoveClipToTrackCommand,
   SplitClipCommand,
   DeleteClipCommand,
-  TrimClipCommand,
+  ClipDragCommand,
 } from '../utils/TimelineUndoManager';
 import type { AudioFileInfo, AudioFileMeta, ParsedAudioData } from '../utils/TauriAPI';
 import { generateUCSFilename, parseUCSFilename } from '../core/ucs-data';
@@ -64,6 +62,10 @@ export class App {
   timelineUndoManager: TimelineUndoManager;
   /** Set during clip drag when playback was active; cleared on drag end to resume. */
   private _pendingPlaybackResume = false;
+  /** Captures clip state at the start of a drag (move or trim) for single-undo. */
+  private _dragStartSnapshot: { clipId: string; trackId: string; clip: Clip } | null = null;
+  /** Tracks the current track of the dragged clip (updates during cross-track moves). */
+  private _dragCurrentTrackId: string | null = null;
 
   // ---- Collapsible Panels ----
   private leftPanel: CollapsiblePanel | null = null;
@@ -188,15 +190,15 @@ export class App {
     };
 
     this.timelineRenderer.onClipMove = (clipId, sourceTrackId, targetTrackId, newOffset) => {
-      if (sourceTrackId === targetTrackId) {
-        this.timelineUndoManager.push(
-          new MoveClipCommand(this.timelineModel, sourceTrackId, clipId, newOffset),
-        );
-      } else {
-        this.timelineUndoManager.push(
-          new MoveClipToTrackCommand(this.timelineModel, sourceTrackId, targetTrackId, clipId, newOffset),
-        );
+      // Snapshot original state on first move of this drag
+      if (!this._dragStartSnapshot) {
+        const track = this.timelineModel.timeline.tracks.find(t => t.id === sourceTrackId);
+        const clip = track?.clips.find(c => c.id === clipId);
+        if (clip) this._dragStartSnapshot = { clipId, trackId: sourceTrackId, clip: { ...clip } };
       }
+      // Apply move directly (single undo entry created on drag end)
+      this.timelineModel.moveClipToTrack(sourceTrackId, targetTrackId, clipId, newOffset);
+      this._dragCurrentTrackId = targetTrackId;
       this.timelineRenderer?.render();
 
       // Pro Tools style: don't stop playback during drag, just mark for re-schedule on mouseup
@@ -220,9 +222,17 @@ export class App {
         clamped = Math.max(clip.sourceStart + 1, Math.min(bufferLength, newValue));
       }
 
-      this.timelineUndoManager.push(
-        new TrimClipCommand(this.timelineModel, trackId, clipId, edge, clamped),
-      );
+      // Snapshot original state on first trim of this drag
+      if (!this._dragStartSnapshot) {
+        this._dragStartSnapshot = { clipId, trackId, clip: { ...clip } };
+      }
+      // Apply trim directly (single undo entry created on drag end)
+      if (edge === 'start') {
+        this.timelineModel.trimClipStart(trackId, clipId, clamped);
+      } else {
+        this.timelineModel.trimClipEnd(trackId, clipId, clamped);
+      }
+      this._dragCurrentTrackId = trackId;
       this.timelineRenderer?.clearPeakCaches();
       this.timelineRenderer?.render();
 
@@ -247,6 +257,42 @@ export class App {
     };
 
     this.timelineRenderer.onDragEnd = () => {
+      // Create single undo entry for the entire drag (move/trim + overlap resolution)
+      if (this._dragStartSnapshot) {
+        const { clipId, trackId: originalTrackId, clip: originalState } = this._dragStartSnapshot;
+        const finalTrackId = this._dragCurrentTrackId ?? originalTrackId;
+
+        const track = this.timelineModel.timeline.tracks.find(t => t.id === finalTrackId);
+        const clip = track?.clips.find(c => c.id === clipId);
+
+        if (clip) {
+          const changed = originalState.timelineOffset !== clip.timelineOffset
+            || originalState.sourceStart !== clip.sourceStart
+            || originalState.sourceEnd !== clip.sourceEnd
+            || originalTrackId !== finalTrackId;
+
+          if (changed) {
+            // Resolve overlaps (applied immediately to model)
+            const overlapResult = this.timelineModel.resolveOverlaps(finalTrackId, clipId);
+            const hasOverlaps = overlapResult.removed.length > 0 || overlapResult.trimmed.length > 0;
+
+            // Push single combined command (already executed — just for undo/redo)
+            this.timelineUndoManager.pushExecuted(
+              new ClipDragCommand(
+                this.timelineModel, clipId,
+                originalTrackId, finalTrackId,
+                originalState, { ...clip },
+                hasOverlaps ? overlapResult : null,
+              ),
+            );
+            this.timelineRenderer?.render();
+          }
+        }
+
+        this._dragStartSnapshot = null;
+        this._dragCurrentTrackId = null;
+      }
+
       if (this._pendingPlaybackResume) {
         this._pendingPlaybackResume = false;
         // Re-schedule from current playback position (playback never stopped)

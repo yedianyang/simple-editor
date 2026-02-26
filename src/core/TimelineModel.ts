@@ -1,5 +1,11 @@
 import { Timeline, Track, Clip, CHANNEL_NAMES, CHANNEL_COLORS } from './types';
 
+export interface OverlapResult {
+  removed: Clip[];
+  trimmed: { clipId: string; before: Clip; after: Clip }[];
+  added: Clip[];
+}
+
 let clipIdCounter = 0;
 let trackIdCounter = 0;
 
@@ -266,6 +272,94 @@ export class TimelineModel {
 
   deselectAllTracks(): void {
     this.timeline.selectedTrackIds = [];
+  }
+
+  /**
+   * Resolve overlaps on a track after a clip has been moved/dropped.
+   * The protectedClipId takes priority — overlapping portions of other clips get trimmed or removed.
+   * Returns a snapshot of all changes for undo/redo support.
+   */
+  resolveOverlaps(trackId: string, protectedClipId: string): OverlapResult {
+    const result: OverlapResult = { removed: [], trimmed: [], added: [] };
+
+    const track = this.findTrack(trackId);
+    if (!track) return result;
+
+    const moved = track.clips.find(c => c.id === protectedClipId);
+    if (!moved) return result;
+
+    const movedStart = moved.timelineOffset;
+    const movedEnd = moved.timelineOffset + moved.duration;
+
+    // Snapshot the clip list — we'll modify the array during iteration
+    const others = track.clips.filter(c => c.id !== protectedClipId);
+
+    for (const existing of others) {
+      const existStart = existing.timelineOffset;
+      const existEnd = existing.timelineOffset + existing.duration;
+
+      // No overlap — skip
+      if (existEnd <= movedStart || existStart >= movedEnd) continue;
+
+      // Case 1: Fully covered — remove
+      if (existStart >= movedStart && existEnd <= movedEnd) {
+        result.removed.push({ ...existing });
+        track.clips = track.clips.filter(c => c.id !== existing.id);
+        continue;
+      }
+
+      // Case 4: Split — existing envelops the moved clip
+      if (existStart < movedStart && existEnd > movedEnd) {
+        const before = { ...existing };
+
+        // Trim existing to left part
+        existing.sourceEnd = existing.sourceStart + (movedStart - existStart);
+        existing.duration = movedStart - existStart;
+        existing.fadeOutSamples = 0;
+
+        // Create right part
+        const rightSkip = movedEnd - existStart;
+        const rightClip: Clip = {
+          ...before,
+          id: genClipId(),
+          timelineOffset: movedEnd,
+          sourceStart: before.sourceStart + rightSkip,
+          sourceEnd: before.sourceStart + rightSkip + (existEnd - movedEnd),
+          duration: existEnd - movedEnd,
+          fadeInSamples: 0,
+        };
+        track.clips.push(rightClip);
+
+        result.trimmed.push({ clipId: existing.id, before, after: { ...existing } });
+        result.added.push({ ...rightClip });
+        continue;
+      }
+
+      // Case 2: Right overlap — existing starts before, ends inside moved range
+      if (existStart < movedStart) {
+        const before = { ...existing };
+        existing.sourceEnd = existing.sourceStart + (movedStart - existStart);
+        existing.duration = movedStart - existStart;
+        existing.fadeOutSamples = 0;
+        result.trimmed.push({ clipId: existing.id, before, after: { ...existing } });
+        continue;
+      }
+
+      // Case 3: Left overlap — existing starts inside moved range, ends after
+      if (existEnd > movedEnd) {
+        const before = { ...existing };
+        const samplesToTrim = movedEnd - existStart;
+        existing.sourceStart += samplesToTrim;
+        existing.timelineOffset = movedEnd;
+        existing.duration = existEnd - movedEnd;
+        existing.fadeInSamples = 0;
+        result.trimmed.push({ clipId: existing.id, before, after: { ...existing } });
+        continue;
+      }
+    }
+
+    this.recalcTotalLength();
+    return result;
   }
 
   private recalcTotalLength(): void {
