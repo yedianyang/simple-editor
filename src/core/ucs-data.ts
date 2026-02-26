@@ -883,3 +883,33 @@ export function generateUCSFilename(
   }
   return parts.join('_');
 }
+
+export interface ParsedUCSFilename {
+  catId: string;
+  fxName: string;
+  creatorId?: string;
+  sourceId?: string;
+  category?: string;
+  subCategory?: string;
+}
+
+export function parseUCSFilename(filename: string): ParsedUCSFilename | null {
+  // Strip extension
+  const base = filename.replace(/\.[^/.]+$/, '');
+  const parts = base.split('_');
+  if (parts.length < 2) return null;
+
+  const catId = parts[0];
+  // Look up catId in UCS_CATEGORIES
+  const entry = UCS_CATEGORIES.find(e => e.catId === catId);
+  if (!entry) return null;
+
+  return {
+    catId,
+    fxName: parts[1],
+    creatorId: parts[2] || undefined,
+    sourceId: parts[3] || undefined,
+    category: entry.category,
+    subCategory: entry.subCategory,
+  };
+}

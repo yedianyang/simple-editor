@@ -398,6 +398,44 @@ button:focus-visible {
   background-color: #ef4444;
 }
 
+.fb-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+}
+
+.fb-size {
+  font-size: 9px;
+  color: #666;
+  flex-shrink: 0;
+}
+
+.fb-meta {
+  font-size: 9px;
+  color: #666;
+  flex-shrink: 0;
+  font-family: 'SF Mono', SFMono-Regular, ui-monospace, Menlo, monospace;
+}
+
+.fb-status-btn {
+  padding: 0 3px;
+  font-size: 11px;
+  background: none;
+  border: none;
+  color: #666;
+  cursor: pointer;
+  flex-shrink: 0;
+  border-radius: 2px;
+  line-height: 1;
+}
+
+.fb-status-btn:hover {
+  background-color: #3a3a3a;
+  color: #ccc;
+}
+
 .file-list-empty {
   padding: 16px 10px;
   font-size: 11px;
@@ -815,6 +853,62 @@ button:focus-visible {
   font-variant-numeric: tabular-nums;
   font-family: 'SF Mono', SFMono-Regular, ui-monospace, Menlo, monospace;
   font-size: 10px;
+}
+
+/* --------------------------------------------------------------------------
+   Source Metadata Inspector (read-only, from file browser selection)
+   -------------------------------------------------------------------------- */
+
+.source-metadata-section {
+  padding: 8px 10px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.source-meta-group {
+  margin-bottom: 8px;
+}
+
+.source-meta-group-header {
+  font-size: 9px;
+  font-weight: 600;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 4px 0 2px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  margin-bottom: 4px;
+}
+
+.source-meta-field {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 1px 0;
+  gap: 8px;
+}
+
+.source-meta-label {
+  color: #888;
+  font-size: 9px;
+  flex-shrink: 0;
+  min-width: 70px;
+}
+
+.source-meta-value {
+  color: #ccc;
+  font-size: 10px;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.source-meta-value.mono {
+  font-family: 'SF Mono', SFMono-Regular, ui-monospace, Menlo, monospace;
+  font-size: 9px;
 }
 
 /* Inline metadata tabs */

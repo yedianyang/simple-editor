@@ -27,8 +27,8 @@ import {
   DeleteClipCommand,
   TrimClipCommand,
 } from '../utils/TimelineUndoManager';
-import type { AudioFileInfo, ParsedAudioData } from '../utils/TauriAPI';
-import { generateUCSFilename } from '../core/ucs-data';
+import type { AudioFileInfo, AudioFileMeta, ParsedAudioData } from '../utils/TauriAPI';
+import { generateUCSFilename, parseUCSFilename } from '../core/ucs-data';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 
 /**
@@ -77,10 +77,11 @@ export class App {
 
   // ---- File Browser state ----
   private folderPath: string | null = null;
-  private folderFiles: AudioFileInfo[] = [];
+  private folderFiles: AudioFileMeta[] = [];
   /** Track per-file workflow status: 'pending' | 'done' | 'skip' */
   private fileStatuses: Map<string, 'pending' | 'done' | 'skip'> = new Map();
   private searchFilter = '';
+  private selectedBrowserFile: AudioFileMeta | null = null;
 
   constructor() {
     this.audioEngine = new AudioEngine();
@@ -1636,10 +1637,31 @@ export class App {
         pathEl.title = folder;
       }
 
-      this.folderFiles = await window.appAPI.scanFolder(folder);
+      // Use metadata-aware scanner if available, fall back to basic scan
+      if (window.appAPI.scanAudioFolder) {
+        this.folderFiles = await window.appAPI.scanAudioFolder(folder);
+      } else {
+        const basic = await window.appAPI.scanFolder(folder);
+        this.folderFiles = basic.map(f => ({
+          ...f,
+          channels: null,
+          sample_rate: null,
+          bits_per_sample: null,
+          duration_secs: null,
+          bext_description: null,
+          bext_originator: null,
+          bext_originator_ref: null,
+          bext_date: null,
+          bext_time: null,
+          bext_coding_history: null,
+          ixml: null,
+        }));
+      }
       this.fileStatuses.clear();
+      this.selectedBrowserFile = null;
       this.renderFileBrowser();
-    } catch (err: any) {
+      this.updateSourceMetadataPanel(null);
+    } catch (err: unknown) {
       console.error('[FileBrowser] openFolder error:', err);
     }
   }
@@ -1662,20 +1684,15 @@ export class App {
     listEl.innerHTML = '';
     for (const f of filtered) {
       const status = this.fileStatuses.get(f.path) || 'pending';
+      const isSelected = this.selectedBrowserFile?.path === f.path;
       const item = document.createElement('div');
-      item.className = `file-browser-item status-${status}`;
+      item.className = `file-browser-item status-${status}${isSelected ? ' active' : ''}`;
       item.dataset.path = f.path;
 
       const nameSpan = document.createElement('span');
       nameSpan.className = 'fb-name';
       nameSpan.textContent = f.name;
       nameSpan.title = f.path;
-
-      const sizeSpan = document.createElement('span');
-      sizeSpan.className = 'fb-size';
-      sizeSpan.textContent = f.size > 1048576
-        ? (f.size / 1048576).toFixed(1) + ' MB'
-        : (f.size / 1024).toFixed(0) + ' KB';
 
       const statusBtn = document.createElement('button');
       statusBtn.className = 'fb-status-btn';
@@ -1691,9 +1708,29 @@ export class App {
 
       item.appendChild(statusBtn);
       item.appendChild(nameSpan);
-      item.appendChild(sizeSpan);
 
-      item.addEventListener('click', () => this.loadFileFromBrowser(f));
+      // Show audio metadata if available
+      if (f.channels != null && f.sample_rate != null) {
+        const metaSpan = document.createElement('span');
+        metaSpan.className = 'fb-meta';
+        const ch = f.channels === 1 ? 'M' : f.channels === 2 ? 'St' : `${f.channels}ch`;
+        const sr = (f.sample_rate / 1000).toFixed(f.sample_rate % 1000 === 0 ? 0 : 1) + 'k';
+        const dur = f.duration_secs != null ? this.formatDurationShort(f.duration_secs) : '';
+        metaSpan.textContent = `${ch} ${sr}${dur ? ' ' + dur : ''}`;
+        item.appendChild(metaSpan);
+      } else {
+        const sizeSpan = document.createElement('span');
+        sizeSpan.className = 'fb-size';
+        sizeSpan.textContent = f.size > 1048576
+          ? (f.size / 1048576).toFixed(1) + ' MB'
+          : (f.size / 1024).toFixed(0) + ' KB';
+        item.appendChild(sizeSpan);
+      }
+
+      // Single click → select + show metadata
+      item.addEventListener('click', () => this.selectBrowserFile(f));
+      // Double click → import into timeline
+      item.addEventListener('dblclick', () => this.importFromBrowser(f));
       listEl.appendChild(item);
     }
 
@@ -1705,10 +1742,105 @@ export class App {
     }
   }
 
-  private async loadFileFromBrowser(file: AudioFileInfo): Promise<void> {
+  private formatDurationShort(secs: number): string {
+    if (secs < 60) return secs.toFixed(1) + 's';
+    const m = Math.floor(secs / 60);
+    const s = Math.floor(secs % 60);
+    return `${m}:${s.toString().padStart(2, '0')}`;
+  }
+
+  private selectBrowserFile(file: AudioFileMeta): void {
+    this.selectedBrowserFile = file;
+    this.renderFileBrowser();
+    this.updateSourceMetadataPanel(file);
+  }
+
+  private async importFromBrowser(file: AudioFileMeta): Promise<void> {
     const id = this.fileQueue.addFile({ name: file.name, path: file.path });
     this.renderFileList();
     await this.loadFileFromPath(file.path, id);
+  }
+
+  private updateSourceMetadataPanel(file: AudioFileMeta | null): void {
+    const section = document.getElementById('sourceMetadataSection');
+    if (!section) return;
+
+    if (!file) {
+      section.style.display = 'none';
+      return;
+    }
+
+    section.style.display = '';
+
+    const setText = (id: string, text: string | null | undefined) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = text || '-';
+    };
+
+    // BWF / BEXT
+    const bextGroup = document.getElementById('bextGroup');
+    const hasBext = !!(file.bext_description || file.bext_originator || file.bext_date);
+    if (bextGroup) bextGroup.style.display = hasBext ? '' : 'none';
+    if (hasBext) {
+      setText('srcBextDescription', file.bext_description);
+      setText('srcBextOriginator', file.bext_originator);
+      setText('srcBextOriginatorRef', file.bext_originator_ref);
+      setText('srcBextDate', file.bext_date);
+      setText('srcBextTime', file.bext_time);
+      setText('srcBextCodingHistory', file.bext_coding_history);
+    }
+
+    // iXML
+    const ixmlGroup = document.getElementById('ixmlGroup');
+    const ixmlFields = document.getElementById('srcIxmlFields');
+    if (ixmlGroup && ixmlFields) {
+      if (file.ixml) {
+        ixmlGroup.style.display = '';
+        ixmlFields.innerHTML = '';
+        // Parse simple XML tags for display
+        const tags = ['PROJECT', 'SCENE', 'TAKE', 'TAPE', 'NOTE', 'CIRCLED', 'WILD_TRACK',
+          'FILE_SAMPLE_RATE', 'BIT_DEPTH', 'TRACK_COUNT'];
+        for (const tag of tags) {
+          const match = file.ixml.match(new RegExp(`<${tag}>([^<]*)</${tag}>`, 'i'));
+          if (match && match[1].trim()) {
+            const field = document.createElement('div');
+            field.className = 'source-meta-field';
+            field.innerHTML =
+              `<span class="source-meta-label">${tag.replace(/_/g, ' ').toLowerCase()}</span>` +
+              `<span class="source-meta-value">${this.escapeHtml(match[1].trim())}</span>`;
+            ixmlFields.appendChild(field);
+          }
+        }
+        if (ixmlFields.children.length === 0) {
+          ixmlGroup.style.display = 'none';
+        }
+      } else {
+        ixmlGroup.style.display = 'none';
+      }
+    }
+
+    // UCS filename parsing
+    const ucsGroup = document.getElementById('ucsGroup');
+    const ucs = parseUCSFilename(file.name);
+    if (ucsGroup) {
+      if (ucs) {
+        ucsGroup.style.display = '';
+        setText('srcUcsCategory', ucs.category);
+        setText('srcUcsSubCategory', ucs.subCategory);
+        setText('srcUcsCatId', ucs.catId);
+        setText('srcUcsFxName', ucs.fxName);
+        setText('srcUcsCreatorId', ucs.creatorId);
+        setText('srcUcsSourceId', ucs.sourceId);
+      } else {
+        ucsGroup.style.display = 'none';
+      }
+    }
+  }
+
+  private escapeHtml(text: string): string {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
   }
 
   // ==================== Collapsible Panels ====================
