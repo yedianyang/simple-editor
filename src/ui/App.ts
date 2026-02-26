@@ -157,6 +157,10 @@ export class App {
     };
 
     this.timelineRenderer.onClipSelect = (clipId, trackId) => {
+      // Auto-add parent track to selectedTrackIds
+      if (!this.timelineModel.timeline.selectedTrackIds.includes(trackId)) {
+        this.timelineModel.timeline.selectedTrackIds.push(trackId);
+      }
       // Update sonogram to show the selected clip's audio
       if (this.sonogramRenderer && this.audioEngine.audioContext) {
         const track = this.timelineModel.timeline.tracks.find(t => t.id === trackId);
@@ -307,6 +311,11 @@ export class App {
       const sel = this.timelineRenderer?.getSelection();
       this.spectrogramRenderer.setSelection(sel ? sel.start : null, sel ? sel.end : null);
       this.updateUI();
+    };
+
+    this.timelineRenderer.onTrackSelect = (trackIds) => {
+      this.timelineModel.timeline.selectedTrackIds = trackIds;
+      this.timelineRenderer?.render();
     };
   }
 
@@ -721,7 +730,18 @@ export class App {
 
     if (e.metaKey || e.ctrlKey) {
       switch (e.key) {
-        case 'a': e.preventDefault(); this.waveformRenderer.selectAll(); return;
+        case 'a':
+          e.preventDefault();
+          if (this.timelineModel.timeline.tracks.length > 0) {
+            // Timeline mode: select all tracks + all clips
+            this.timelineModel.selectAllTracks();
+            this.timelineModel.timeline.selectedClipIds = this.timelineModel.timeline.tracks
+              .flatMap(t => t.clips.map(c => c.id));
+            this.timelineRenderer?.render();
+          } else {
+            this.waveformRenderer.selectAll();
+          }
+          return;
         case 'z':
           e.preventDefault();
           e.shiftKey ? this.redo() : this.undo();

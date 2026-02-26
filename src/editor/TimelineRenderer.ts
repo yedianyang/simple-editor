@@ -33,7 +33,7 @@ const COLOR_TRACK_BORDER = '#2a2a2a';
 // ---- Peak cache block size ----
 const PEAK_BLOCK_SIZE = 256;
 
-type DragMode = 'none' | 'selection' | 'clipMove' | 'trimStart' | 'trimEnd';
+type DragMode = 'none' | 'selection' | 'clipMove' | 'trimStart' | 'trimEnd' | 'marquee';
 
 interface DragState {
   mode: DragMode;
@@ -47,6 +47,8 @@ interface DragState {
   startMouseY: number;
   /** Whether the mouse has moved > threshold since mousedown. */
   hasDragged: boolean;
+  /** Whether shift was held at mousedown (for additive marquee). */
+  shiftHeld: boolean;
 }
 
 interface ClipPeakEntry {
@@ -103,10 +105,19 @@ export class TimelineRenderer {
     startMouseX: 0,
     startMouseY: 0,
     hasDragged: false,
+    shiftHeld: false,
   };
 
   /** Index of the track the clip is being dragged over (-1 = none). */
   private dropTargetTrackIndex = -1;
+
+  // ---- Marquee selection state ----
+  private marqueeStartX = 0;
+  private marqueeStartY = 0;
+  private marqueeEndX = 0;
+  private marqueeEndY = 0;
+  private marqueeOriginalClipIds: string[] = [];
+  private marqueeOriginalTrackIds: string[] = [];
 
   /** Per-track meter levels in dB, updated externally from the animation loop. */
   trackMeterLevels: Map<string, number> = new Map();
@@ -127,6 +138,9 @@ export class TimelineRenderer {
   // Also expose split/delete for keyboard shortcuts
   onClipSplit: ((trackId: string, clipId: string, splitSample: number) => void) | null = null;
   onClipDelete: ((trackId: string, clipId: string) => void) | null = null;
+
+  // Track selection callback
+  onTrackSelect: ((trackIds: string[]) => void) | null = null;
 
   // Insert rack callbacks
   onInsertAdd: ((trackId: string) => void) | null = null;
@@ -440,10 +454,34 @@ export class TimelineRenderer {
       return;
     }
 
-    // 3. Ignore clicks in the header area that missed buttons
-    if (x < TRACK_HEADER_WIDTH) return;
+    // 3. Track header click (missed buttons/inserts → select track)
+    if (x < TRACK_HEADER_WIDTH) {
+      const trackIdx = this.yToTrackIndex(y);
+      if (trackIdx < 0 || trackIdx >= this.timeline.tracks.length) return;
+      const trackId = this.timeline.tracks[trackIdx].id;
+      if (e.shiftKey) {
+        // Toggle track in selection
+        const idx = this.timeline.selectedTrackIds.indexOf(trackId);
+        if (idx >= 0) {
+          this.timeline.selectedTrackIds.splice(idx, 1);
+        } else {
+          this.timeline.selectedTrackIds.push(trackId);
+        }
+      } else {
+        this.timeline.selectedTrackIds = [trackId];
+      }
+      this.onTrackSelect?.(this.timeline.selectedTrackIds);
+      this.render();
+      return;
+    }
 
-    // 3. Hit-test clips (Smart Tool: zone depends on Y position)
+    // 4. Ruler click → select all tracks, then fall through to playhead/selection
+    if (y < RULER_HEIGHT) {
+      this.timeline.selectedTrackIds = this.timeline.tracks.map(t => t.id);
+      this.onTrackSelect?.(this.timeline.selectedTrackIds);
+    }
+
+    // 5. Hit-test clips (Smart Tool: zone depends on Y position)
     const hit = this.hitTestClip(x, y);
     if (hit) {
       const { clip, track, zone } = hit;
@@ -454,7 +492,7 @@ export class TimelineRenderer {
         this.drag = {
           mode: 'trimStart', clipId: clip.id, trackId: track.id,
           grabOffsetSamples: 0, originalValue: clip.sourceStart,
-          startMouseX: x, startMouseY: y, hasDragged: false,
+          startMouseX: x, startMouseY: y, hasDragged: false, shiftHeld: false,
         };
         this.render();
         return;
@@ -466,7 +504,7 @@ export class TimelineRenderer {
         this.drag = {
           mode: 'trimEnd', clipId: clip.id, trackId: track.id,
           grabOffsetSamples: 0, originalValue: clip.sourceEnd,
-          startMouseX: x, startMouseY: y, hasDragged: false,
+          startMouseX: x, startMouseY: y, hasDragged: false, shiftHeld: false,
         };
         this.render();
         return;
@@ -474,34 +512,88 @@ export class TimelineRenderer {
 
       if (zone === 'move') {
         // Lower half of track → move clip
-        this.timeline.selectedClipIds = [clip.id];
+        if (e.shiftKey) {
+          // Shift: toggle clip in selection
+          const idx = this.timeline.selectedClipIds.indexOf(clip.id);
+          if (idx >= 0) {
+            this.timeline.selectedClipIds.splice(idx, 1);
+          } else {
+            this.timeline.selectedClipIds.push(clip.id);
+          }
+        } else {
+          // Without shift: replace selection only if clip not already selected
+          if (!this.timeline.selectedClipIds.includes(clip.id)) {
+            this.timeline.selectedClipIds = [clip.id];
+          }
+        }
+        // Auto-add parent track to selectedTrackIds
+        if (!this.timeline.selectedTrackIds.includes(track.id)) {
+          this.timeline.selectedTrackIds.push(track.id);
+        }
         if (this.onClipSelect) this.onClipSelect(clip.id, track.id);
         const sampleAtMouse = this.pixelToSample(x);
         this.drag = {
           mode: 'clipMove', clipId: clip.id, trackId: track.id,
           grabOffsetSamples: sampleAtMouse - clip.timelineOffset,
           originalValue: clip.timelineOffset,
-          startMouseX: x, startMouseY: y, hasDragged: false,
+          startMouseX: x, startMouseY: y, hasDragged: false, shiftHeld: false,
         };
         this.render();
         return;
       }
 
-      // zone === 'select' → fall through to selection logic below
+      // zone === 'select' → select clip, then fall through to time selection
+      if (e.shiftKey) {
+        const idx = this.timeline.selectedClipIds.indexOf(clip.id);
+        if (idx >= 0) {
+          this.timeline.selectedClipIds.splice(idx, 1);
+        } else {
+          this.timeline.selectedClipIds.push(clip.id);
+        }
+      } else {
+        this.timeline.selectedClipIds = [clip.id];
+      }
     }
 
-    // 4. Selection tool (empty space or upper half of clip)
+    // 6. Empty space or select zone → time selection or marquee
     const sample = Math.max(0, this.pixelToSample(x));
     this.playheadSample = sample;
     this.timeline.playheadSample = sample;
     this.selectionStartSample = null;
     this.selectionEndSample = null;
-    this.timeline.selectedClipIds = [];
-    this.drag = {
-      mode: 'selection', clipId: '', trackId: '',
-      grabOffsetSamples: 0, originalValue: sample,
-      startMouseX: x, startMouseY: y, hasDragged: false,
-    };
+
+    if (hit) {
+      // Came from 'select' zone — start time selection
+      this.drag = {
+        mode: 'selection', clipId: '', trackId: '',
+        grabOffsetSamples: 0, originalValue: sample,
+        startMouseX: x, startMouseY: y, hasDragged: false, shiftHeld: false,
+      };
+    } else if (y >= RULER_HEIGHT) {
+      // Empty space in content area → marquee
+      if (!e.shiftKey) {
+        this.timeline.selectedClipIds = [];
+      }
+      this.marqueeOriginalClipIds = [...this.timeline.selectedClipIds];
+      this.marqueeOriginalTrackIds = [...this.timeline.selectedTrackIds];
+      this.marqueeStartX = x;
+      this.marqueeStartY = y;
+      this.marqueeEndX = x;
+      this.marqueeEndY = y;
+      this.drag = {
+        mode: 'marquee', clipId: '', trackId: '',
+        grabOffsetSamples: 0, originalValue: sample,
+        startMouseX: x, startMouseY: y, hasDragged: false, shiftHeld: e.shiftKey,
+      };
+    } else {
+      // Ruler area → time selection
+      this.drag = {
+        mode: 'selection', clipId: '', trackId: '',
+        grabOffsetSamples: 0, originalValue: sample,
+        startMouseX: x, startMouseY: y, hasDragged: false, shiftHeld: false,
+      };
+    }
+
     if (this.onPlayheadChange) this.onPlayheadChange(sample);
     this.render();
   }
@@ -512,7 +604,9 @@ export class TimelineRenderer {
 
     // Update cursor when not dragging (Smart Tool cursor)
     if (this.drag.mode === 'none') {
-      if (x < TRACK_HEADER_WIDTH) {
+      if (x < TRACK_HEADER_WIDTH && y >= RULER_HEIGHT) {
+        this.canvas.style.cursor = 'pointer';
+      } else if (x < TRACK_HEADER_WIDTH) {
         this.canvas.style.cursor = 'default';
       } else {
         const hit = this.hitTestClip(x, y);
@@ -589,6 +683,23 @@ export class TimelineRenderer {
       this.render();
       return;
     }
+
+    if (this.drag.mode === 'marquee') {
+      this.marqueeEndX = x;
+      this.marqueeEndY = y;
+      if (!this.drag.hasDragged) {
+        const dx = x - this.drag.startMouseX;
+        const dy = y - this.drag.startMouseY;
+        if (Math.abs(dx) > 5 || Math.abs(dy) > 5) {
+          this.drag.hasDragged = true;
+        }
+      }
+      if (this.drag.hasDragged) {
+        this.updateMarqueeSelection();
+      }
+      this.render();
+      return;
+    }
   }
 
   private onMouseUp(): void {
@@ -613,6 +724,17 @@ export class TimelineRenderer {
         if (this.onSelectionChange) this.onSelectionChange();
       }
     }
+    if (this.drag.mode === 'marquee') {
+      if (this.drag.hasDragged) {
+        this.onTrackSelect?.(this.timeline!.selectedTrackIds);
+      }
+      // Clear marquee visual
+      this.marqueeStartX = this.marqueeStartY = this.marqueeEndX = this.marqueeEndY = 0;
+      this.drag.mode = 'none';
+      this.render();
+      return;
+    }
+
     // Fire onDragEnd for clip move / trim drags (not selection)
     const wasClipDrag = this.drag.mode === 'clipMove' ||
       this.drag.mode === 'trimStart' || this.drag.mode === 'trimEnd';
@@ -620,6 +742,55 @@ export class TimelineRenderer {
     this.drag.mode = 'none';
     if (wasClipDrag && this.onDragEnd) {
       this.onDragEnd();
+    }
+  }
+
+  // ==================================================================
+  // Marquee selection
+  // ==================================================================
+
+  private updateMarqueeSelection(): void {
+    if (!this.timeline) return;
+    const tracks = this.timeline.tracks;
+
+    const minX = Math.min(this.marqueeStartX, this.marqueeEndX);
+    const maxX = Math.max(this.marqueeStartX, this.marqueeEndX);
+    const minY = Math.min(this.marqueeStartY, this.marqueeEndY);
+    const maxY = Math.max(this.marqueeStartY, this.marqueeEndY);
+
+    // Convert x range to sample range
+    const sampleStart = (minX - TRACK_HEADER_WIDTH) * this.samplesPerPixel + this.scrollOffsetX;
+    const sampleEnd = (maxX - TRACK_HEADER_WIDTH) * this.samplesPerPixel + this.scrollOffsetX;
+
+    // Convert y range to track indices
+    const startTrackIdx = Math.max(0, Math.floor((minY - RULER_HEIGHT + this.scrollOffsetY) / TRACK_HEIGHT));
+    const endTrackIdx = Math.min(tracks.length - 1, Math.floor((maxY - RULER_HEIGHT + this.scrollOffsetY) / TRACK_HEIGHT));
+
+    // Build new selectedTrackIds from range
+    const newTrackIds: string[] = [];
+    const newClipIds: string[] = [];
+
+    for (let i = startTrackIdx; i <= endTrackIdx; i++) {
+      if (i < 0 || i >= tracks.length) continue;
+      const track = tracks[i];
+      newTrackIds.push(track.id);
+      for (const clip of track.clips) {
+        const clipEnd = clip.timelineOffset + clip.duration;
+        if (clip.timelineOffset < sampleEnd && clipEnd > sampleStart) {
+          newClipIds.push(clip.id);
+        }
+      }
+    }
+
+    if (this.drag.shiftHeld) {
+      // Union with original selection (no duplicates)
+      const trackSet = new Set([...this.marqueeOriginalTrackIds, ...newTrackIds]);
+      const clipSet = new Set([...this.marqueeOriginalClipIds, ...newClipIds]);
+      this.timeline.selectedTrackIds = [...trackSet];
+      this.timeline.selectedClipIds = [...clipSet];
+    } else {
+      this.timeline.selectedTrackIds = newTrackIds;
+      this.timeline.selectedClipIds = newClipIds;
     }
   }
 
@@ -678,20 +849,25 @@ export class TimelineRenderer {
   private onKeyDown(e: KeyboardEvent): void {
     if (!this.timeline) return;
 
-    // S = split selected clip at playhead
+    // S = split selected clips at playhead
     if (e.key === 's' || e.key === 'S') {
       if (this.timeline.selectedClipIds.length === 0) return;
+      // Collect all splits first, then execute in reverse to avoid index invalidation
+      const toSplit: { trackId: string; clipId: string; sample: number }[] = [];
       for (const track of this.timeline.tracks) {
         for (const clip of track.clips) {
           if (this.timeline.selectedClipIds.includes(clip.id)) {
-            if (this.onClipSplit) {
-              this.onClipSplit(track.id, clip.id, this.timeline.playheadSample);
-            }
-            this.render();
-            return;
+            toSplit.push({ trackId: track.id, clipId: clip.id, sample: this.timeline.playheadSample });
           }
         }
       }
+      for (let i = toSplit.length - 1; i >= 0; i--) {
+        const { trackId, clipId, sample } = toSplit[i];
+        if (this.onClipSplit) {
+          this.onClipSplit(trackId, clipId, sample);
+        }
+      }
+      this.render();
     }
 
     // Delete / Backspace = delete selected clips
@@ -884,6 +1060,22 @@ export class TimelineRenderer {
 
     // Playhead across full height
     this.renderPlayhead();
+
+    // Marquee rectangle overlay
+    if (this.drag.mode === 'marquee' && this.drag.hasDragged) {
+      const minX = Math.max(TRACK_HEADER_WIDTH, Math.min(this.marqueeStartX, this.marqueeEndX));
+      const maxX = Math.max(this.marqueeStartX, this.marqueeEndX);
+      const minY = Math.max(RULER_HEIGHT, Math.min(this.marqueeStartY, this.marqueeEndY));
+      const maxY = Math.max(this.marqueeStartY, this.marqueeEndY);
+
+      ctx.fillStyle = 'rgba(37, 99, 235, 0.1)';
+      ctx.fillRect(minX, minY, maxX - minX, maxY - minY);
+      ctx.strokeStyle = 'rgba(37, 99, 235, 0.6)';
+      ctx.setLineDash([4, 4]);
+      ctx.lineWidth = 1;
+      ctx.strokeRect(minX, minY, maxX - minX, maxY - minY);
+      ctx.setLineDash([]);
+    }
   }
 
   private renderPlaceholder(): void {
@@ -1023,6 +1215,15 @@ export class TimelineRenderer {
       // Color indicator bar (3px at top of header)
       ctx.fillStyle = track.color;
       ctx.fillRect(0, topY, TRACK_HEADER_WIDTH, 3);
+
+      // Selected track header highlight (drawn after color bar so blue tint is visible)
+      if (this.timeline!.selectedTrackIds.includes(track.id)) {
+        ctx.fillStyle = 'rgba(37, 99, 235, 0.15)';
+        ctx.fillRect(0, topY, TRACK_HEADER_WIDTH, TRACK_HEIGHT);
+        // Blue accent bar at left edge
+        ctx.fillStyle = COLOR_SELECTED_BORDER;
+        ctx.fillRect(0, topY, 3, TRACK_HEIGHT);
+      }
 
       // Track name (left column, clipped to 0-48px)
       ctx.fillStyle = track.mute ? '#555' : '#ccc';
@@ -1184,6 +1385,12 @@ export class TimelineRenderer {
         ctx.fillStyle = i % 2 === 0 ? COLOR_TRACK_EVEN : COLOR_TRACK_ODD;
       }
       ctx.fillRect(TRACK_HEADER_WIDTH, topY, w - TRACK_HEADER_WIDTH, TRACK_HEIGHT);
+
+      // Selected track lane tint
+      if (this.timeline!.selectedTrackIds.includes(track.id)) {
+        ctx.fillStyle = 'rgba(37, 99, 235, 0.06)';
+        ctx.fillRect(TRACK_HEADER_WIDTH, topY, w - TRACK_HEADER_WIDTH, TRACK_HEIGHT);
+      }
 
       // Lane bottom border
       ctx.strokeStyle = COLOR_TRACK_BORDER;

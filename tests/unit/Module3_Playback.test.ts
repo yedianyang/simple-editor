@@ -16,6 +16,7 @@ function makeTimeline(opts: {
     selectionStart: null,
     selectionEnd: null,
     selectedClipIds: [],
+    selectedTrackIds: [],
     samplesPerPixel: 441,
     scrollOffset: 0,
   };

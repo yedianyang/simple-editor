@@ -306,6 +306,7 @@ export interface Timeline {
   selectionStart: number | null;
   selectionEnd: number | null;
   selectedClipIds: string[];
+  selectedTrackIds: string[];
   samplesPerPixel: number;
   scrollOffset: number;
 }

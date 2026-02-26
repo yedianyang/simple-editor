@@ -25,6 +25,7 @@ export class TimelineModel {
     selectionStart: null,
     selectionEnd: null,
     selectedClipIds: [],
+    selectedTrackIds: [],
     samplesPerPixel: 256,
     scrollOffset: 0,
   };
@@ -38,6 +39,7 @@ export class TimelineModel {
       selectionStart: null,
       selectionEnd: null,
       selectedClipIds: [],
+      selectedTrackIds: [],
       samplesPerPixel: 256,
       scrollOffset: 0,
     };
@@ -247,6 +249,23 @@ export class TimelineModel {
       }
     }
     return selected;
+  }
+
+  toggleTrackSelection(trackId: string): void {
+    const idx = this.timeline.selectedTrackIds.indexOf(trackId);
+    if (idx >= 0) {
+      this.timeline.selectedTrackIds.splice(idx, 1);
+    } else {
+      this.timeline.selectedTrackIds.push(trackId);
+    }
+  }
+
+  selectAllTracks(): void {
+    this.timeline.selectedTrackIds = this.timeline.tracks.map(t => t.id);
+  }
+
+  deselectAllTracks(): void {
+    this.timeline.selectedTrackIds = [];
   }
 
   private recalcTotalLength(): void {
