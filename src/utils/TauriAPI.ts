@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { open, save } from '@tauri-apps/plugin-dialog';
+import { open, save, confirm } from '@tauri-apps/plugin-dialog';
 import { writeFile as fsWriteFile } from '@tauri-apps/plugin-fs';
 
 /**
@@ -61,6 +61,7 @@ export interface AppAPI {
   // Dialogs
   showSaveDialog(options: SaveDialogOptions): Promise<string | null>;
   showOpenDialog(options: OpenDialogOptions): Promise<string[] | null>;
+  showConfirmDialog(title: string, message: string): Promise<boolean>;
 
   // Plugin system (stubs — no native VST/AU in Tauri yet)
   scanPlugins(): Promise<any[]>;
@@ -193,6 +194,10 @@ export function createTauriAPI(): AppAPI {
         })),
       });
       return result ?? null;
+    },
+
+    async showConfirmDialog(title: string, message: string): Promise<boolean> {
+      return confirm(message, { title, kind: 'warning' });
     },
 
     async showOpenDialog(options: OpenDialogOptions): Promise<string[] | null> {

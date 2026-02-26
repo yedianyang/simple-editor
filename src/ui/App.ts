@@ -641,7 +641,7 @@ export class App {
 
     // Menu actions
     const menuActions: Record<string, () => void> = {
-      'new-project': () => this.newBlankProject(),
+      'new-project': () => this.confirmNewProject(),
       'export': () => this.showExportModal(),
       'save-project': () => this.saveProject(),
       'undo': () => this.undo(),
@@ -737,7 +737,7 @@ export class App {
         case 'n':
           e.preventDefault();
           if (e.shiftKey) this.addEmptyTrack();
-          else this.newBlankProject();
+          else this.confirmNewProject();
           return;
         case 'b':
           e.preventDefault();
@@ -1762,78 +1762,52 @@ export class App {
   }
 
   private updateSourceMetadataPanel(file: AudioFileMeta | null): void {
+    // Hide the standalone source metadata section (merged into Metadata panel)
     const section = document.getElementById('sourceMetadataSection');
-    if (!section) return;
+    if (section) section.style.display = 'none';
 
-    if (!file) {
-      section.style.display = 'none';
-      return;
-    }
+    if (!file) return;
 
-    section.style.display = '';
-
-    const setText = (id: string, text: string | null | undefined) => {
-      const el = document.getElementById(id);
-      if (el) el.textContent = text || '-';
+    const setInput = (id: string, value: string | null | undefined) => {
+      const el = document.getElementById(id) as HTMLInputElement | null;
+      if (el) el.value = value || '';
     };
 
-    // BWF / BEXT
-    const bextGroup = document.getElementById('bextGroup');
-    const hasBext = !!(file.bext_description || file.bext_originator || file.bext_date);
-    if (bextGroup) bextGroup.style.display = hasBext ? '' : 'none';
-    if (hasBext) {
-      setText('srcBextDescription', file.bext_description);
-      setText('srcBextOriginator', file.bext_originator);
-      setText('srcBextOriginatorRef', file.bext_originator_ref);
-      setText('srcBextDate', file.bext_date);
-      setText('srcBextTime', file.bext_time);
-      setText('srcBextCodingHistory', file.bext_coding_history);
+    // Populate existing iXML tab fields from file metadata
+    if (file.ixml) {
+      const getTag = (tag: string): string => {
+        const match = file.ixml!.match(new RegExp(`<${tag}>([^<]*)</${tag}>`, 'i'));
+        return match ? match[1].trim() : '';
+      };
+      setInput('inlineDescription', file.bext_description || getTag('NOTE'));
+      setInput('inlineScene', getTag('SCENE'));
+      setInput('inlineTake', getTag('TAKE'));
+      setInput('inlineTape', getTag('TAPE'));
+      setInput('inlineNote', getTag('NOTE'));
+    } else if (file.bext_description) {
+      setInput('inlineDescription', file.bext_description);
     }
 
-    // iXML
-    const ixmlGroup = document.getElementById('ixmlGroup');
-    const ixmlFields = document.getElementById('srcIxmlFields');
-    if (ixmlGroup && ixmlFields) {
-      if (file.ixml) {
-        ixmlGroup.style.display = '';
-        ixmlFields.innerHTML = '';
-        // Parse simple XML tags for display
-        const tags = ['PROJECT', 'SCENE', 'TAKE', 'TAPE', 'NOTE', 'CIRCLED', 'WILD_TRACK',
-          'FILE_SAMPLE_RATE', 'BIT_DEPTH', 'TRACK_COUNT'];
-        for (const tag of tags) {
-          const match = file.ixml.match(new RegExp(`<${tag}>([^<]*)</${tag}>`, 'i'));
-          if (match && match[1].trim()) {
-            const field = document.createElement('div');
-            field.className = 'source-meta-field';
-            field.innerHTML =
-              `<span class="source-meta-label">${tag.replace(/_/g, ' ').toLowerCase()}</span>` +
-              `<span class="source-meta-value">${this.escapeHtml(match[1].trim())}</span>`;
-            ixmlFields.appendChild(field);
-          }
-        }
-        if (ixmlFields.children.length === 0) {
-          ixmlGroup.style.display = 'none';
-        }
-      } else {
-        ixmlGroup.style.display = 'none';
-      }
-    }
-
-    // UCS filename parsing
-    const ucsGroup = document.getElementById('ucsGroup');
+    // Populate existing UCS tab fields from filename parsing
     const ucs = parseUCSFilename(file.name);
-    if (ucsGroup) {
-      if (ucs) {
-        ucsGroup.style.display = '';
-        setText('srcUcsCategory', ucs.category);
-        setText('srcUcsSubCategory', ucs.subCategory);
-        setText('srcUcsCatId', ucs.catId);
-        setText('srcUcsFxName', ucs.fxName);
-        setText('srcUcsCreatorId', ucs.creatorId);
-        setText('srcUcsSourceId', ucs.sourceId);
-      } else {
-        ucsGroup.style.display = 'none';
+    if (ucs) {
+      // Set category/subcategory dropdowns
+      const catSelect = document.getElementById('inlineUcsCategory') as HTMLSelectElement | null;
+      const subCatSelect = document.getElementById('inlineUcsSubCategory') as HTMLSelectElement | null;
+      if (catSelect && ucs.category) {
+        for (const opt of Array.from(catSelect.options)) {
+          if (opt.value === ucs.category) { catSelect.value = ucs.category; break; }
+        }
       }
+      if (subCatSelect && ucs.subCategory) {
+        for (const opt of Array.from(subCatSelect.options)) {
+          if (opt.value === ucs.subCategory) { subCatSelect.value = ucs.subCategory; break; }
+        }
+      }
+      setInput('inlineCatId', ucs.catId);
+      setInput('inlineFxName', ucs.fxName);
+      setInput('inlineCreatorId', ucs.creatorId);
+      setInput('inlineSourceId', ucs.sourceId);
     }
   }
 
@@ -2103,6 +2077,31 @@ export class App {
       library: '',
       keywords: '',
     };
+  }
+
+  async confirmNewProject(): Promise<void> {
+    // Skip confirmation on initial startup (no tracks, no audio)
+    const hasWork = this.timelineModel.timeline.tracks.length > 0 ||
+      this.audioEngine.audioBuffer !== null;
+    if (hasWork) {
+      const confirmed = await this.showConfirmDialog(
+        'Create New Project?',
+        'Unsaved changes will be lost. Save your project first if needed.',
+      );
+      if (!confirmed) return;
+    }
+    this.newBlankProject();
+  }
+
+  private showConfirmDialog(title: string, message: string): Promise<boolean> {
+    return new Promise(resolve => {
+      // Use native confirm dialog via Tauri if available, otherwise browser confirm
+      if (window.appAPI?.showConfirmDialog) {
+        window.appAPI.showConfirmDialog(title, message).then(resolve);
+      } else {
+        resolve(window.confirm(`${title}\n\n${message}`));
+      }
+    });
   }
 
   newBlankProject(): void {
