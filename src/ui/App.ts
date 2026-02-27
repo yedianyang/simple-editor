@@ -24,6 +24,14 @@ import {
   SplitClipCommand,
   DeleteClipCommand,
   ClipDragCommand,
+  EditClipGainCommand,
+  EditClipFadeCommand,
+  AddCuePointCommand,
+  RemoveCuePointCommand,
+  MoveCuePointCommand,
+  DeleteTimeRangeCommand,
+  ReverseClipCommand,
+  NormalizeClipCommand,
 } from '../utils/TimelineUndoManager';
 import type { AudioFileInfo, AudioFileMeta, ParsedAudioData } from '../utils/TauriAPI';
 import { generateUCSFilename, parseUCSFilename } from '../core/ucs-data';
@@ -65,6 +73,8 @@ export class App {
   private _dragStartSnapshot: { clipId: string; trackId: string; clip: Clip } | null = null;
   /** Tracks the current track of the dragged clip (updates during cross-track moves). */
   private _dragCurrentTrackId: string | null = null;
+  private _dragGainOriginal: number | null = null;
+  private _dragFadeOriginal: { fadeIn: number; fadeOut: number } | null = null;
 
   // ---- Collapsible Panels ----
   private leftPanel: CollapsiblePanel | null = null;
@@ -359,6 +369,105 @@ export class App {
 
     this.timelineRenderer.onTrackSelect = (trackIds) => {
       this.timelineModel.timeline.selectedTrackIds = trackIds;
+      this.timelineRenderer?.render();
+    };
+
+    // ---- Clip gain callback ----
+    this.timelineRenderer.onClipGainChange = (clipId, trackId, gainDb) => {
+      const track = this.timelineModel.timeline.tracks.find(t => t.id === trackId);
+      const clip = track?.clips.find(c => c.id === clipId);
+      if (clip) {
+        // Snapshot original on first change of this drag
+        if (this._dragGainOriginal == null) {
+          this._dragGainOriginal = clip.gainDb;
+        }
+        clip.gainDb = Math.round(gainDb * 10) / 10; // 0.1 dB precision
+      }
+    };
+
+    // ---- Clip fade callback ----
+    this.timelineRenderer.onClipFadeChange = (clipId, trackId, edge, samples) => {
+      const track = this.timelineModel.timeline.tracks.find(t => t.id === trackId);
+      const clip = track?.clips.find(c => c.id === clipId);
+      if (clip) {
+        if (this._dragFadeOriginal == null) {
+          this._dragFadeOriginal = { fadeIn: clip.fadeInSamples, fadeOut: clip.fadeOutSamples };
+        }
+        if (edge === 'in') clip.fadeInSamples = samples;
+        else clip.fadeOutSamples = samples;
+      }
+    };
+
+    // ---- Extend onDragEnd for gain/fade ----
+    const existingDragEnd = this.timelineRenderer.onDragEnd!;
+    this.timelineRenderer.onDragEnd = () => {
+      // Check for clip gain drag undo
+      if (this._dragGainOriginal != null) {
+        const selected = this.timelineModel.timeline.selectedClipIds;
+        if (selected.length === 1) {
+          for (const track of this.timelineModel.timeline.tracks) {
+            const clip = track.clips.find(c => c.id === selected[0]);
+            if (clip && clip.gainDb !== this._dragGainOriginal) {
+              this.timelineUndoManager.pushExecuted(
+                new EditClipGainCommand(this.timelineModel, track.id, clip.id, this._dragGainOriginal, clip.gainDb),
+              );
+              break;
+            }
+          }
+        }
+        this._dragGainOriginal = null;
+        return;
+      }
+
+      // Check for fade drag undo
+      if (this._dragFadeOriginal != null) {
+        const selected = this.timelineModel.timeline.selectedClipIds;
+        if (selected.length === 1) {
+          for (const track of this.timelineModel.timeline.tracks) {
+            const clip = track.clips.find(c => c.id === selected[0]);
+            if (clip) {
+              const { fadeIn: prevIn, fadeOut: prevOut } = this._dragFadeOriginal;
+              if (clip.fadeInSamples !== prevIn || clip.fadeOutSamples !== prevOut) {
+                this.timelineUndoManager.pushExecuted(
+                  new EditClipFadeCommand(this.timelineModel, track.id, clip.id, prevIn, prevOut, clip.fadeInSamples, clip.fadeOutSamples),
+                );
+              }
+              break;
+            }
+          }
+        }
+        this._dragFadeOriginal = null;
+        return;
+      }
+
+      // Existing clip move/trim drag end handler
+      existingDragEnd();
+    };
+
+    // ---- Cue point callbacks ----
+    this.timelineRenderer.cuePointManager = this.cuePointManager;
+
+    this.timelineRenderer.onCuePointAdd = (sample) => {
+      this.timelineUndoManager.push(
+        new AddCuePointCommand(this.cuePointManager, sample, ''),
+      );
+      this.timelineRenderer?.render();
+    };
+
+    this.timelineRenderer.onCuePointRemove = (id) => {
+      const cue = this.cuePointManager.getAllCuePoints().find(c => c.id === id);
+      if (cue) {
+        this.timelineUndoManager.push(
+          new RemoveCuePointCommand(this.cuePointManager, { ...cue }),
+        );
+        this.timelineRenderer?.render();
+      }
+    };
+
+    this.timelineRenderer.onCuePointMoveEnd = (id, prevSample, newSample) => {
+      this.timelineUndoManager.pushExecuted(
+        new MoveCuePointCommand(this.cuePointManager, id, prevSample, newSample),
+      );
       this.timelineRenderer?.render();
     };
   }
@@ -858,6 +967,24 @@ export class App {
       }
       case 'Delete': case 'Backspace': {
         e.preventDefault();
+        // Time-range deletion takes priority over clip deletion
+        const timeSelection = this.timelineRenderer?.getSelection();
+        if (timeSelection && this.timelineModel.timeline.tracks.length > 0) {
+          const trackIds = this.timelineModel.timeline.selectedTrackIds.length > 0
+            ? this.timelineModel.timeline.selectedTrackIds
+            : this.timelineModel.timeline.tracks.map(t => t.id);
+          this.timelineUndoManager.push(
+            new DeleteTimeRangeCommand(this.timelineModel, trackIds, timeSelection.start, timeSelection.end),
+          );
+          // Clear selection
+          if (this.timelineRenderer) {
+            this.timelineRenderer.selectionStartSample = null;
+            this.timelineRenderer.selectionEndSample = null;
+          }
+          this.timelineRenderer?.clearPeakCaches();
+          this.timelineRenderer?.render();
+          break;
+        }
         const selectedClips = this.timelineModel.timeline.selectedClipIds;
         if (selectedClips.length > 0) {
           for (const track of this.timelineModel.timeline.tracks) {
@@ -881,7 +1008,14 @@ export class App {
         if (this.audioEngine.audioBuffer) this.reverse();
         break;
       case 'm': case 'M':
-        if (this.audioEngine.audioBuffer) this.addCuePointAtPlayhead();
+        if (this.timelineModel.timeline.tracks.length > 0) {
+          // Timeline mode: add cue at timeline playhead
+          const sample = this.timelineModel.timeline.playheadSample;
+          this.timelineUndoManager.push(new AddCuePointCommand(this.cuePointManager, sample, ''));
+          this.timelineRenderer?.render();
+        } else if (this.audioEngine.audioBuffer) {
+          this.addCuePointAtPlayhead();
+        }
         break;
     }
   }
@@ -1291,6 +1425,34 @@ export class App {
 
   normalize(): void {
     const level = parseFloat((document.getElementById('normalizeLevel') as HTMLInputElement).value);
+
+    // Timeline mode: normalize selected clips (AudioSuite-style pre-render)
+    if (this.timelineModel.timeline.tracks.length > 0) {
+      const selected = this.timelineModel.timeline.selectedClipIds;
+      if (selected.length === 0) { this.hideModal('normalizeModal'); return; }
+      for (const track of this.timelineModel.timeline.tracks) {
+        for (const clip of track.clips) {
+          if (selected.includes(clip.id)) {
+            const newBufferId = this.bufferPool.createNormalizedBuffer(
+              clip.bufferId, clip.sourceStart, clip.sourceEnd, level,
+            );
+            if (newBufferId) {
+              const originalBufferId = clip.bufferId;
+              clip.bufferId = newBufferId;
+              this.timelineUndoManager.pushExecuted(
+                new NormalizeClipCommand(this.timelineModel, track.id, clip.id, originalBufferId, newBufferId),
+              );
+            }
+          }
+        }
+      }
+      this.timelineRenderer?.clearPeakCaches();
+      this.timelineRenderer?.render();
+      this.hideModal('normalizeModal');
+      return;
+    }
+
+    // Legacy single-buffer mode
     const selection = this.waveformRenderer.getSelection();
     if (!this.audioEditor) return;
     this.stop();
@@ -1320,6 +1482,30 @@ export class App {
   }
 
   reverse(): void {
+    // Timeline mode: reverse selected clips (AudioSuite-style pre-render)
+    if (this.timelineModel.timeline.tracks.length > 0) {
+      const selected = this.timelineModel.timeline.selectedClipIds;
+      if (selected.length === 0) return;
+      for (const track of this.timelineModel.timeline.tracks) {
+        for (const clip of track.clips) {
+          if (selected.includes(clip.id)) {
+            const newBufferId = this.bufferPool.createReversedBuffer(clip.bufferId);
+            if (newBufferId) {
+              const originalBufferId = clip.bufferId;
+              clip.bufferId = newBufferId;
+              clip.reversed = !clip.reversed;
+              this.timelineUndoManager.pushExecuted(
+                new ReverseClipCommand(this.timelineModel, track.id, clip.id, originalBufferId, newBufferId),
+              );
+            }
+          }
+        }
+      }
+      this.timelineRenderer?.clearPeakCaches();
+      this.timelineRenderer?.render();
+      return;
+    }
+    // Legacy single-buffer mode
     const selection = this.waveformRenderer.getSelection();
     if (!this.audioEditor) return;
     this.stop();
