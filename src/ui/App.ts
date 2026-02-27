@@ -15,7 +15,6 @@ import { CollapsiblePanel } from './CollapsiblePanel';
 import { AnalysisPanel } from './AnalysisPanel';
 import { FileQueue } from './FileQueue';
 import { ProjectManager } from './ProjectManager';
-import { UndoManager } from '../utils/UndoManager';
 import { FileHandler } from '../utils/FileHandler';
 import { BufferPool } from '../core/BufferPool';
 import { encodeWavAsync } from '../core/WavEncoder';
@@ -38,7 +37,6 @@ export class App {
   audioEngine: AudioEngine;
   waveformRenderer: WaveformRenderer;
   spectrogramRenderer: SpectrogramRenderer;
-  undoManager: UndoManager;
   metering: Metering;
   audioEditor: AudioEditor | null = null;
   fileName: string | null = null;
@@ -90,7 +88,6 @@ export class App {
     this.audioEngine = new AudioEngine();
     this.waveformRenderer = new WaveformRenderer(document.getElementById('waveformCanvas') as HTMLCanvasElement);
     this.spectrogramRenderer = new SpectrogramRenderer(document.getElementById('spectrogramCanvas') as HTMLCanvasElement);
-    this.undoManager = new UndoManager(null);
     this.metering = new Metering();
     this.boundKeydown = (e: KeyboardEvent) => this.handleKeyboard(e);
     this.fileQueue = new FileQueue();
@@ -972,9 +969,6 @@ export class App {
         this.pluginParameterPanel.setPluginHost(this.pluginHost);
       }
 
-      this.undoManager.setAudioContext(this.audioEngine.audioContext!);
-      this.undoManager.clear();
-
       // Legacy single-buffer renderers
       this.waveformRenderer.setAudioBuffer(audioBuffer);
       this.spectrogramRenderer.setAudioBuffer(audioBuffer);
@@ -1247,12 +1241,6 @@ export class App {
 
   // ==================== Edit Operations ====================
 
-  saveStateForUndo(): void {
-    if (this.audioEngine.audioBuffer) {
-      this.undoManager.saveState(this.audioEngine.audioBuffer);
-    }
-  }
-
   applyBuffer(buffer: AudioBuffer): void {
     this.audioEngine.setBuffer(buffer);
     this.waveformRenderer.setAudioBuffer(buffer);
@@ -1283,7 +1271,6 @@ export class App {
     const selection = this.waveformRenderer.getSelection();
     if (!selection || !this.audioEditor) return;
     this.stop();
-    this.saveStateForUndo();
     const newBuffer = this.audioEditor.trim(this.audioEngine.audioBuffer!, selection.start, selection.end);
     this.cuePointManager.adjustForTrim(selection.start, selection.end);
     this.applyBuffer(newBuffer);
@@ -1294,7 +1281,6 @@ export class App {
     const selection = this.waveformRenderer.getSelection();
     if (!selection || !this.audioEditor) return;
     this.stop();
-    this.saveStateForUndo();
     const newBuffer = this.audioEditor.deleteSelection(this.audioEngine.audioBuffer!, selection.start, selection.end);
     if (newBuffer) {
       this.cuePointManager.adjustForDeletion(selection.start, selection.end);
@@ -1308,7 +1294,6 @@ export class App {
     const selection = this.waveformRenderer.getSelection();
     if (!this.audioEditor) return;
     this.stop();
-    this.saveStateForUndo();
     if (selection) {
       this.audioEditor.normalize(this.audioEngine.audioBuffer!, level, selection.start, selection.end);
     } else {
@@ -1322,7 +1307,6 @@ export class App {
     const selection = this.waveformRenderer.getSelection();
     if (!selection || !this.audioEditor) return;
     this.stop();
-    this.saveStateForUndo();
     this.audioEditor.fadeIn(this.audioEngine.audioBuffer!, selection.start, selection.end);
     this.refreshWaveform();
   }
@@ -1331,7 +1315,6 @@ export class App {
     const selection = this.waveformRenderer.getSelection();
     if (!selection || !this.audioEditor) return;
     this.stop();
-    this.saveStateForUndo();
     this.audioEditor.fadeOut(this.audioEngine.audioBuffer!, selection.start, selection.end);
     this.refreshWaveform();
   }
@@ -1340,7 +1323,6 @@ export class App {
     const selection = this.waveformRenderer.getSelection();
     if (!this.audioEditor) return;
     this.stop();
-    this.saveStateForUndo();
     if (selection) {
       this.audioEditor.reverse(this.audioEngine.audioBuffer!, selection.start, selection.end);
     } else {
@@ -1354,7 +1336,6 @@ export class App {
     const selection = this.waveformRenderer.getSelection();
     if (!this.audioEditor) return;
     this.stop();
-    this.saveStateForUndo();
     if (selection) {
       this.audioEditor.applyGain(this.audioEngine.audioBuffer!, gainDb, selection.start, selection.end);
     } else {
@@ -1367,7 +1348,6 @@ export class App {
   changeChannelLayout(targetChannels: number): void {
     if (!this.audioEditor || !this.audioEngine.audioBuffer) return;
     this.stop();
-    this.saveStateForUndo();
     const newBuffer = this.audioEditor.changeChannelCount(this.audioEngine.audioBuffer, targetChannels);
     this.applyBuffer(newBuffer);
   }
@@ -1483,9 +1463,6 @@ export class App {
       if (!this.audioEditor) {
         this.audioEditor = new AudioEditor(this.audioEngine.audioContext!);
       }
-      this.undoManager.setAudioContext(this.audioEngine.audioContext!);
-      this.undoManager.clear();
-
       this.audioEngine.setBuffer(project.audioBuffer);
       this.fileName = project.fileName || 'Untitled';
 
