@@ -1,5 +1,6 @@
 import { Timeline, Track, Clip, CHANNEL_COLORS, formatTime } from '../core/types';
 import { BufferPool } from '../core/BufferPool';
+import { CuePointManager } from './CuePointManager';
 
 // ---- Layout constants ----
 const TRACK_HEADER_WIDTH = 140;
@@ -33,7 +34,14 @@ const COLOR_TRACK_BORDER = '#2a2a2a';
 // ---- Peak cache block size ----
 const PEAK_BLOCK_SIZE = 256;
 
-type DragMode = 'none' | 'selection' | 'clipMove' | 'trimStart' | 'trimEnd' | 'marquee';
+// ---- Clip gain / fade / cue constants ----
+const GAIN_HANDLE_SIZE = 8;
+const FADE_ZONE_WIDTH = 10;
+const CUE_FLAG_HEIGHT = 14;
+const CUE_FLAG_WIDTH = 8;
+
+type DragMode = 'none' | 'selection' | 'clipMove' | 'trimStart' | 'trimEnd' | 'marquee'
+  | 'clipGain' | 'fadeIn' | 'fadeOut' | 'cuePoint';
 
 interface DragState {
   mode: DragMode;
@@ -49,6 +57,16 @@ interface DragState {
   hasDragged: boolean;
   /** Whether shift was held at mousedown (for additive marquee). */
   shiftHeld: boolean;
+  /** Original clip gain in dB at drag start (for clipGain mode). */
+  originalGainDb?: number;
+  /** Original fade-in samples at drag start (for fadeIn/fadeOut modes). */
+  originalFadeIn?: number;
+  /** Original fade-out samples at drag start (for fadeIn/fadeOut modes). */
+  originalFadeOut?: number;
+  /** Cue point ID being dragged (for cuePoint mode). */
+  dragCuePointId?: number;
+  /** Original cue point sample position at drag start. */
+  originalCuePointSample?: number;
 }
 
 interface ClipPeakEntry {
@@ -122,6 +140,9 @@ export class TimelineRenderer {
   /** Per-track meter levels in dB, updated externally from the animation loop. */
   trackMeterLevels: Map<string, number> = new Map();
 
+  /** Cue point manager — set by App.ts to render cue markers on the ruler. */
+  cuePointManager: CuePointManager | null = null;
+
   // ---- Callbacks ----
   onPlayheadChange: ((sample: number) => void) | null = null;
   onClipSelect: ((clipId: string, trackId: string) => void) | null = null;
@@ -141,6 +162,15 @@ export class TimelineRenderer {
 
   // Track selection callback
   onTrackSelect: ((trackIds: string[]) => void) | null = null;
+
+  // Clip gain / fade callbacks
+  onClipGainChange: ((clipId: string, trackId: string, gainDb: number) => void) | null = null;
+  onClipFadeChange: ((clipId: string, trackId: string, edge: 'in' | 'out', samples: number) => void) | null = null;
+
+  // Cue point callbacks
+  onCuePointAdd: ((sample: number) => void) | null = null;
+  onCuePointRemove: ((id: number) => void) | null = null;
+  onCuePointMoveEnd: ((id: number, prevSample: number, newSample: number) => void) | null = null;
 
   // Insert rack callbacks
   onInsertAdd: ((trackId: string) => void) | null = null;
@@ -326,7 +356,7 @@ export class TimelineRenderer {
    *   - Lower half of track → move (clip drag)
    */
   private hitTestClip(x: number, y: number): {
-    clip: Clip; track: Track; zone: 'trimStart' | 'trimEnd' | 'select' | 'move';
+    clip: Clip; track: Track; zone: 'trimStart' | 'trimEnd' | 'select' | 'move' | 'clipGain' | 'fadeIn' | 'fadeOut';
   } | null {
     if (!this.timeline || x < TRACK_HEADER_WIDTH) return null;
     const trackIndex = this.yToTrackIndex(y);
@@ -338,12 +368,30 @@ export class TimelineRenderer {
       const clipEndPx = this.sampleToPixel(clip.timelineOffset + clip.duration);
 
       if (x >= clipStartPx && x <= clipEndPx) {
-        // Edges take priority regardless of Y
+        // Clip gain handle: bottom-left corner (highest priority in that region)
+        const trackTopY = RULER_HEIGHT + trackIndex * TRACK_HEIGHT - this.scrollOffsetY;
+        const clipY = trackTopY + 4;
+        const clipH = TRACK_HEIGHT - 8;
+        const handleX = clipStartPx + 4;
+        const handleY = clipY + clipH - GAIN_HANDLE_SIZE - 4;
+        if (x >= handleX && x <= handleX + GAIN_HANDLE_SIZE + 4 &&
+            y >= handleY - 2 && y <= handleY + GAIN_HANDLE_SIZE + 4) {
+          return { clip, track, zone: 'clipGain' };
+        }
+
+        // Edges take priority regardless of Y (outermost 5px)
         if (x - clipStartPx <= TRIM_HANDLE_WIDTH) return { clip, track, zone: 'trimStart' };
         if (clipEndPx - x <= TRIM_HANDLE_WIDTH) return { clip, track, zone: 'trimEnd' };
 
+        // Fade zones: next 10px inside each edge
+        if (x - clipStartPx > TRIM_HANDLE_WIDTH && x - clipStartPx <= TRIM_HANDLE_WIDTH + FADE_ZONE_WIDTH) {
+          return { clip, track, zone: 'fadeIn' };
+        }
+        if (clipEndPx - x > TRIM_HANDLE_WIDTH && clipEndPx - x <= TRIM_HANDLE_WIDTH + FADE_ZONE_WIDTH) {
+          return { clip, track, zone: 'fadeOut' };
+        }
+
         // Split body by Y: upper half = select, lower half = move
-        const trackTopY = RULER_HEIGHT + trackIndex * TRACK_HEIGHT - this.scrollOffsetY;
         const midY = trackTopY + TRACK_HEIGHT / 2;
         const zone = y < midY ? 'select' : 'move';
         return { clip, track, zone };
@@ -475,8 +523,47 @@ export class TimelineRenderer {
       return;
     }
 
-    // 4. Ruler click → select all tracks, then fall through to playhead/selection
+    // 4. Ruler click — cue point interaction, then fall through to playhead/selection
     if (y < RULER_HEIGHT) {
+      // Cue point interactions in ruler area
+      if (this.cuePointManager) {
+        const cuePoints = this.cuePointManager.getAllCuePoints();
+        let hitCue: { id: number; sample: number } | null = null;
+        for (const cp of cuePoints) {
+          const cpX = this.sampleToPixel(cp.sample);
+          if (Math.abs(x - cpX) <= 8) {
+            hitCue = { id: cp.id, sample: cp.sample };
+            break;
+          }
+        }
+
+        if (e.altKey && hitCue) {
+          // Option+Click on cue → delete
+          if (this.onCuePointRemove) this.onCuePointRemove(hitCue.id);
+          this.render();
+          return;
+        }
+        if (e.shiftKey && !hitCue) {
+          // Shift+Click on empty ruler → add cue point
+          const sample = Math.max(0, this.pixelToSample(x));
+          if (this.onCuePointAdd) this.onCuePointAdd(sample);
+          this.render();
+          return;
+        }
+        if (hitCue && !e.shiftKey && !e.altKey) {
+          // Plain click on cue → drag
+          this.drag = {
+            mode: 'cuePoint', clipId: '', trackId: '',
+            grabOffsetSamples: 0, originalValue: hitCue.sample,
+            startMouseX: x, startMouseY: y, hasDragged: false, shiftHeld: false,
+            dragCuePointId: hitCue.id, originalCuePointSample: hitCue.sample,
+          };
+          this.render();
+          return;
+        }
+      }
+
+      // Select all tracks on ruler click
       this.timeline.selectedTrackIds = this.timeline.tracks.map(t => t.id);
       this.onTrackSelect?.(this.timeline.selectedTrackIds);
     }
@@ -505,6 +592,45 @@ export class TimelineRenderer {
           mode: 'trimEnd', clipId: clip.id, trackId: track.id,
           grabOffsetSamples: 0, originalValue: clip.sourceEnd,
           startMouseX: x, startMouseY: y, hasDragged: false, shiftHeld: false,
+        };
+        this.render();
+        return;
+      }
+
+      if (zone === 'clipGain') {
+        this.timeline.selectedClipIds = [clip.id];
+        if (this.onClipSelect) this.onClipSelect(clip.id, track.id);
+        this.drag = {
+          mode: 'clipGain', clipId: clip.id, trackId: track.id,
+          grabOffsetSamples: 0, originalValue: 0,
+          startMouseX: x, startMouseY: y, hasDragged: false, shiftHeld: false,
+          originalGainDb: clip.gainDb,
+        };
+        this.render();
+        return;
+      }
+
+      if (zone === 'fadeIn') {
+        this.timeline.selectedClipIds = [clip.id];
+        if (this.onClipSelect) this.onClipSelect(clip.id, track.id);
+        this.drag = {
+          mode: 'fadeIn', clipId: clip.id, trackId: track.id,
+          grabOffsetSamples: 0, originalValue: clip.fadeInSamples,
+          startMouseX: x, startMouseY: y, hasDragged: false, shiftHeld: false,
+          originalFadeIn: clip.fadeInSamples, originalFadeOut: clip.fadeOutSamples,
+        };
+        this.render();
+        return;
+      }
+
+      if (zone === 'fadeOut') {
+        this.timeline.selectedClipIds = [clip.id];
+        if (this.onClipSelect) this.onClipSelect(clip.id, track.id);
+        this.drag = {
+          mode: 'fadeOut', clipId: clip.id, trackId: track.id,
+          grabOffsetSamples: 0, originalValue: clip.fadeOutSamples,
+          startMouseX: x, startMouseY: y, hasDragged: false, shiftHeld: false,
+          originalFadeIn: clip.fadeInSamples, originalFadeOut: clip.fadeOutSamples,
         };
         this.render();
         return;
@@ -611,7 +737,11 @@ export class TimelineRenderer {
       } else {
         const hit = this.hitTestClip(x, y);
         if (hit) {
-          if (hit.zone === 'trimStart' || hit.zone === 'trimEnd') {
+          if (hit.zone === 'clipGain') {
+            this.canvas.style.cursor = 'ns-resize';
+          } else if (hit.zone === 'fadeIn' || hit.zone === 'fadeOut') {
+            this.canvas.style.cursor = 'col-resize';
+          } else if (hit.zone === 'trimStart' || hit.zone === 'trimEnd') {
             this.canvas.style.cursor = 'col-resize';
           } else if (hit.zone === 'move') {
             this.canvas.style.cursor = 'grab';
@@ -684,6 +814,60 @@ export class TimelineRenderer {
       return;
     }
 
+    if (this.drag.mode === 'clipGain') {
+      this.canvas.style.cursor = 'ns-resize';
+      const deltaY = y - this.drag.startMouseY;
+      const gainDelta = deltaY * -0.5; // 2px = 1dB, up = louder
+      const newGainDb = Math.max(-96, Math.min(12, (this.drag.originalGainDb ?? 0) + gainDelta));
+      if (this.onClipGainChange) {
+        this.onClipGainChange(this.drag.clipId, this.drag.trackId, newGainDb);
+      }
+      this.render();
+      return;
+    }
+
+    if (this.drag.mode === 'fadeIn') {
+      this.canvas.style.cursor = 'col-resize';
+      const track = this.timeline!.tracks.find(t => t.id === this.drag.trackId);
+      const clip = track?.clips.find(c => c.id === this.drag.clipId);
+      if (clip) {
+        const maxFade = clip.duration - (this.drag.originalFadeOut ?? 0);
+        const newFadeIn = Math.max(0, Math.min(maxFade, (this.drag.originalFadeIn ?? 0) + deltaSamples));
+        if (this.onClipFadeChange) {
+          this.onClipFadeChange(this.drag.clipId, this.drag.trackId, 'in', newFadeIn);
+        }
+      }
+      this.render();
+      return;
+    }
+
+    if (this.drag.mode === 'fadeOut') {
+      this.canvas.style.cursor = 'col-resize';
+      const track = this.timeline!.tracks.find(t => t.id === this.drag.trackId);
+      const clip = track?.clips.find(c => c.id === this.drag.clipId);
+      if (clip) {
+        const maxFade = clip.duration - (this.drag.originalFadeIn ?? 0);
+        // Dragging right = reduce fade out
+        const newFadeOut = Math.max(0, Math.min(maxFade, (this.drag.originalFadeOut ?? 0) - deltaSamples));
+        if (this.onClipFadeChange) {
+          this.onClipFadeChange(this.drag.clipId, this.drag.trackId, 'out', newFadeOut);
+        }
+      }
+      this.render();
+      return;
+    }
+
+    if (this.drag.mode === 'cuePoint') {
+      this.canvas.style.cursor = 'grabbing';
+      const newSample = Math.max(0, this.pixelToSample(x));
+      if (this.cuePointManager && this.drag.dragCuePointId != null) {
+        this.cuePointManager.moveCuePoint(this.drag.dragCuePointId, newSample);
+        this.drag.hasDragged = true;
+      }
+      this.render();
+      return;
+    }
+
     if (this.drag.mode === 'marquee') {
       this.marqueeEndX = x;
       this.marqueeEndY = y;
@@ -730,6 +914,26 @@ export class TimelineRenderer {
       }
       // Clear marquee visual
       this.marqueeStartX = this.marqueeStartY = this.marqueeEndX = this.marqueeEndY = 0;
+      this.drag.mode = 'none';
+      this.render();
+      return;
+    }
+
+    // Clip gain / fade drags → fire onDragEnd for App.ts to create undo command
+    if (this.drag.mode === 'clipGain' || this.drag.mode === 'fadeIn' || this.drag.mode === 'fadeOut') {
+      this.drag.mode = 'none';
+      if (this.onDragEnd) this.onDragEnd();
+      return;
+    }
+
+    // Cue point drag → fire onCuePointMoveEnd
+    if (this.drag.mode === 'cuePoint') {
+      if (this.drag.hasDragged && this.drag.dragCuePointId != null && this.drag.originalCuePointSample != null) {
+        const cue = this.cuePointManager?.getAllCuePoints().find(c => c.id === this.drag.dragCuePointId);
+        if (cue && this.onCuePointMoveEnd) {
+          this.onCuePointMoveEnd(this.drag.dragCuePointId, this.drag.originalCuePointSample, cue.sample);
+        }
+      }
       this.drag.mode = 'none';
       this.render();
       return;
@@ -1028,6 +1232,7 @@ export class TimelineRenderer {
     }
 
     this.renderRuler();
+    this.renderCueMarkers();
 
     // Clip rendering to the area below the ruler
     ctx.save();
@@ -1440,6 +1645,69 @@ export class TimelineRenderer {
     // -- Waveform inside clip --
     this.renderClipWaveform(clip, track, clipY, clipH, clipStartPx, clipEndPx, visLeft, visRight, isMuted);
 
+    // -- Fade overlays (inside clip region) --
+    if (clip.fadeInSamples > 0) {
+      const fadeInPx = clip.fadeInSamples / this.samplesPerPixel;
+      const fadeStartPx = clipStartPx;
+      const fadeEndPx = clipStartPx + fadeInPx;
+      // Semi-transparent overlay
+      ctx.fillStyle = this.hexToRgba(track.color, 0.25);
+      ctx.beginPath();
+      ctx.moveTo(Math.max(visLeft, fadeStartPx), clipY + clipH);
+      ctx.lineTo(Math.max(visLeft, fadeStartPx), clipY);
+      ctx.lineTo(Math.min(visRight, fadeEndPx), clipY);
+      ctx.lineTo(Math.min(visRight, fadeEndPx), clipY + clipH);
+      ctx.closePath();
+      ctx.fill();
+      // Fade curve line (sqrt)
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      const stepsIn = Math.max(2, Math.min(50, Math.round(fadeInPx)));
+      let movedIn = false;
+      for (let i = 0; i <= stepsIn; i++) {
+        const t = i / stepsIn;
+        const gain = Math.sqrt(t);
+        const px = fadeStartPx + t * fadeInPx;
+        if (px < visLeft || px > visRight) continue;
+        const py = clipY + clipH - gain * clipH;
+        if (!movedIn) { ctx.moveTo(px, py); movedIn = true; }
+        else ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+    }
+
+    if (clip.fadeOutSamples > 0) {
+      const fadeOutPx = clip.fadeOutSamples / this.samplesPerPixel;
+      const fadeStartPx = clipEndPx - fadeOutPx;
+      const fadeEndPx = clipEndPx;
+      // Semi-transparent overlay
+      ctx.fillStyle = this.hexToRgba(track.color, 0.25);
+      ctx.beginPath();
+      ctx.moveTo(Math.max(visLeft, fadeStartPx), clipY);
+      ctx.lineTo(Math.max(visLeft, fadeStartPx), clipY + clipH);
+      ctx.lineTo(Math.min(visRight, fadeEndPx), clipY + clipH);
+      ctx.lineTo(Math.min(visRight, fadeEndPx), clipY);
+      ctx.closePath();
+      ctx.fill();
+      // Fade curve line (sqrt(1-t))
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      const stepsOut = Math.max(2, Math.min(50, Math.round(fadeOutPx)));
+      let movedOut = false;
+      for (let i = 0; i <= stepsOut; i++) {
+        const t = i / stepsOut;
+        const gain = Math.sqrt(1 - t);
+        const px = fadeStartPx + t * fadeOutPx;
+        if (px < visLeft || px > visRight) continue;
+        const py = clipY + clipH - gain * clipH;
+        if (!movedOut) { ctx.moveTo(px, py); movedOut = true; }
+        else ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+    }
+
     ctx.restore(); // pop clip region
 
     // -- Clip border (rounded rect) --
@@ -1493,6 +1761,47 @@ export class TimelineRenderer {
       ctx.lineTo(rhx, clipY + clipH * 0.7);
       ctx.stroke();
     }
+
+    // -- Gain line across clip (dashed, only if gain != 0) --
+    if (clip.gainDb !== 0) {
+      const gainDbClamped = Math.max(-96, Math.min(12, clip.gainDb));
+      const gainNorm = (gainDbClamped + 96) / 108; // 0..1 range
+      const lineY = clipY + clipH - gainNorm * clipH;
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(visLeft, lineY);
+      ctx.lineTo(visRight, lineY);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // -- Gain handle square (bottom-left corner) --
+    {
+      const ghx = visLeft + 4;
+      const ghy = clipY + clipH - GAIN_HANDLE_SIZE - 4;
+      ctx.fillStyle = clip.gainDb !== 0 ? '#f59e0b' : '#555';
+      ctx.fillRect(ghx, ghy, GAIN_HANDLE_SIZE, GAIN_HANDLE_SIZE);
+      // dB label when gain is applied
+      if (clip.gainDb !== 0) {
+        ctx.fillStyle = '#fff';
+        ctx.font = '9px -apple-system, BlinkMacSystemFont, sans-serif';
+        ctx.textAlign = 'left';
+        ctx.fillText(
+          `${clip.gainDb > 0 ? '+' : ''}${clip.gainDb.toFixed(1)} dB`,
+          ghx + GAIN_HANDLE_SIZE + 2, ghy + GAIN_HANDLE_SIZE - 1,
+        );
+      }
+    }
+
+    // -- Reversed indicator --
+    if (clip.reversed) {
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+      ctx.font = 'bold 9px -apple-system, BlinkMacSystemFont, sans-serif';
+      ctx.textAlign = 'right';
+      ctx.fillText('R', visRight - 4, clipY + 12);
+    }
   }
 
   private renderClipWaveform(
@@ -1540,6 +1849,53 @@ export class TimelineRenderer {
     }
 
     ctx.globalAlpha = 1;
+  }
+
+  // ==================================================================
+  // Cue markers
+  // ==================================================================
+
+  private renderCueMarkers(): void {
+    if (!this.cuePointManager || !this.timeline) return;
+    const ctx = this.ctx;
+    const cuePoints = this.cuePointManager.getAllCuePoints();
+
+    for (const cue of cuePoints) {
+      const px = this.sampleToPixel(cue.sample);
+      if (px < TRACK_HEADER_WIDTH || px > this.width) continue;
+
+      // Vertical dashed line from ruler to bottom
+      ctx.strokeStyle = 'rgba(245, 158, 11, 0.3)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(px, RULER_HEIGHT);
+      ctx.lineTo(px, this.height);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Flag triangle in ruler area
+      ctx.fillStyle = '#f59e0b';
+      ctx.beginPath();
+      ctx.moveTo(px, RULER_HEIGHT - CUE_FLAG_HEIGHT);
+      ctx.lineTo(px + CUE_FLAG_WIDTH, RULER_HEIGHT - CUE_FLAG_HEIGHT + CUE_FLAG_HEIGHT / 2);
+      ctx.lineTo(px, RULER_HEIGHT);
+      ctx.closePath();
+      ctx.fill();
+
+      // Cue number inside flag
+      ctx.fillStyle = '#000';
+      ctx.font = 'bold 8px -apple-system, BlinkMacSystemFont, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillText(cue.number.toString(), px + 1, RULER_HEIGHT - CUE_FLAG_HEIGHT / 2 + 3);
+
+      // Cue name (if any)
+      if (cue.name) {
+        ctx.fillStyle = 'rgba(245, 158, 11, 0.7)';
+        ctx.font = '9px -apple-system, BlinkMacSystemFont, sans-serif';
+        ctx.fillText(cue.name, px + CUE_FLAG_WIDTH + 2, RULER_HEIGHT - CUE_FLAG_HEIGHT / 2 + 3);
+      }
+    }
   }
 
   // ==================================================================
