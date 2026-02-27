@@ -420,31 +420,107 @@ export class AudioEngine {
         const source = this.audioContext.createBufferSource();
         source.buffer = pooled.buffer;
 
-        // Apply per-clip gain
-        if (clip.gainDb !== 0) {
+        // Calculate start offset within the source buffer and schedule time
+        let sourceOffset = clip.sourceStart;
+        let scheduledTime = now + (clipStartSample - startSample) / timeline.sampleRate;
+        let playDuration = clip.duration;
+
+        // If the clip starts before our playback position, offset into it
+        let skipSamples = 0;
+        if (clipStartSample < startSample) {
+          skipSamples = startSample - clipStartSample;
+          sourceOffset += skipSamples;
+          playDuration -= skipSamples;
+          scheduledTime = now;
+        }
+
+        const sr = timeline.sampleRate;
+        const baseGain = clip.gainDb !== 0 ? Math.pow(10, clip.gainDb / 20) : 1;
+        const hasFadeIn = clip.fadeInSamples > 0;
+        const hasFadeOut = clip.fadeOutSamples > 0;
+
+        // Create a clip gain node when any envelope processing is needed
+        if (baseGain !== 1 || hasFadeIn || hasFadeOut) {
           const clipGain = this.audioContext.createGain();
-          clipGain.gain.value = Math.pow(10, clip.gainDb / 20);
+
+          // Schedule fade-in: sqrt(t) curve approximated with 8 ramp points
+          if (hasFadeIn) {
+            const fadeInEnd = clip.fadeInSamples;
+            const fadeInStartInPlayback = -skipSamples; // relative to playback start (can be negative)
+
+            if (fadeInStartInPlayback + fadeInEnd > 0) {
+              // Fade-in is still active at our playback position
+              const RAMP_POINTS = 8;
+              for (let p = 0; p <= RAMP_POINTS; p++) {
+                const t = p / RAMP_POINTS; // 0..1 through the fade
+                const fadeSample = Math.round(t * fadeInEnd);
+                const sampleInPlayback = fadeSample - skipSamples;
+
+                if (sampleInPlayback < 0) continue;
+                if (sampleInPlayback > playDuration) break;
+
+                const gainAtPoint = Math.sqrt(t) * baseGain;
+                const timeAtPoint = scheduledTime + sampleInPlayback / sr;
+
+                if (p === 0 || (sampleInPlayback === 0 && skipSamples > 0)) {
+                  // Starting mid-fade: set initial value
+                  const progressAtStart = skipSamples / fadeInEnd;
+                  const startGain = Math.sqrt(Math.min(1, progressAtStart)) * baseGain;
+                  clipGain.gain.setValueAtTime(startGain, scheduledTime);
+                } else {
+                  clipGain.gain.linearRampToValueAtTime(gainAtPoint, timeAtPoint);
+                }
+              }
+              // Ensure we reach full gain at the end of fade-in
+              const fadeEndInPlayback = fadeInEnd - skipSamples;
+              if (fadeEndInPlayback > 0 && fadeEndInPlayback <= playDuration) {
+                clipGain.gain.linearRampToValueAtTime(baseGain, scheduledTime + fadeEndInPlayback / sr);
+              }
+            } else {
+              // Fade-in already completed before our start position
+              clipGain.gain.setValueAtTime(baseGain, scheduledTime);
+            }
+          } else {
+            clipGain.gain.setValueAtTime(baseGain, scheduledTime);
+          }
+
+          // Schedule fade-out: sqrt(1-t) curve approximated with 8 ramp points
+          if (hasFadeOut) {
+            const fadeOutStart = clip.duration - clip.fadeOutSamples;
+            const fadeOutStartInPlayback = fadeOutStart - skipSamples;
+
+            if (fadeOutStartInPlayback < playDuration) {
+              const RAMP_POINTS = 8;
+
+              // Ensure gain is at baseGain just before fade-out starts
+              if (fadeOutStartInPlayback > 0) {
+                clipGain.gain.setValueAtTime(baseGain, scheduledTime + fadeOutStartInPlayback / sr);
+              }
+
+              for (let p = 1; p <= RAMP_POINTS; p++) {
+                const t = p / RAMP_POINTS; // 0..1 through the fade-out
+                const fadeSample = Math.round(fadeOutStart + t * clip.fadeOutSamples);
+                const sampleInPlayback = fadeSample - skipSamples;
+
+                if (sampleInPlayback < 0) continue;
+                if (sampleInPlayback > playDuration) break;
+
+                const gainAtPoint = Math.sqrt(1 - t) * baseGain;
+                const timeAtPoint = scheduledTime + sampleInPlayback / sr;
+                clipGain.gain.linearRampToValueAtTime(gainAtPoint, timeAtPoint);
+              }
+            }
+          }
+
           source.connect(clipGain);
           clipGain.connect(gainNode);
         } else {
           source.connect(gainNode);
         }
 
-        // Calculate start offset within the source buffer and schedule time
-        let sourceOffset = clip.sourceStart;
-        let scheduledTime = now + (clipStartSample - startSample) / timeline.sampleRate;
-        let duration = clip.duration / timeline.sampleRate;
-
-        // If the clip starts before our playback position, offset into it
-        if (clipStartSample < startSample) {
-          const skipSamples = startSample - clipStartSample;
-          sourceOffset += skipSamples;
-          duration -= skipSamples / timeline.sampleRate;
-          scheduledTime = now;
-        }
-
-        const sourceOffsetSec = sourceOffset / timeline.sampleRate;
-        source.start(scheduledTime, sourceOffsetSec, duration);
+        const sourceOffsetSec = sourceOffset / sr;
+        const durationSec = playDuration / sr;
+        source.start(scheduledTime, sourceOffsetSec, durationSec);
         this.scheduledSources.push(source);
       }
     }

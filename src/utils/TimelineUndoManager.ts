@@ -1,5 +1,6 @@
-import { Clip } from '../core/types';
+import { Clip, CuePoint } from '../core/types';
 import { TimelineModel, OverlapResult } from '../core/TimelineModel';
+import { CuePointManager } from '../editor/CuePointManager';
 
 export interface TimelineCommand {
   execute(): void;
@@ -434,5 +435,322 @@ export class AddClipCommand implements TimelineCommand {
 
   undo(): void {
     this.model.removeClip(this.trackId, this.clip.id);
+  }
+}
+
+/**
+ * Undo/redo for per-clip gain changes.
+ * Use pushExecuted() — gain is already applied via UI interaction.
+ */
+export class EditClipGainCommand implements TimelineCommand {
+  description: string;
+
+  constructor(
+    private model: TimelineModel,
+    private trackId: string,
+    private clipId: string,
+    private prevGainDb: number,
+    private newGainDb: number,
+  ) {
+    this.description = `Set clip gain to ${newGainDb.toFixed(1)} dB`;
+  }
+
+  execute(): void {
+    const clip = this.findClip();
+    if (clip) clip.gainDb = this.newGainDb;
+  }
+
+  undo(): void {
+    const clip = this.findClip();
+    if (clip) clip.gainDb = this.prevGainDb;
+  }
+
+  private findClip(): Clip | undefined {
+    const track = this.model.timeline.tracks.find(t => t.id === this.trackId);
+    return track?.clips.find(c => c.id === this.clipId);
+  }
+}
+
+/**
+ * Undo/redo for per-clip fade in/out changes.
+ * Use pushExecuted() — fades are already applied via UI interaction.
+ */
+export class EditClipFadeCommand implements TimelineCommand {
+  description: string;
+
+  constructor(
+    private model: TimelineModel,
+    private trackId: string,
+    private clipId: string,
+    private prevFadeIn: number,
+    private prevFadeOut: number,
+    private newFadeIn: number,
+    private newFadeOut: number,
+  ) {
+    this.description = 'Edit clip fade';
+  }
+
+  execute(): void {
+    const clip = this.findClip();
+    if (clip) {
+      clip.fadeInSamples = this.newFadeIn;
+      clip.fadeOutSamples = this.newFadeOut;
+    }
+  }
+
+  undo(): void {
+    const clip = this.findClip();
+    if (clip) {
+      clip.fadeInSamples = this.prevFadeIn;
+      clip.fadeOutSamples = this.prevFadeOut;
+    }
+  }
+
+  private findClip(): Clip | undefined {
+    const track = this.model.timeline.tracks.find(t => t.id === this.trackId);
+    return track?.clips.find(c => c.id === this.clipId);
+  }
+}
+
+/**
+ * Undo/redo for adding a cue point.
+ */
+export class AddCuePointCommand implements TimelineCommand {
+  description: string;
+  private addedId = -1;
+
+  constructor(
+    private manager: CuePointManager,
+    private sample: number,
+    private name: string,
+  ) {
+    this.description = `Add cue point at ${sample}`;
+  }
+
+  execute(): void {
+    const cp = this.manager.addCuePoint(this.sample, this.name);
+    this.addedId = cp.id;
+  }
+
+  undo(): void {
+    if (this.addedId >= 0) {
+      this.manager.removeCuePoint(this.addedId);
+    }
+  }
+}
+
+/**
+ * Undo/redo for removing a cue point.
+ * Stores a snapshot so it can be re-added on undo.
+ */
+export class RemoveCuePointCommand implements TimelineCommand {
+  description: string;
+
+  constructor(
+    private manager: CuePointManager,
+    private cuePoint: CuePoint,
+  ) {
+    this.description = `Remove cue point #${cuePoint.number}`;
+  }
+
+  execute(): void {
+    this.manager.removeCuePoint(this.cuePoint.id);
+  }
+
+  undo(): void {
+    // Re-add with the same data
+    const cp = this.manager.addCuePoint(this.cuePoint.sample, this.cuePoint.name);
+    // Overwrite the auto-assigned id with the original so references stay consistent
+    cp.id = this.cuePoint.id;
+    // Ensure nextId stays ahead of restored ids
+    if (this.manager.nextId <= this.cuePoint.id) {
+      this.manager.nextId = this.cuePoint.id + 1;
+    }
+  }
+}
+
+/**
+ * Undo/redo for moving a cue point.
+ */
+export class MoveCuePointCommand implements TimelineCommand {
+  description: string;
+
+  constructor(
+    private manager: CuePointManager,
+    private id: number,
+    private prevSample: number,
+    private newSample: number,
+  ) {
+    this.description = `Move cue point to ${newSample}`;
+  }
+
+  execute(): void {
+    this.manager.moveCuePoint(this.id, this.newSample);
+  }
+
+  undo(): void {
+    this.manager.moveCuePoint(this.id, this.prevSample);
+  }
+}
+
+/**
+ * Undo/redo for deleting a time range across multiple tracks.
+ * Stores per-track overlap results from the first execution for replay.
+ */
+export class DeleteTimeRangeCommand implements TimelineCommand {
+  description: string;
+  private results: Map<string, OverlapResult> | null = null;
+
+  constructor(
+    private model: TimelineModel,
+    private trackIds: string[],
+    private startSample: number,
+    private endSample: number,
+  ) {
+    this.description = `Delete time range [${startSample}–${endSample}]`;
+  }
+
+  execute(): void {
+    if (this.results) {
+      // Redo: replay stored changes
+      for (const trackId of this.trackIds) {
+        const result = this.results.get(trackId);
+        if (!result) continue;
+        const track = this.model.timeline.tracks.find(t => t.id === trackId);
+        if (!track) continue;
+
+        for (const removed of result.removed) {
+          track.clips = track.clips.filter(c => c.id !== removed.id);
+        }
+        for (const { clipId, after } of result.trimmed) {
+          const clip = track.clips.find(c => c.id === clipId);
+          if (clip) {
+            clip.sourceStart = after.sourceStart;
+            clip.sourceEnd = after.sourceEnd;
+            clip.timelineOffset = after.timelineOffset;
+            clip.duration = after.duration;
+            clip.fadeInSamples = after.fadeInSamples;
+            clip.fadeOutSamples = after.fadeOutSamples;
+          }
+        }
+        for (const added of result.added) {
+          track.clips.push({ ...added });
+        }
+      }
+      return;
+    }
+
+    // First execute
+    this.results = new Map();
+    for (const trackId of this.trackIds) {
+      const result = this.model.deleteTimeRange(trackId, this.startSample, this.endSample);
+      this.results.set(trackId, result);
+    }
+  }
+
+  undo(): void {
+    if (!this.results) return;
+
+    for (const trackId of this.trackIds) {
+      const result = this.results.get(trackId);
+      if (!result) continue;
+      const track = this.model.timeline.tracks.find(t => t.id === trackId);
+      if (!track) continue;
+
+      // Reverse: remove added, restore trimmed, restore removed
+      for (const added of result.added) {
+        track.clips = track.clips.filter(c => c.id !== added.id);
+      }
+      for (const { clipId, before } of result.trimmed) {
+        const clip = track.clips.find(c => c.id === clipId);
+        if (clip) {
+          clip.sourceStart = before.sourceStart;
+          clip.sourceEnd = before.sourceEnd;
+          clip.timelineOffset = before.timelineOffset;
+          clip.duration = before.duration;
+          clip.fadeInSamples = before.fadeInSamples;
+          clip.fadeOutSamples = before.fadeOutSamples;
+        }
+      }
+      for (const removed of result.removed) {
+        track.clips.push({ ...removed });
+      }
+    }
+  }
+}
+
+/**
+ * Undo/redo for reversing a clip's audio.
+ * Swaps between original and reversed buffer IDs and toggles the reversed flag.
+ */
+export class ReverseClipCommand implements TimelineCommand {
+  description: string;
+
+  constructor(
+    private model: TimelineModel,
+    private trackId: string,
+    private clipId: string,
+    private originalBufferId: string,
+    private reversedBufferId: string,
+  ) {
+    this.description = 'Reverse clip';
+  }
+
+  execute(): void {
+    const clip = this.findClip();
+    if (clip) {
+      clip.bufferId = this.reversedBufferId;
+      clip.reversed = true;
+    }
+  }
+
+  undo(): void {
+    const clip = this.findClip();
+    if (clip) {
+      clip.bufferId = this.originalBufferId;
+      clip.reversed = false;
+    }
+  }
+
+  private findClip(): Clip | undefined {
+    const track = this.model.timeline.tracks.find(t => t.id === this.trackId);
+    return track?.clips.find(c => c.id === this.clipId);
+  }
+}
+
+/**
+ * Undo/redo for normalizing a clip's audio.
+ * Swaps between original and normalized buffer IDs.
+ */
+export class NormalizeClipCommand implements TimelineCommand {
+  description: string;
+
+  constructor(
+    private model: TimelineModel,
+    private trackId: string,
+    private clipId: string,
+    private originalBufferId: string,
+    private normalizedBufferId: string,
+  ) {
+    this.description = 'Normalize clip';
+  }
+
+  execute(): void {
+    const clip = this.findClip();
+    if (clip) {
+      clip.bufferId = this.normalizedBufferId;
+    }
+  }
+
+  undo(): void {
+    const clip = this.findClip();
+    if (clip) {
+      clip.bufferId = this.originalBufferId;
+    }
+  }
+
+  private findClip(): Clip | undefined {
+    const track = this.model.timeline.tracks.find(t => t.id === this.trackId);
+    return track?.clips.find(c => c.id === this.clipId);
   }
 }

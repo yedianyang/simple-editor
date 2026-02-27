@@ -89,6 +89,70 @@ export class BufferPool {
     }
   }
 
+  /**
+   * Create a new buffer with reversed channel data.
+   * Returns the new buffer's ID.
+   */
+  createReversedBuffer(bufferId: string): string | null {
+    const pooled = this.buffers.get(bufferId);
+    if (!pooled) return null;
+
+    const src = pooled.buffer;
+    const ctx = new OfflineAudioContext(1, src.length, src.sampleRate);
+    const reversed = ctx.createBuffer(1, src.length, src.sampleRate);
+
+    const srcData = src.getChannelData(0);
+    const dstData = reversed.getChannelData(0);
+    for (let i = 0, j = srcData.length - 1; i < srcData.length; i++, j--) {
+      dstData[i] = srcData[j];
+    }
+
+    return this.addBuffer(reversed, pooled.sourceFileName + ' [reversed]', pooled.sourceChannelIndex);
+  }
+
+  /**
+   * Create a new buffer normalized to a target dB level.
+   * Only the region [sourceStart, sourceEnd) is analysed for peak;
+   * the entire buffer is scaled by the same gain factor.
+   * Returns the new buffer's ID.
+   */
+  createNormalizedBuffer(
+    bufferId: string,
+    sourceStart: number,
+    sourceEnd: number,
+    targetDb: number,
+  ): string | null {
+    const pooled = this.buffers.get(bufferId);
+    if (!pooled) return null;
+
+    const src = pooled.buffer;
+    const srcData = src.getChannelData(0);
+
+    // Find peak in the specified region
+    const start = Math.max(0, sourceStart);
+    const end = Math.min(srcData.length, sourceEnd);
+    let peak = 0;
+    for (let i = start; i < end; i++) {
+      const abs = Math.abs(srcData[i]);
+      if (abs > peak) peak = abs;
+    }
+
+    if (peak === 0) return null; // silence — nothing to normalize
+
+    const targetLinear = Math.pow(10, targetDb / 20);
+    const gain = targetLinear / peak;
+
+    const ctx = new OfflineAudioContext(1, src.length, src.sampleRate);
+    const normalized = ctx.createBuffer(1, src.length, src.sampleRate);
+    const dstData = normalized.getChannelData(0);
+
+    for (let i = 0; i < srcData.length; i++) {
+      dstData[i] = srcData[i] * gain;
+    }
+
+    return this.addBuffer(normalized, pooled.sourceFileName + ' [normalized]', pooled.sourceChannelIndex);
+  }
+
   clear(): void {
     this.buffers.clear();
   }

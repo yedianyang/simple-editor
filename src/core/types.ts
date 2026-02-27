@@ -276,6 +276,7 @@ export interface Clip {
   fadeInSamples: number;
   fadeOutSamples: number;
   muted: boolean;
+  reversed?: boolean;
 }
 
 export interface TrackInsert {

@@ -362,6 +362,101 @@ export class TimelineModel {
     return result;
   }
 
+  /**
+   * Delete a time range [startSample, endSample) from a track.
+   * Clips fully inside the range are removed. Clips partially overlapping are trimmed.
+   * Clips that span the entire range are split and trimmed.
+   * Returns OverlapResult for undo support.
+   */
+  deleteTimeRange(trackId: string, startSample: number, endSample: number): OverlapResult {
+    const result: OverlapResult = { removed: [], trimmed: [], added: [] };
+    const track = this.findTrack(trackId);
+    if (!track) return result;
+
+    // Snapshot clips to iterate safely
+    const clips = [...track.clips];
+
+    for (const clip of clips) {
+      const clipStart = clip.timelineOffset;
+      const clipEnd = clip.timelineOffset + clip.duration;
+
+      // No overlap — skip
+      if (clipEnd <= startSample || clipStart >= endSample) continue;
+
+      // Fully inside — remove
+      if (clipStart >= startSample && clipEnd <= endSample) {
+        result.removed.push({ ...clip });
+        track.clips = track.clips.filter(c => c.id !== clip.id);
+        continue;
+      }
+
+      // Spans entire range — split into left and right parts
+      if (clipStart < startSample && clipEnd > endSample) {
+        const before = { ...clip };
+
+        // Trim existing clip to left part
+        clip.sourceEnd = clip.sourceStart + (startSample - clipStart);
+        clip.duration = startSample - clipStart;
+        clip.fadeOutSamples = 0;
+
+        // Create right part
+        const rightSkip = endSample - clipStart;
+        const rightClip: Clip = {
+          ...before,
+          id: genClipId(),
+          timelineOffset: endSample,
+          sourceStart: before.sourceStart + rightSkip,
+          sourceEnd: before.sourceStart + rightSkip + (clipEnd - endSample),
+          duration: clipEnd - endSample,
+          fadeInSamples: 0,
+        };
+        track.clips.push(rightClip);
+
+        result.trimmed.push({ clipId: clip.id, before, after: { ...clip } });
+        result.added.push({ ...rightClip });
+        continue;
+      }
+
+      // Left overlap — clip starts before range, ends inside
+      if (clipStart < startSample) {
+        const before = { ...clip };
+        clip.sourceEnd = clip.sourceStart + (startSample - clipStart);
+        clip.duration = startSample - clipStart;
+        clip.fadeOutSamples = 0;
+        result.trimmed.push({ clipId: clip.id, before, after: { ...clip } });
+        continue;
+      }
+
+      // Right overlap — clip starts inside range, ends after
+      if (clipEnd > endSample) {
+        const before = { ...clip };
+        const samplesToTrim = endSample - clipStart;
+        clip.sourceStart += samplesToTrim;
+        clip.timelineOffset = endSample;
+        clip.duration = clipEnd - endSample;
+        clip.fadeInSamples = 0;
+        result.trimmed.push({ clipId: clip.id, before, after: { ...clip } });
+        continue;
+      }
+    }
+
+    this.recalcTotalLength();
+    return result;
+  }
+
+  /**
+   * Swap a clip's buffer to a new one (e.g. reversed or normalized version)
+   * and toggle the reversed flag.
+   */
+  reverseClip(trackId: string, clipId: string, newBufferId: string): void {
+    const track = this.findTrack(trackId);
+    if (!track) return;
+    const clip = track.clips.find(c => c.id === clipId);
+    if (!clip) return;
+    clip.bufferId = newBufferId;
+    clip.reversed = !clip.reversed;
+  }
+
   private recalcTotalLength(): void {
     let max = 0;
     for (const track of this.timeline.tracks) {
