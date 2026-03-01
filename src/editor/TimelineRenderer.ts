@@ -383,12 +383,35 @@ export class TimelineRenderer {
         if (x - clipStartPx <= TRIM_HANDLE_WIDTH) return { clip, track, zone: 'trimStart' };
         if (clipEndPx - x <= TRIM_HANDLE_WIDTH) return { clip, track, zone: 'trimEnd' };
 
-        // Fade zones: next 10px inside each edge
-        if (x - clipStartPx > TRIM_HANDLE_WIDTH && x - clipStartPx <= TRIM_HANDLE_WIDTH + FADE_ZONE_WIDTH) {
-          return { clip, track, zone: 'fadeIn' };
+        // Fade zones: when a fade exists, the handle is at the fade's edge;
+        // when no fade, the handle is just inside the clip edge (after trim zone).
+        const fadeInPx = clip.fadeInSamples > 0 ? clip.fadeInSamples / this.samplesPerPixel : 0;
+        const fadeOutPx = clip.fadeOutSamples > 0 ? clip.fadeOutSamples / this.samplesPerPixel : 0;
+
+        if (clip.fadeInSamples > 0) {
+          // Handle at fade-in end edge
+          const fadeEndPx = clipStartPx + fadeInPx;
+          if (Math.abs(x - fadeEndPx) <= FADE_ZONE_WIDTH) {
+            return { clip, track, zone: 'fadeIn' };
+          }
+        } else {
+          // No fade yet: activation zone just inside left edge
+          if (x - clipStartPx > TRIM_HANDLE_WIDTH && x - clipStartPx <= TRIM_HANDLE_WIDTH + FADE_ZONE_WIDTH) {
+            return { clip, track, zone: 'fadeIn' };
+          }
         }
-        if (clipEndPx - x > TRIM_HANDLE_WIDTH && clipEndPx - x <= TRIM_HANDLE_WIDTH + FADE_ZONE_WIDTH) {
-          return { clip, track, zone: 'fadeOut' };
+
+        if (clip.fadeOutSamples > 0) {
+          // Handle at fade-out start edge
+          const fadeStartPx = clipEndPx - fadeOutPx;
+          if (Math.abs(x - fadeStartPx) <= FADE_ZONE_WIDTH) {
+            return { clip, track, zone: 'fadeOut' };
+          }
+        } else {
+          // No fade yet: activation zone just inside right edge
+          if (clipEndPx - x > TRIM_HANDLE_WIDTH && clipEndPx - x <= TRIM_HANDLE_WIDTH + FADE_ZONE_WIDTH) {
+            return { clip, track, zone: 'fadeOut' };
+          }
         }
 
         // Split body by Y: upper half = select, lower half = move
@@ -1050,47 +1073,9 @@ export class TimelineRenderer {
   // Keyboard
   // ==================================================================
 
-  private onKeyDown(e: KeyboardEvent): void {
-    if (!this.timeline) return;
-
-    // S = split selected clips at playhead
-    if (e.key === 's' || e.key === 'S') {
-      if (this.timeline.selectedClipIds.length === 0) return;
-      // Collect all splits first, then execute in reverse to avoid index invalidation
-      const toSplit: { trackId: string; clipId: string; sample: number }[] = [];
-      for (const track of this.timeline.tracks) {
-        for (const clip of track.clips) {
-          if (this.timeline.selectedClipIds.includes(clip.id)) {
-            toSplit.push({ trackId: track.id, clipId: clip.id, sample: this.timeline.playheadSample });
-          }
-        }
-      }
-      for (let i = toSplit.length - 1; i >= 0; i--) {
-        const { trackId, clipId, sample } = toSplit[i];
-        if (this.onClipSplit) {
-          this.onClipSplit(trackId, clipId, sample);
-        }
-      }
-      this.render();
-    }
-
-    // Delete / Backspace = delete selected clips
-    if (e.key === 'Delete' || e.key === 'Backspace') {
-      if (this.timeline.selectedClipIds.length === 0) return;
-      const toDelete: { trackId: string; clipId: string }[] = [];
-      for (const track of this.timeline.tracks) {
-        for (const clip of track.clips) {
-          if (this.timeline.selectedClipIds.includes(clip.id)) {
-            toDelete.push({ trackId: track.id, clipId: clip.id });
-          }
-        }
-      }
-      for (const { trackId, clipId } of toDelete) {
-        if (this.onClipDelete) this.onClipDelete(trackId, clipId);
-      }
-      this.timeline.selectedClipIds = [];
-      this.render();
-    }
+  private onKeyDown(_e: KeyboardEvent): void {
+    // Split (S) and Delete/Backspace are handled by App.ts handleKeyboard()
+    // to avoid duplicate execution and ensure correct time-selection priority.
   }
 
   // ==================================================================
