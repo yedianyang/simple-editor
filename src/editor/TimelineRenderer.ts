@@ -172,6 +172,9 @@ export class TimelineRenderer {
   onCuePointRemove: ((id: number) => void) | null = null;
   onCuePointMoveEnd: ((id: number, prevSample: number, newSample: number) => void) | null = null;
 
+  // Track header context menu callback
+  onTrackHeaderContextMenu: ((trackId: string, clientX: number, clientY: number) => void) | null = null;
+
   // Insert rack callbacks
   onInsertAdd: ((trackId: string) => void) | null = null;
   onInsertClick: ((trackId: string, instanceId: string, screenX: number, screenY: number) => void) | null = null;
@@ -322,8 +325,27 @@ export class TimelineRenderer {
     this.canvas.addEventListener('mouseleave', () => this.onMouseUp());
     this.canvas.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
     this.canvas.addEventListener('keydown', (e) => this.onKeyDown(e));
+    this.canvas.addEventListener('contextmenu', (e) => this.onContextMenu(e));
     // Make canvas focusable for keyboard events
     this.canvas.tabIndex = 0;
+  }
+
+  private onContextMenu(e: MouseEvent): void {
+    e.preventDefault();
+    if (!this.timeline) return;
+    const { x, y } = this.clientToLocal(e);
+    // Only fire for track header area
+    if (x >= TRACK_HEADER_WIDTH || y < RULER_HEIGHT) return;
+    const trackIdx = this.yToTrackIndex(y);
+    if (trackIdx < 0 || trackIdx >= this.timeline.tracks.length) return;
+    const trackId = this.timeline.tracks[trackIdx].id;
+    // Select the track if not already selected
+    if (!this.timeline.selectedTrackIds.includes(trackId)) {
+      this.timeline.selectedTrackIds = [trackId];
+      this.onTrackSelect?.(this.timeline.selectedTrackIds);
+      this.render();
+    }
+    this.onTrackHeaderContextMenu?.(trackId, e.clientX, e.clientY);
   }
 
   private clientToLocal(e: MouseEvent): { x: number; y: number } {
@@ -1227,17 +1249,29 @@ export class TimelineRenderer {
     this.renderTrackLanes();
     ctx.restore();
 
-    // Time selection overlay (drawn above clips, below headers and playhead)
+    // Time selection overlay — Pro Tools style: only highlight selected tracks
     if (this.selectionStartSample !== null && this.selectionEndSample !== null) {
       const selStart = Math.min(this.selectionStartSample, this.selectionEndSample);
       const selEnd = Math.max(this.selectionStartSample, this.selectionEndSample);
-      const startPx = this.sampleToPixel(selStart);
-      const endPx = this.sampleToPixel(selEnd);
-      ctx.fillStyle = 'rgba(37, 99, 235, 0.2)';
-      ctx.fillRect(
-        Math.max(TRACK_HEADER_WIDTH, startPx), RULER_HEIGHT,
-        Math.min(w, endPx) - Math.max(TRACK_HEADER_WIDTH, startPx), h - RULER_HEIGHT,
-      );
+      const leftPx = Math.max(TRACK_HEADER_WIDTH, this.sampleToPixel(selStart));
+      const rightPx = Math.min(w, this.sampleToPixel(selEnd));
+      const selWidth = rightPx - leftPx;
+      if (selWidth > 0 && this.timeline) {
+        const selected = this.timeline.selectedTrackIds;
+        const tracks = this.timeline.tracks;
+        ctx.fillStyle = 'rgba(37, 99, 235, 0.2)';
+        for (let i = 0; i < tracks.length; i++) {
+          // If no tracks selected, highlight all (fallback matches Delete behavior)
+          if (selected.length > 0 && !selected.includes(tracks[i].id)) continue;
+          const topY = RULER_HEIGHT + i * TRACK_HEIGHT - this.scrollOffsetY;
+          const bottomY = topY + TRACK_HEIGHT;
+          // Skip off-screen tracks, clamp to ruler boundary
+          if (bottomY <= RULER_HEIGHT || topY >= h) continue;
+          const clampedTop = Math.max(RULER_HEIGHT, topY);
+          const clampedBottom = Math.min(h, bottomY);
+          ctx.fillRect(leftPx, clampedTop, selWidth, clampedBottom - clampedTop);
+        }
+      }
     }
 
     // Track headers on top (so they cover any clip overflow on the left)

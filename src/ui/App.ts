@@ -32,6 +32,7 @@ import {
   DeleteTimeRangeCommand,
   ReverseClipCommand,
   NormalizeClipCommand,
+  DeleteTrackCommand,
 } from '../utils/TimelineUndoManager';
 import type { AudioFileInfo, AudioFileMeta, ParsedAudioData } from '../utils/TauriAPI';
 import { generateUCSFilename, parseUCSFilename } from '../core/ucs-data';
@@ -370,6 +371,10 @@ export class App {
     this.timelineRenderer.onTrackSelect = (trackIds) => {
       this.timelineModel.timeline.selectedTrackIds = trackIds;
       this.timelineRenderer?.render();
+    };
+
+    this.timelineRenderer.onTrackHeaderContextMenu = (trackId, clientX, clientY) => {
+      this.showTrackContextMenu(trackId, clientX, clientY);
     };
 
     // ---- Clip gain callback ----
@@ -1388,6 +1393,7 @@ export class App {
   undo(): void {
     if (this.timelineUndoManager.canUndo()) {
       this.timelineUndoManager.undo();
+      this.mixer.updateStripsUI(this.timelineModel.timeline.tracks);
       this.timelineRenderer?.render();
       this.updateUI();
     }
@@ -1396,6 +1402,7 @@ export class App {
   redo(): void {
     if (this.timelineUndoManager.canRedo()) {
       this.timelineUndoManager.redo();
+      this.mixer.updateStripsUI(this.timelineModel.timeline.tracks);
       this.timelineRenderer?.render();
       this.updateUI();
     }
@@ -1817,6 +1824,74 @@ export class App {
     this.audioEngine.rebuildInsertChain(trackId, inserts, this.pluginHost);
     this.mixer.updateStripsUI(this.timelineModel.timeline.tracks);
     this.timelineRenderer?.render();
+  }
+
+  // ==================== Track Context Menu ====================
+
+  private activeContextMenu: HTMLElement | null = null;
+  private contextMenuCleanup: (() => void) | null = null;
+
+  private showTrackContextMenu(trackId: string, clientX: number, clientY: number): void {
+    this.dismissContextMenu();
+
+    const menu = document.createElement('div');
+    menu.className = 'context-menu';
+    menu.style.left = `${clientX}px`;
+    menu.style.top = `${clientY}px`;
+
+    const deleteItem = document.createElement('div');
+    deleteItem.className = 'context-menu-item';
+    deleteItem.textContent = 'Delete Track';
+    deleteItem.addEventListener('click', () => {
+      this.dismissContextMenu();
+      this.deleteTrack(trackId);
+    });
+    menu.appendChild(deleteItem);
+
+    document.body.appendChild(menu);
+    this.activeContextMenu = menu;
+
+    // Auto-close handlers
+    const onClickOutside = (e: MouseEvent) => {
+      if (!menu.contains(e.target as Node)) this.dismissContextMenu();
+    };
+    const onEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') this.dismissContextMenu();
+    };
+    const onBlur = () => this.dismissContextMenu();
+
+    // Delay to avoid immediate dismiss from the same right-click event
+    requestAnimationFrame(() => {
+      document.addEventListener('mousedown', onClickOutside);
+      document.addEventListener('keydown', onEscape);
+      window.addEventListener('blur', onBlur);
+    });
+
+    this.contextMenuCleanup = () => {
+      document.removeEventListener('mousedown', onClickOutside);
+      document.removeEventListener('keydown', onEscape);
+      window.removeEventListener('blur', onBlur);
+    };
+  }
+
+  private dismissContextMenu(): void {
+    if (this.activeContextMenu) {
+      this.activeContextMenu.remove();
+      this.activeContextMenu = null;
+    }
+    if (this.contextMenuCleanup) {
+      this.contextMenuCleanup();
+      this.contextMenuCleanup = null;
+    }
+  }
+
+  private deleteTrack(trackId: string): void {
+    this.timelineUndoManager.push(
+      new DeleteTrackCommand(this.timelineModel, trackId),
+    );
+    this.mixer.updateStripsUI(this.timelineModel.timeline.tracks);
+    this.timelineRenderer?.render();
+    this.updateUI();
   }
 
   // ==================== File Browser ====================

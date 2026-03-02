@@ -73,6 +73,13 @@ export class TimelineModel {
     this.recalcTotalLength();
   }
 
+  /** Insert a track at a specific index (used for undo restoration). */
+  insertTrackAt(track: Track, index: number): void {
+    const clamped = Math.max(0, Math.min(this.timeline.tracks.length, index));
+    this.timeline.tracks.splice(clamped, 0, track);
+    this.recalcTotalLength();
+  }
+
   private findTrack(trackId: string): Track | undefined {
     return this.timeline.tracks.find(t => t.id === trackId);
   }

@@ -1,4 +1,4 @@
-import { Clip, CuePoint } from '../core/types';
+import { Clip, CuePoint, Track } from '../core/types';
 import { TimelineModel, OverlapResult } from '../core/TimelineModel';
 import { CuePointManager } from '../editor/CuePointManager';
 
@@ -752,5 +752,49 @@ export class NormalizeClipCommand implements TimelineCommand {
   private findClip(): Clip | undefined {
     const track = this.model.timeline.tracks.find(t => t.id === this.trackId);
     return track?.clips.find(c => c.id === this.clipId);
+  }
+}
+
+/**
+ * Undo/redo for deleting an entire track.
+ * Deep-copies the track data (including clips) so undo can restore it at the original index.
+ */
+export class DeleteTrackCommand implements TimelineCommand {
+  description: string;
+  private savedTrack: Track | null = null;
+  private savedIndex = -1;
+
+  constructor(
+    private model: TimelineModel,
+    private trackId: string,
+  ) {
+    this.description = 'Delete track';
+  }
+
+  execute(): void {
+    const tracks = this.model.timeline.tracks;
+    const idx = tracks.findIndex(t => t.id === this.trackId);
+    if (idx < 0) return;
+
+    // Deep-copy track with all clips
+    this.savedTrack = JSON.parse(JSON.stringify(tracks[idx])) as Track;
+    this.savedIndex = idx;
+
+    // Clean up selection state
+    this.model.timeline.selectedTrackIds =
+      this.model.timeline.selectedTrackIds.filter(id => id !== this.trackId);
+    const clipIds = new Set(tracks[idx].clips.map(c => c.id));
+    this.model.timeline.selectedClipIds =
+      this.model.timeline.selectedClipIds.filter(id => !clipIds.has(id));
+
+    this.model.removeTrack(this.trackId);
+  }
+
+  undo(): void {
+    if (!this.savedTrack || this.savedIndex < 0) return;
+    this.model.insertTrackAt(
+      JSON.parse(JSON.stringify(this.savedTrack)) as Track,
+      this.savedIndex,
+    );
   }
 }
