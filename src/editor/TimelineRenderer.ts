@@ -27,7 +27,9 @@ const COLOR_HEADER_BG = '#222222';
 const COLOR_TRACK_EVEN = '#1a1a1a';
 const COLOR_TRACK_ODD = '#1e1e1e';
 const COLOR_RULER_TEXT = '#888888';
-const COLOR_PLAYHEAD = '#ef4444';
+const COLOR_PLAYHEAD = 'rgba(255, 255, 255, 0.85)';
+const COLOR_PLAYHEAD_DIM = 'rgba(255, 255, 255, 0.3)';
+const BLINK_INTERVAL_MS = 530;
 const COLOR_SELECTED_BORDER = '#2563eb';
 const COLOR_TRACK_BORDER = '#2a2a2a';
 
@@ -83,7 +85,7 @@ interface ClipPeakEntry {
  * Multi-track timeline renderer for FieldCorder DAW.
  *
  * Renders track headers (left column), time ruler (top), clip waveforms
- * inside track lanes, and a red playhead line -- all on a single canvas.
+ * inside track lanes, and a white playhead line -- all on a single canvas.
  * Interactions are communicated to the host through callbacks.
  */
 export class TimelineRenderer {
@@ -102,6 +104,11 @@ export class TimelineRenderer {
   scrollOffsetY = 0;  // vertical scroll in pixels
 
   private playheadSample = 0;
+
+  // ---- Playback state (set by App.ts) ----
+  isPlaying = false;
+  private blinkTimer: ReturnType<typeof setInterval> | null = null;
+  private blinkVisible = true;
 
   // ---- Time selection ----
   selectionStartSample: number | null = null;
@@ -191,6 +198,35 @@ export class TimelineRenderer {
   // ==================================================================
   // Public API
   // ==================================================================
+
+  /** Call when playback starts/stops to toggle blink cursor. */
+  setPlaybackState(playing: boolean): void {
+    this.isPlaying = playing;
+    if (playing) {
+      this.stopBlink();
+      this.blinkVisible = true;
+    } else {
+      this.startBlink();
+    }
+    this.render();
+  }
+
+  private startBlink(): void {
+    if (this.blinkTimer) return;
+    this.blinkVisible = true;
+    this.blinkTimer = setInterval(() => {
+      this.blinkVisible = !this.blinkVisible;
+      this.render();
+    }, BLINK_INTERVAL_MS);
+  }
+
+  private stopBlink(): void {
+    if (this.blinkTimer) {
+      clearInterval(this.blinkTimer);
+      this.blinkTimer = null;
+    }
+    this.blinkVisible = true;
+  }
 
   setTimeline(timeline: Timeline, bufferPool: BufferPool): void {
     this.timeline = timeline;
@@ -1942,20 +1978,23 @@ export class TimelineRenderer {
 
     if (px < TRACK_HEADER_WIDTH || px > this.width) return;
 
-    // Red vertical line
-    ctx.strokeStyle = COLOR_PLAYHEAD;
-    ctx.lineWidth = 2;
+    // Blink: when not playing, alternate between visible and dim
+    const color = (!this.isPlaying && !this.blinkVisible) ? COLOR_PLAYHEAD_DIM : COLOR_PLAYHEAD;
+
+    // White vertical line (1px crisp)
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.moveTo(px, 0);
-    ctx.lineTo(px, this.height);
+    ctx.moveTo(Math.round(px) + 0.5, 0);
+    ctx.lineTo(Math.round(px) + 0.5, this.height);
     ctx.stroke();
 
     // Triangle indicator at the top of the ruler
-    ctx.fillStyle = COLOR_PLAYHEAD;
+    ctx.fillStyle = color;
     ctx.beginPath();
-    ctx.moveTo(px - 5, 0);
-    ctx.lineTo(px + 5, 0);
-    ctx.lineTo(px, 7);
+    ctx.moveTo(px - 4, 0);
+    ctx.lineTo(px + 4, 0);
+    ctx.lineTo(px, 6);
     ctx.closePath();
     ctx.fill();
   }

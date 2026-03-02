@@ -595,6 +595,7 @@ export class App {
       this.metering.setPlaybackPosition(sample);
     };
     this.audioEngine.onPlaybackEnd = () => {
+      this.timelineRenderer?.setPlaybackState(false);
       this.updateUI();
       this.stopRealtimeAnalysis();
     };
@@ -1311,6 +1312,7 @@ export class App {
         ? Math.floor(this.audioEngine.getCurrentTime() * tl.sampleRate)
         : tl.playheadSample;
       this.audioEngine.playTimeline(tl, this.bufferPool, startSample);
+      this.timelineRenderer?.setPlaybackState(true);
       this.startRealtimeAnalysis();
       this.updateUI();
     });
@@ -1318,12 +1320,14 @@ export class App {
 
   pause(): void {
     this.audioEngine.pause();
+    this.timelineRenderer?.setPlaybackState(false);
     this.stopRealtimeAnalysis();
     this.updateUI();
   }
 
   stop(): void {
     this.audioEngine.stopTimeline();
+    this.timelineRenderer?.setPlaybackState(false);
     this.stopRealtimeAnalysis();
     this.waveformRenderer.setPlayheadPosition(0);
     this.spectrogramRenderer.setPlayheadPosition(0);
