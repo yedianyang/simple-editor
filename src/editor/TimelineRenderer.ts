@@ -817,6 +817,20 @@ export class TimelineRenderer {
         this.selectionStartSample = this.drag.originalValue;
         this.selectionEndSample = currentSample;
       }
+
+      // Update selectedTrackIds based on vertical drag range
+      if (this.drag.hasDragged) {
+        const startIdx = this.yToTrackIndex(this.drag.startMouseY);
+        const endIdx = this.yToTrackIndex(y);
+        const minIdx = Math.max(0, Math.min(startIdx, endIdx));
+        const maxIdx = Math.min(this.timeline.tracks.length - 1, Math.max(startIdx, endIdx));
+        const newTrackIds: string[] = [];
+        for (let i = minIdx; i <= maxIdx; i++) {
+          newTrackIds.push(this.timeline.tracks[i].id);
+        }
+        this.timeline.selectedTrackIds = newTrackIds;
+      }
+
       this.render();
       return;
     }
@@ -946,6 +960,7 @@ export class TimelineRenderer {
             this.selectionEndSample = null;
           }
         }
+        this.onTrackSelect?.(this.timeline!.selectedTrackIds);
         if (this.onSelectionChange) this.onSelectionChange();
         this.render();
       } else {
