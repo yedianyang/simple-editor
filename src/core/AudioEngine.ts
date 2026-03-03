@@ -340,18 +340,28 @@ export class AudioEngine {
     this.cleanupTrackNodes();
 
     for (const track of tracks) {
+      const chCount = track.channels || 1;
+
       const gain = this.audioContext.createGain();
       gain.gain.value = this.applyFaderLaw(track.volume);
+      gain.channelCount = chCount;
+      gain.channelCountMode = 'explicit';
 
       // Separate crossfader gain node — applyCrossfader() controls this,
       // so track volume and crossfader don't overwrite each other.
       const crossfaderGain = this.audioContext.createGain();
       crossfaderGain.gain.value = 1.0;
+      crossfaderGain.channelCount = chCount;
+      crossfaderGain.channelCountMode = 'explicit';
 
       const insertIn = this.audioContext.createGain();
       insertIn.gain.value = 1.0;
+      insertIn.channelCount = chCount;
+      insertIn.channelCountMode = 'explicit';
       const insertOut = this.audioContext.createGain();
       insertOut.gain.value = 1.0;
+      insertOut.channelCount = chCount;
+      insertOut.channelCountMode = 'explicit';
 
       const pan = this.audioContext.createStereoPanner();
       pan.pan.value = track.pan;
@@ -404,6 +414,14 @@ export class AudioEngine {
         : !track.mute;
 
       if (!shouldPlay) continue;
+
+      // For multi-channel tracks, create a ChannelMergerNode so sub-channel
+      // mono clips route to the correct stereo channel instead of collapsing.
+      let merger: ChannelMergerNode | null = null;
+      if (track.channels > 1) {
+        merger = this.audioContext.createChannelMerger(track.channels);
+        merger.connect(gainNode);
+      }
 
       for (const clip of track.clips) {
         if (clip.muted) continue;
@@ -513,9 +531,17 @@ export class AudioEngine {
           }
 
           source.connect(clipGain);
-          clipGain.connect(gainNode);
+          if (merger && clip.subChannel != null) {
+            clipGain.connect(merger, 0, clip.subChannel);
+          } else {
+            clipGain.connect(gainNode);
+          }
         } else {
-          source.connect(gainNode);
+          if (merger && clip.subChannel != null) {
+            source.connect(merger, 0, clip.subChannel);
+          } else {
+            source.connect(gainNode);
+          }
         }
 
         const sourceOffsetSec = sourceOffset / sr;
