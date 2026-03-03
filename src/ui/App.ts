@@ -2816,9 +2816,14 @@ export class App {
       }
       this.timelineRenderer?.clearPeakCaches();
       this.timelineRenderer?.render();
-    } finally {
-      unlisten();
       this.hideModal('denoiseModal');
+    } catch (err) {
+      console.error('[Denoise] Error:', err);
+      progressLabel.textContent = err instanceof Error ? err.message : String(err);
+      progressFill.style.width = '0%';
+    } finally {
+      applyBtn.disabled = false;
+      unlisten();
     }
   }
 
