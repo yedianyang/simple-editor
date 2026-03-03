@@ -530,6 +530,7 @@ export class App {
     document.getElementById('fadeOutBtn')!.addEventListener('click', () => this.fadeOut());
     document.getElementById('gainBtn')!.addEventListener('click', () => this.showGainModal());
     document.getElementById('reverseBtn')!.addEventListener('click', () => this.reverse());
+    document.getElementById('denoiseBtn')!.addEventListener('click', () => this.showDenoiseModal());
 
     // Modal buttons
     document.getElementById('exportCancelBtn')!.addEventListener('click', () => this.hideModal('exportModal'));
@@ -538,6 +539,11 @@ export class App {
     document.getElementById('normalizeConfirmBtn')!.addEventListener('click', () => this.normalize());
     document.getElementById('gainCancelBtn')!.addEventListener('click', () => this.hideModal('gainModal'));
     document.getElementById('gainConfirmBtn')!.addEventListener('click', () => this.applyGain());
+    document.getElementById('denoiseCancelBtn')!.addEventListener('click', () => this.hideModal('denoiseModal'));
+    document.getElementById('denoiseApplyBtn')!.addEventListener('click', () => this.applyDenoise());
+
+    // Denoise preset/slider wiring
+    this.initDenoiseSliders();
 
     // Plugin browser
     document.getElementById('pluginBrowserCancelBtn')!.addEventListener('click', () => this.hideModal('pluginBrowserModal'));
@@ -837,6 +843,7 @@ export class App {
       'fade-out': () => this.fadeOut(),
       'gain': () => this.showGainModal(),
       'reverse': () => this.reverse(),
+      'denoise': () => this.showDenoiseModal(),
       'play-pause': () => this.audioEngine.isPlaying ? this.pause() : this.play(),
       'stop': () => this.stop(),
       'toggle-loop': () => this.toggleLoop(),
@@ -2681,6 +2688,140 @@ export class App {
   showNormalizeModal(): void { this.showModal('normalizeModal'); }
   showGainModal(): void { this.showModal('gainModal'); }
 
+  showDenoiseModal(): void {
+    // Reset progress
+    document.getElementById('denoiseProgressRow')!.style.display = 'none';
+    (document.getElementById('denoiseProgressFill') as HTMLElement).style.width = '0%';
+    document.getElementById('denoiseProgressLabel')!.textContent = '0%';
+    (document.getElementById('denoiseApplyBtn') as HTMLButtonElement).disabled = false;
+    this.showModal('denoiseModal');
+  }
+
+  private initDenoiseSliders(): void {
+    const presets: Record<string, [number, number, number]> = {
+      gentle: [30, 10, 80],
+      balanced: [50, 30, 100],
+      aggressive: [85, 50, 100],
+    };
+
+    const presetSelect = document.getElementById('denoisePreset') as HTMLSelectElement;
+    const denoiseSlider = document.getElementById('denoiseAmount') as HTMLInputElement;
+    const dereverbSlider = document.getElementById('dereverbAmount') as HTMLInputElement;
+    const drySlider = document.getElementById('drySoundAmount') as HTMLInputElement;
+    const denoiseLabel = document.getElementById('denoiseAmountLabel')!;
+    const dereverbLabel = document.getElementById('dereverbAmountLabel')!;
+    const dryLabel = document.getElementById('drySoundAmountLabel')!;
+
+    const updateLabels = () => {
+      denoiseLabel.textContent = `${denoiseSlider.value}%`;
+      dereverbLabel.textContent = `${dereverbSlider.value}%`;
+      dryLabel.textContent = `${drySlider.value}%`;
+    };
+
+    presetSelect.addEventListener('change', () => {
+      const vals = presets[presetSelect.value];
+      if (vals) {
+        denoiseSlider.value = String(vals[0]);
+        dereverbSlider.value = String(vals[1]);
+        drySlider.value = String(vals[2]);
+        updateLabels();
+      }
+    });
+
+    const onSliderChange = () => {
+      updateLabels();
+      // Check if current values match a preset, otherwise set to Custom
+      const d = parseInt(denoiseSlider.value);
+      const r = parseInt(dereverbSlider.value);
+      const dry = parseInt(drySlider.value);
+      let matched = 'custom';
+      for (const [name, vals] of Object.entries(presets)) {
+        if (d === vals[0] && r === vals[1] && dry === vals[2]) { matched = name; break; }
+      }
+      presetSelect.value = matched;
+    };
+
+    denoiseSlider.addEventListener('input', onSliderChange);
+    dereverbSlider.addEventListener('input', onSliderChange);
+    drySlider.addEventListener('input', onSliderChange);
+  }
+
+  async applyDenoise(): Promise<void> {
+    const denoise = parseInt((document.getElementById('denoiseAmount') as HTMLInputElement).value) / 100;
+    const dereverb = parseInt((document.getElementById('dereverbAmount') as HTMLInputElement).value) / 100;
+    const dry = parseInt((document.getElementById('drySoundAmount') as HTMLInputElement).value) / 100;
+
+    if (this.timelineModel.timeline.tracks.length === 0) {
+      this.hideModal('denoiseModal');
+      return;
+    }
+
+    const selected = this.timelineModel.timeline.selectedClipIds;
+    if (selected.length === 0) { this.hideModal('denoiseModal'); return; }
+
+    // Show progress
+    const progressRow = document.getElementById('denoiseProgressRow')!;
+    const progressFill = document.getElementById('denoiseProgressFill') as HTMLElement;
+    const progressLabel = document.getElementById('denoiseProgressLabel')!;
+    const applyBtn = document.getElementById('denoiseApplyBtn') as HTMLButtonElement;
+    progressRow.style.display = 'block';
+    applyBtn.disabled = true;
+
+    // Listen for progress events from Rust
+    const { listen } = await import('@tauri-apps/api/event');
+    const unlisten = await listen<number>('denoise:progress', (e) => {
+      const pct = Math.round(e.payload);
+      progressFill.style.width = `${pct}%`;
+      progressLabel.textContent = `${pct}%`;
+    });
+
+    try {
+      for (const track of this.timelineModel.timeline.tracks) {
+        for (const clip of track.clips) {
+          if (!selected.includes(clip.id)) continue;
+          const pooled = this.bufferPool.getBuffer(clip.bufferId);
+          if (!pooled) continue;
+
+          const srcData = pooled.buffer.getChannelData(0);
+          const sampleRate = pooled.buffer.sampleRate;
+          const numSamples = srcData.length;
+
+          // Call Rust backend
+          const resultBuf = await window.appAPI!.denoiseDeepFilter(
+            srcData,
+            { denoise, dereverb, dry, sample_rate: sampleRate, num_samples: numSamples },
+          );
+
+          // Parse response (same format as readLargeAudioFile)
+          const header = new DataView(resultBuf, 0, 16);
+          const outSampleRate = header.getUint32(0, true);
+          const outNumSamples = Number(header.getBigUint64(8, true));
+          const outSamples = new Float32Array(resultBuf, 16);
+
+          // Create new AudioBuffer in pool
+          const ctx = new OfflineAudioContext(1, outNumSamples, outSampleRate);
+          const newBuffer = ctx.createBuffer(1, outNumSamples, outSampleRate);
+          newBuffer.copyToChannel(outSamples, 0);
+          const newBufferId = this.bufferPool.addBuffer(
+            newBuffer, pooled.sourceFileName + ' [denoised]', pooled.sourceChannelIndex,
+          );
+
+          // Swap buffer + push undo
+          const originalBufferId = clip.bufferId;
+          clip.bufferId = newBufferId;
+          this.timelineUndoManager.pushExecuted(
+            new DenoiseClipCommand(this.timelineModel, track.id, clip.id, originalBufferId, newBufferId),
+          );
+        }
+      }
+      this.timelineRenderer?.clearPeakCaches();
+      this.timelineRenderer?.render();
+    } finally {
+      unlisten();
+      this.hideModal('denoiseModal');
+    }
+  }
+
   showModal(id: string): void {
     document.getElementById(id)?.classList.add('visible');
   }
@@ -2840,6 +2981,7 @@ export class App {
     setDisabled('fadeOutBtn', !hasSelection);
     setDisabled('gainBtn', !hasAudio);
     setDisabled('reverseBtn', !hasAudio);
+    setDisabled('denoiseBtn', !hasAudio);
 
     document.getElementById('playBtn')?.classList.toggle('playing', isPlaying);
   }

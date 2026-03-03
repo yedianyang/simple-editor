@@ -1648,6 +1648,7 @@
             <button id="fadeOutBtn" disabled title="Fade Out">Fade Out</button>
             <button id="gainBtn" disabled title="Apply gain">Gain</button>
             <button id="reverseBtn" disabled title="Reverse">Reverse</button>
+            <button id="denoiseBtn" disabled title="Noise Reduction (DeepFilterNet)">Denoise</button>
         </div>
 
         <!-- Markers -->
@@ -2028,6 +2029,49 @@
             <div class="modal-buttons">
                 <button id="gainCancelBtn">Cancel</button>
                 <button id="gainConfirmBtn" class="primary">Apply</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============================
+         Denoise Modal (DeepFilterNet)
+         ============================ -->
+    <div class="modal-overlay" id="denoiseModal">
+        <div class="modal" style="min-width: 360px;">
+            <h3>Noise Reduction (DeepFilterNet)</h3>
+            <div class="modal-row">
+                <label>Preset</label>
+                <select id="denoisePreset">
+                    <option value="gentle">Gentle</option>
+                    <option value="balanced" selected>Balanced</option>
+                    <option value="aggressive">Aggressive</option>
+                    <option value="custom">Custom</option>
+                </select>
+            </div>
+            <div class="modal-row" style="display: flex; align-items: center; gap: 8px;">
+                <label style="min-width: 70px;">De-noise</label>
+                <input type="range" id="denoiseAmount" min="0" max="100" value="50" style="flex:1;">
+                <span id="denoiseAmountLabel" style="min-width: 36px; text-align: right;">50%</span>
+            </div>
+            <div class="modal-row" style="display: flex; align-items: center; gap: 8px;">
+                <label style="min-width: 70px;">De-reverb</label>
+                <input type="range" id="dereverbAmount" min="0" max="100" value="30" style="flex:1;">
+                <span id="dereverbAmountLabel" style="min-width: 36px; text-align: right;">30%</span>
+            </div>
+            <div class="modal-row" style="display: flex; align-items: center; gap: 8px;">
+                <label style="min-width: 70px;">Dry Sound</label>
+                <input type="range" id="drySoundAmount" min="0" max="100" value="100" style="flex:1;">
+                <span id="drySoundAmountLabel" style="min-width: 36px; text-align: right;">100%</span>
+            </div>
+            <div class="modal-row" id="denoiseProgressRow" style="display: none;">
+                <div style="background: var(--bg-tertiary); border-radius: 4px; overflow: hidden; height: 18px; position: relative;">
+                    <div id="denoiseProgressFill" style="background: var(--accent-blue); height: 100%; width: 0%; transition: width 0.15s;"></div>
+                    <span id="denoiseProgressLabel" style="position: absolute; top: 0; left: 50%; transform: translateX(-50%); font-size: 11px; line-height: 18px; color: var(--text-primary);">0%</span>
+                </div>
+            </div>
+            <div class="modal-buttons">
+                <button id="denoiseCancelBtn">Cancel</button>
+                <button id="denoiseApplyBtn" class="primary">Apply</button>
             </div>
         </div>
     </div>
