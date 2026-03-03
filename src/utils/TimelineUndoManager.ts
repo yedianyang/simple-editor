@@ -64,6 +64,20 @@ export class TimelineUndoManager {
 
 // ==================== Concrete Commands ====================
 
+/** Groups multiple commands into a single undo/redo entry. */
+export class CompoundCommand implements TimelineCommand {
+  description: string;
+  constructor(private commands: TimelineCommand[], description: string) {
+    this.description = description;
+  }
+  execute(): void {
+    for (const cmd of this.commands) cmd.execute();
+  }
+  undo(): void {
+    for (let i = this.commands.length - 1; i >= 0; i--) this.commands[i].undo();
+  }
+}
+
 export class MoveClipCommand implements TimelineCommand {
   description: string;
   private prevOffset: number;

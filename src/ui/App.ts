@@ -21,6 +21,7 @@ import { encodeWavAsync } from '../core/WavEncoder';
 import { TimelineModel } from '../core/TimelineModel';
 import {
   TimelineUndoManager,
+  CompoundCommand,
   SplitClipCommand,
   DeleteClipCommand,
   ClipDragCommand,
@@ -74,6 +75,8 @@ export class App {
   private _pendingPlaybackResume = false;
   /** Captures clip state at the start of a drag (move or trim) for single-undo. */
   private _dragStartSnapshot: { clipId: string; trackId: string; clip: Clip } | null = null;
+  /** Snapshots of other selected clips for batch-move undo. */
+  private _dragBatchSnapshots: Array<{ clipId: string; trackId: string; clip: Clip }> | null = null;
   /** Tracks the current track of the dragged clip (updates during cross-track moves). */
   private _dragCurrentTrackId: string | null = null;
   private _dragGainOriginal: number | null = null;
@@ -206,10 +209,39 @@ export class App {
         const track = this.timelineModel.timeline.tracks.find(t => t.id === sourceTrackId);
         const clip = track?.clips.find(c => c.id === clipId);
         if (clip) this._dragStartSnapshot = { clipId, trackId: sourceTrackId, clip: { ...clip } };
+        // Also snapshot other selected clips for batch move
+        this._dragBatchSnapshots = [];
+        for (const selId of this.timelineModel.timeline.selectedClipIds) {
+          if (selId === clipId) continue;
+          for (const t of this.timelineModel.timeline.tracks) {
+            const c = t.clips.find(cl => cl.id === selId);
+            if (c) {
+              this._dragBatchSnapshots.push({ clipId: selId, trackId: t.id, clip: { ...c } });
+              break;
+            }
+          }
+        }
       }
       // Apply move directly (single undo entry created on drag end)
       this.timelineModel.moveClipToTrack(sourceTrackId, targetTrackId, clipId, newOffset);
       this._dragCurrentTrackId = targetTrackId;
+
+      // Batch-move other selected clips by the same delta
+      if (this._dragBatchSnapshots && this._dragBatchSnapshots.length > 0 && this._dragStartSnapshot) {
+        const delta = newOffset - this._dragStartSnapshot.clip.timelineOffset;
+        for (const snap of this._dragBatchSnapshots) {
+          const otherOffset = Math.max(0, snap.clip.timelineOffset + delta);
+          // Find current track of this clip (may differ if previously cross-track moved)
+          for (const t of this.timelineModel.timeline.tracks) {
+            const c = t.clips.find(cl => cl.id === snap.clipId);
+            if (c) {
+              this.timelineModel.moveClipToTrack(t.id, t.id, snap.clipId, otherOffset);
+              break;
+            }
+          }
+        }
+      }
+
       this.timelineRenderer?.render();
 
       // Pro Tools style: don't stop playback during drag, just mark for re-schedule on mouseup
@@ -268,39 +300,58 @@ export class App {
     };
 
     this.timelineRenderer.onDragEnd = () => {
-      // Create single undo entry for the entire drag (move/trim + overlap resolution)
+      // Create undo entries for all moved clips (primary + batch)
       if (this._dragStartSnapshot) {
         const { clipId, trackId: originalTrackId, clip: originalState } = this._dragStartSnapshot;
         const finalTrackId = this._dragCurrentTrackId ?? originalTrackId;
+        const commands: ClipDragCommand[] = [];
 
+        // Primary clip
         const track = this.timelineModel.timeline.tracks.find(t => t.id === finalTrackId);
         const clip = track?.clips.find(c => c.id === clipId);
-
         if (clip) {
           const changed = originalState.timelineOffset !== clip.timelineOffset
             || originalState.sourceStart !== clip.sourceStart
             || originalState.sourceEnd !== clip.sourceEnd
             || originalTrackId !== finalTrackId;
-
           if (changed) {
-            // Resolve overlaps (applied immediately to model)
             const overlapResult = this.timelineModel.resolveOverlaps(finalTrackId, clipId);
             const hasOverlaps = overlapResult.removed.length > 0 || overlapResult.trimmed.length > 0;
-
-            // Push single combined command (already executed — just for undo/redo)
-            this.timelineUndoManager.pushExecuted(
-              new ClipDragCommand(
-                this.timelineModel, clipId,
-                originalTrackId, finalTrackId,
-                originalState, { ...clip },
-                hasOverlaps ? overlapResult : null,
-              ),
-            );
-            this.timelineRenderer?.render();
+            commands.push(new ClipDragCommand(
+              this.timelineModel, clipId, originalTrackId, finalTrackId,
+              originalState, { ...clip }, hasOverlaps ? overlapResult : null,
+            ));
           }
         }
 
+        // Batch clips (other selected clips moved together)
+        if (this._dragBatchSnapshots) {
+          for (const snap of this._dragBatchSnapshots) {
+            const t = this.timelineModel.timeline.tracks.find(tr => tr.id === snap.trackId);
+            const c = t?.clips.find(cl => cl.id === snap.clipId);
+            if (c && snap.clip.timelineOffset !== c.timelineOffset) {
+              const overlapResult = this.timelineModel.resolveOverlaps(snap.trackId, snap.clipId);
+              const hasOverlaps = overlapResult.removed.length > 0 || overlapResult.trimmed.length > 0;
+              commands.push(new ClipDragCommand(
+                this.timelineModel, snap.clipId, snap.trackId, snap.trackId,
+                snap.clip, { ...c }, hasOverlaps ? overlapResult : null,
+              ));
+            }
+          }
+        }
+
+        // Push as single compound undo entry
+        if (commands.length === 1) {
+          this.timelineUndoManager.pushExecuted(commands[0]);
+        } else if (commands.length > 1) {
+          this.timelineUndoManager.pushExecuted(new CompoundCommand(commands, 'Drag clips'));
+        }
+        if (commands.length > 0) {
+          this.timelineRenderer?.render();
+        }
+
         this._dragStartSnapshot = null;
+        this._dragBatchSnapshots = null;
         this._dragCurrentTrackId = null;
       }
 
