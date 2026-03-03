@@ -53,6 +53,19 @@ npm run build:frontend # 仅构建前端
 - 深色主题，遵循 macOS HIG
 - 完整架构详见各 agent 文件
 
+## 通用开发规则
+
+**遵循** `~/.openclaw/workspace/AGENTIC_RULES.md` **中定义的 Agentic Engineering 最佳实践。**
+
+关键规则：
+- **Session 开始**：`First run the tests`
+- **新功能/修复**：`Use red/green TDD`
+- **理解代码**：要求 linear walkthrough 或 interactive explanation
+- **复用代码**：搜索 `examples/` 和 `docs/research/` 中的已有示例
+- **文档化决策**：所有设计决策记录到 `docs/decisions/`
+
+详细说明见 AGENTIC_RULES.md。
+
 ---
 
 ## 验证标准（Commit 前必须通过）
@@ -116,6 +129,31 @@ commit
 ---
 
 ## Agent Team 协作规范
+
+### Session 启动流程（每次 session 开始必做）
+
+**所有 teammate agents 的第一条指令：**
+
+```bash
+First run the tests
+```
+
+具体命令：
+```bash
+# TypeScript + Vitest
+npm test -- --run
+
+# Rust
+cd src-tauri && cargo test
+```
+
+**目的：**
+- ✅ 确认测试环境正常
+- ✅ 了解当前代码状态
+- ✅ 获取项目规模感（测试数量）
+- ✅ 置于测试心态
+
+**Lead agent 可以跳过这一步**（不直接写代码）。
 
 ### 核心机制
 
@@ -240,6 +278,33 @@ Commit with: 'docs: weekly CLAUDE.md review'"
 
 ## 工程流程
 
+### 基本流程
+
 - 每个 task 完成 + 验证通过 → 立即 commit（不积攒）
 - Git commit 格式：`feat: xxx` / `fix: xxx` / `docs: xxx`
 - 踩坑记录到 `docs/lessons-learned.md`
+
+### 代码理解与知识传承
+
+**当需要理解复杂模块/算法时：**
+
+1. **Linear Walkthrough**（代码走查）
+   ```
+   Create a linear walkthrough of [模块] in docs/walkthroughs/
+   Use sed/grep/cat to include code snippets, don't copy-paste.
+   ```
+   
+2. **Interactive Explanation**（交互式解释）
+   ```
+   Build an interactive explanation of [算法] as standalone HTML.
+   Visualize the algorithm step-by-step with animations.
+   ```
+   - 适用场景：DSP 算法（Wiener Filter、FFT）、布局算法
+
+3. **示例积累**（Hoard and Recombine）
+   - 调研结果保存到 `docs/research/`
+   - 可复用代码片段保存到 `examples/`
+   - 新功能优先搜索已有示例组合，而非从零开始
+
+**知识传承原则：**
+> 只需要搞懂一次。之后的 agent 可以查文档自己搞定。
