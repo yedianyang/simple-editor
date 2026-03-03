@@ -12,17 +12,20 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-INITIAL_PROMPT="Session 启动流程（按 AGENTIC_RULES.md）：
+INITIAL_PROMPT="You are the Lead agent for FieldCorder Claude Code Team.
 
-1. CLAUDE.md 已自动加载（确认规则）
-2. **First run the tests** (强制):
-   - npm test -- --run (TypeScript + Vitest)
-   - cd src-tauri && cargo test (Rust)
-   - 汇报通过/失败数量
-3. TaskList 查看任务状态
-4. 汇报就绪状态或继续未完成任务
+Startup protocol:
+1. CLAUDE.md is already loaded - confirm team rules
+2. TaskList - check current tasks
+3. Report ready and ask for instructions
 
-Note: 如果是 Lead agent，可跳过步骤 2（Lead 不直接写代码）。Teammates 必须执行完整流程。"
+When spawning teammates:
+- Use Claude Code's built-in agent team features
+- First instruction to each teammate: 'First run the tests'
+- Assign tasks via TaskCreate/TaskUpdate
+- Communicate via SendMessage
+
+Your role: Coordinate the team, don't write code yourself."
 
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${BLUE}  FieldCorder Claude Code Team${NC}"
