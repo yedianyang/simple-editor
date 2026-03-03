@@ -978,16 +978,21 @@ export class App {
         // (when canvas is focused), but also allow from global keyboard
         const selected = this.timelineModel.timeline.selectedClipIds;
         if (selected.length > 0) {
+          const toSplit: Array<{ trackId: string; clipId: string }> = [];
           for (const track of this.timelineModel.timeline.tracks) {
             for (const clip of track.clips) {
               if (selected.includes(clip.id)) {
-                this.timelineUndoManager.push(
-                  new SplitClipCommand(this.timelineModel, track.id, clip.id, this.timelineModel.timeline.playheadSample),
-                );
-                this.timelineRenderer?.render();
-                break;
+                toSplit.push({ trackId: track.id, clipId: clip.id });
               }
             }
+          }
+          for (const { trackId, clipId } of toSplit) {
+            this.timelineUndoManager.push(
+              new SplitClipCommand(this.timelineModel, trackId, clipId, this.timelineModel.timeline.playheadSample),
+            );
+          }
+          if (toSplit.length > 0) {
+            this.timelineRenderer?.render();
           }
         }
         break;
