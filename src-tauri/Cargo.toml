@@ -24,3 +24,5 @@ tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-shell = "2"
 urlencoding = "2"
+ndarray = "0.15"
+deep_filter = { git = "https://github.com/Rikorose/DeepFilterNet.git", tag = "v0.5.6", features = ["tract", "default-model", "transforms"], default-features = false }

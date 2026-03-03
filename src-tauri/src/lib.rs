@@ -924,6 +924,187 @@ fn setup_menu(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+// ── DeepFilter Noise Reduction ────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+struct DenoiseParams {
+    denoise: f32,
+    dereverb: f32,
+    dry: f32,
+    sample_rate: u32,
+    num_samples: u64,
+}
+
+/// Map denoise slider value (0.0–1.0) to attenuation limit in dB.
+fn denoise_to_atten_lim_db(denoise: f32) -> f32 {
+    denoise * 100.0
+}
+
+/// Map dereverb slider value (0.0–1.0) to post-filter beta.
+fn dereverb_to_pf_beta(dereverb: f32) -> f32 {
+    dereverb * 0.05
+}
+
+/// Apply dry/wet mix: `output[i] = dry * original[i] + (1 - dry) * processed[i]`.
+fn apply_dry_wet_mix(original: &[f32], processed: &[f32], dry: f32) -> Vec<f32> {
+    let wet = 1.0 - dry;
+    original
+        .iter()
+        .zip(processed.iter())
+        .map(|(&o, &p)| dry * o + wet * p)
+        .collect()
+}
+
+/// DeepFilter-based noise reduction via binary IPC.
+///
+/// Request format:
+/// - Header `x-denoise-params`: JSON-encoded [`DenoiseParams`]
+/// - Body: raw f32 LE PCM bytes (mono)
+///
+/// Response binary layout (same as `read_audio_file_binary`):
+/// - [0..4]   sample_rate: u32 LE
+/// - [4..6]   num_channels: u16 LE (always 1)
+/// - [6..8]   padding: u16
+/// - [8..16]  num_samples: u64 LE
+/// - [16..]   f32 LE PCM data
+#[tauri::command]
+async fn denoise_deepfilter(
+    app: tauri::AppHandle,
+    request: Request<'_>,
+) -> Result<Response, String> {
+    // 1. Parse params from header
+    let params_json = request
+        .headers()
+        .get("x-denoise-params")
+        .ok_or("Missing x-denoise-params header")?
+        .to_str()
+        .map_err(|e| format!("Invalid params header: {}", e))?;
+    let params: DenoiseParams = serde_json::from_str(params_json)
+        .map_err(|e| format!("Failed to parse denoise params: {}", e))?;
+
+    // 2. Extract raw f32 PCM from body
+    let input_samples: Vec<f32> = {
+        let raw_bytes = match request.body() {
+            tauri::ipc::InvokeBody::Raw(data) => data.as_slice(),
+            tauri::ipc::InvokeBody::Json(_) => {
+                return Err("Expected raw binary body, got JSON".into());
+            }
+        };
+        if raw_bytes.len() % 4 != 0 {
+            return Err("Audio data length is not aligned to 4 bytes (f32)".into());
+        }
+        raw_bytes
+            .chunks_exact(4)
+            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .collect()
+    };
+
+    if input_samples.len() != params.num_samples as usize {
+        return Err(format!(
+            "Sample count mismatch: header says {} but body has {}",
+            params.num_samples,
+            input_samples.len()
+        ));
+    }
+
+    // Save original for dry/wet mix
+    let original = input_samples.clone();
+
+    // 3. Resample to 48kHz if needed (DeepFilter requires 48kHz)
+    let df_sr: usize = 48000;
+    let (samples_48k, was_resampled) = if params.sample_rate as usize != df_sr {
+        let arr =
+            ndarray::Array2::from_shape_vec((1, input_samples.len()), input_samples)
+                .map_err(|e| format!("Array creation failed: {}", e))?;
+        let resampled =
+            df::transforms::resample(arr.view(), params.sample_rate as usize, df_sr, None)
+                .map_err(|e| format!("Resample to 48kHz failed: {}", e))?;
+        (resampled.row(0).to_vec(), true)
+    } else {
+        (input_samples, false)
+    };
+
+    // 4. Create DfTract processor
+    let atten_lim = denoise_to_atten_lim_db(params.denoise);
+    let pf_beta = dereverb_to_pf_beta(params.dereverb);
+
+    let df_params = df::tract::DfParams::default();
+    let r_params = df::tract::RuntimeParams::default_with_ch(1)
+        .with_atten_lim(atten_lim)
+        .with_post_filter(pf_beta);
+    let mut model = df::tract::DfTract::new(df_params, &r_params)
+        .map_err(|e| format!("DfTract init failed: {}", e))?;
+
+    // 5. Process in hop_size chunks
+    let hop_size = model.hop_size;
+    let num_48k = samples_48k.len();
+    let total_hops = num_48k.div_ceil(hop_size);
+    let mut output_48k = vec![0.0f32; num_48k];
+
+    for (i, start) in (0..num_48k).step_by(hop_size).enumerate() {
+        let end = (start + hop_size).min(num_48k);
+        let actual_len = end - start;
+
+        // Pad last chunk to hop_size if needed
+        let mut chunk = vec![0.0f32; hop_size];
+        chunk[..actual_len].copy_from_slice(&samples_48k[start..end]);
+
+        let noisy = ndarray::Array2::from_shape_vec((1, hop_size), chunk)
+            .map_err(|e| format!("Noisy array creation failed: {}", e))?;
+        let mut enh = ndarray::Array2::<f32>::zeros((1, hop_size));
+
+        model
+            .process(noisy.view(), enh.view_mut())
+            .map_err(|e| format!("DeepFilter process error at hop {}: {}", i, e))?;
+
+        for j in 0..actual_len {
+            output_48k[start + j] = enh[[0, j]];
+        }
+
+        // 6. Emit progress events every ~50 hops
+        if i % 50 == 0 || i == total_hops - 1 {
+            let percent = ((i + 1) as f64 / total_hops as f64 * 100.0) as u32;
+            let _ = app.emit("denoise:progress", percent);
+        }
+    }
+
+    // 7. Resample back to original sample rate if needed
+    let processed = if was_resampled {
+        let arr = ndarray::Array2::from_shape_vec((1, output_48k.len()), output_48k)
+            .map_err(|e| format!("Array creation failed: {}", e))?;
+        let resampled =
+            df::transforms::resample(arr.view(), df_sr, params.sample_rate as usize, None)
+                .map_err(|e| format!("Resample back failed: {}", e))?;
+        let mut v = resampled.row(0).to_vec();
+        v.resize(original.len(), 0.0);
+        v
+    } else {
+        output_48k
+    };
+
+    // 8. Apply dry/wet mix
+    let final_output = apply_dry_wet_mix(&original, &processed, params.dry);
+
+    // 9. Build binary response
+    let num_out_samples = final_output.len();
+    let mut buf = Vec::with_capacity(16 + num_out_samples * 4);
+    buf.extend_from_slice(&params.sample_rate.to_le_bytes());
+    buf.extend_from_slice(&1u16.to_le_bytes()); // mono
+    buf.extend_from_slice(&0u16.to_le_bytes()); // padding
+    buf.extend_from_slice(&(num_out_samples as u64).to_le_bytes());
+
+    // SAFETY: f32 has well-defined 4-byte LE layout on all supported platforms.
+    let pcm_bytes: &[u8] = unsafe {
+        std::slice::from_raw_parts(
+            final_output.as_ptr() as *const u8,
+            final_output.len() * 4,
+        )
+    };
+    buf.extend_from_slice(pcm_bytes);
+
+    Ok(Response::new(buf))
+}
+
 // ── App Entry ─────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -946,6 +1127,7 @@ pub fn run() {
             scan_audio_folder,
             scan_folder,
             open_folder_dialog,
+            denoise_deepfilter,
         ])
         .register_asynchronous_uri_scheme_protocol("localfile", |_ctx, request, responder| {
             std::thread::spawn(move || {
@@ -1318,5 +1500,61 @@ mod tests {
         let data = vec![0u8; 32];
         let result = read_bext_field(&data, 0, 32);
         assert!(result.is_none());
+    }
+
+    // ── DeepFilter denoise tests ─────────────────────────────────
+
+    #[test]
+    fn test_denoise_params_deserialization() {
+        let json = r#"{"denoise":0.5,"dereverb":0.3,"dry":0.2,"sample_rate":48000,"num_samples":1000}"#;
+        let params: DenoiseParams = serde_json::from_str(json).unwrap();
+        assert!((params.denoise - 0.5).abs() < f32::EPSILON);
+        assert!((params.dereverb - 0.3).abs() < f32::EPSILON);
+        assert!((params.dry - 0.2).abs() < f32::EPSILON);
+        assert_eq!(params.sample_rate, 48000);
+        assert_eq!(params.num_samples, 1000);
+    }
+
+    #[test]
+    fn test_denoise_to_atten_lim_db() {
+        assert!((denoise_to_atten_lim_db(0.0) - 0.0).abs() < f32::EPSILON);
+        assert!((denoise_to_atten_lim_db(0.5) - 50.0).abs() < f32::EPSILON);
+        assert!((denoise_to_atten_lim_db(1.0) - 100.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_dereverb_to_pf_beta() {
+        assert!((dereverb_to_pf_beta(0.0) - 0.0).abs() < f32::EPSILON);
+        assert!((dereverb_to_pf_beta(0.5) - 0.025).abs() < f32::EPSILON);
+        assert!((dereverb_to_pf_beta(1.0) - 0.05).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_dry_wet_mix_all_dry() {
+        let original = vec![1.0, 0.5, -0.5];
+        let processed = vec![0.0, 0.0, 0.0];
+        let result = apply_dry_wet_mix(&original, &processed, 1.0);
+        for (r, &o) in result.iter().zip(original.iter()) {
+            assert!((r - o).abs() < f32::EPSILON);
+        }
+    }
+
+    #[test]
+    fn test_dry_wet_mix_all_wet() {
+        let original = vec![1.0, 0.5, -0.5];
+        let processed = vec![0.0, 0.0, 0.0];
+        let result = apply_dry_wet_mix(&original, &processed, 0.0);
+        for (r, &p) in result.iter().zip(processed.iter()) {
+            assert!((r - p).abs() < f32::EPSILON);
+        }
+    }
+
+    #[test]
+    fn test_dry_wet_mix_half() {
+        let original = vec![1.0, 0.0];
+        let processed = vec![0.0, 1.0];
+        let result = apply_dry_wet_mix(&original, &processed, 0.5);
+        assert!((result[0] - 0.5).abs() < f32::EPSILON);
+        assert!((result[1] - 0.5).abs() < f32::EPSILON);
     }
 }
