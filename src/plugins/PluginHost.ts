@@ -19,6 +19,7 @@ export class PluginHost {
   private instances: Map<string, PluginInstance> = new Map();
   private availablePlugins: PluginInfo[] = [];
   private nextInstanceId = 1;
+  private wienerModuleLoaded = false;
 
   // Built-in Web Audio plugins
   private static readonly BUILTIN_PLUGINS: PluginInfo[] = [
@@ -65,6 +66,15 @@ export class PluginHost {
       type: 'effect',
       format: 'WebAudio',
       category: 'Reverb',
+      vendor: 'FieldCorder',
+    },
+    {
+      id: 'builtin:wiener-filter',
+      name: 'Noise Reduction',
+      path: '',
+      type: 'effect',
+      format: 'WebAudio',
+      category: 'Restoration',
       vendor: 'FieldCorder',
     },
   ];
@@ -124,7 +134,7 @@ export class PluginHost {
     const instanceId = `inst_${this.nextInstanceId++}`;
 
     if (pluginInfo.format === 'WebAudio') {
-      return this.createBuiltinInstance(instanceId, pluginInfo);
+      return await this.createBuiltinInstance(instanceId, pluginInfo);
     }
 
     // For VST3/AU, try native loading via Electron
@@ -167,7 +177,7 @@ export class PluginHost {
     throw new Error(`Cannot load plugin: ${pluginInfo.name}`);
   }
 
-  private createBuiltinInstance(instanceId: string, pluginInfo: PluginInfo): PluginInstance {
+  private async createBuiltinInstance(instanceId: string, pluginInfo: PluginInfo): Promise<PluginInstance> {
     let audioNode: AudioNode;
     let parameters: PluginParameter[] = [];
 
@@ -356,6 +366,32 @@ export class PluginHost {
         break;
       }
 
+      case 'builtin:wiener-filter': {
+        // Load AudioWorklet module once
+        if (!this.wienerModuleLoaded) {
+          await this.audioContext.audioWorklet.addModule('/wiener-filter-processor.js');
+          this.wienerModuleLoaded = true;
+        }
+
+        const workletNode = new AudioWorkletNode(this.audioContext, 'wiener-filter-processor', {
+          numberOfInputs: 1,
+          numberOfOutputs: 1,
+          outputChannelCount: [2],
+        });
+
+        audioNode = workletNode;
+        // Store port reference for parameter updates and noise learning
+        (audioNode as any)._workletPort = workletNode.port;
+
+        parameters = [
+          { id: 0, name: 'Reduction', value: 0.5, min: 0, max: 1, defaultValue: 0.5 },
+          { id: 1, name: 'Smoothing', value: 0.98, min: 0.5, max: 0.999, defaultValue: 0.98 },
+          // id 2 is a trigger parameter for Learn Noise (value: 0=idle, 1=learning)
+          { id: 2, name: 'Learn Noise', value: 0, min: 0, max: 1, defaultValue: 0 },
+        ];
+        break;
+      }
+
       default:
         throw new Error(`Unknown builtin plugin: ${pluginInfo.id}`);
     }
@@ -526,6 +562,17 @@ export class PluginHost {
         }
         break;
       }
+      case 'builtin:wiener-filter': {
+        const port = node._workletPort as MessagePort | undefined;
+        if (!port) break;
+        if (paramId === 0) {
+          port.postMessage({ type: 'setReductionStrength', value });
+        } else if (paramId === 1) {
+          port.postMessage({ type: 'setSmoothingFactor', value });
+        }
+        // paramId 2 (Learn Noise) is handled via sendNoiseProfile() / clearNoiseProfile()
+        break;
+      }
     }
   }
 
@@ -586,6 +633,31 @@ export class PluginHost {
       prev = pluginOut;
     }
     prev.connect(insertOut);
+  }
+
+  /**
+   * Send a noise-only audio segment to a Wiener filter instance for learning.
+   * The worklet will compute the noise PSD from this segment.
+   */
+  sendNoiseProfile(instanceId: string, samples: Float32Array): void {
+    const instance = this.instances.get(instanceId);
+    if (!instance?.audioNode) return;
+    const port = (instance.audioNode as any)._workletPort as MessagePort | undefined;
+    if (!port) return;
+    // Transfer the buffer for zero-copy
+    const copy = new Float32Array(samples);
+    port.postMessage({ type: 'learnNoise', samples: copy.buffer }, [copy.buffer]);
+  }
+
+  /**
+   * Clear the noise profile from a Wiener filter instance.
+   */
+  clearNoiseProfile(instanceId: string): void {
+    const instance = this.instances.get(instanceId);
+    if (!instance?.audioNode) return;
+    const port = (instance.audioNode as any)._workletPort as MessagePort | undefined;
+    if (!port) return;
+    port.postMessage({ type: 'clearNoise' });
   }
 
   removeInstance(instanceId: string): void {

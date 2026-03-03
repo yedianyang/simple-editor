@@ -15,9 +15,9 @@ describe('PluginHost — Audio Effects', () => {
   // ==================== Plugin Registry ====================
 
   describe('Plugin Registry', () => {
-    it('lists 5 built-in plugins', () => {
+    it('lists 6 built-in plugins', () => {
       const plugins = pluginHost.getAvailablePlugins();
-      expect(plugins).toHaveLength(5);
+      expect(plugins).toHaveLength(6);
 
       const ids = plugins.map(p => p.id);
       expect(ids).toContain('builtin:eq7');
@@ -25,6 +25,7 @@ describe('PluginHost — Audio Effects', () => {
       expect(ids).toContain('builtin:gain');
       expect(ids).toContain('builtin:delay');
       expect(ids).toContain('builtin:reverb');
+      expect(ids).toContain('builtin:wiener-filter');
     });
 
     it('addScannedPlugins deduplicates by id', () => {
@@ -33,7 +34,7 @@ describe('PluginHost — Audio Effects', () => {
         type: 'effect', format: 'WebAudio',
       }];
       pluginHost.addScannedPlugins(extra);
-      expect(pluginHost.getAvailablePlugins()).toHaveLength(5);
+      expect(pluginHost.getAvailablePlugins()).toHaveLength(6);
     });
 
     it('addScannedPlugins deduplicates by path', () => {
@@ -43,7 +44,7 @@ describe('PluginHost — Audio Effects', () => {
       }];
       pluginHost.addScannedPlugins(extra);
       // All builtin plugins have path='', so this should be deduped
-      expect(pluginHost.getAvailablePlugins()).toHaveLength(5);
+      expect(pluginHost.getAvailablePlugins()).toHaveLength(6);
     });
 
     it('addScannedPlugins adds truly new plugins', () => {
@@ -52,7 +53,7 @@ describe('PluginHost — Audio Effects', () => {
         type: 'effect', format: 'VST3',
       }];
       pluginHost.addScannedPlugins(extra);
-      expect(pluginHost.getAvailablePlugins()).toHaveLength(6);
+      expect(pluginHost.getAvailablePlugins()).toHaveLength(7);
     });
   });
 
