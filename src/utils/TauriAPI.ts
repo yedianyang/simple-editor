@@ -89,6 +89,15 @@ export interface AppAPI {
   readFileMetadata(path: string): Promise<AudioFileMeta>;
   scanAudioFolder(path: string): Promise<AudioFileMeta[]>;
 
+  // DeepFilterNet noise reduction (binary IPC)
+  denoiseDeepFilter(samples: Float32Array, params: {
+    denoise: number;    // 0.0-1.0
+    dereverb: number;   // 0.0-1.0
+    dry: number;        // 0.0-1.0
+    sample_rate: number;
+    num_samples: number;
+  }): Promise<ArrayBuffer>;
+
   // Large file reading via custom protocol (raw bytes)
   readLargeFile(path: string): Promise<ArrayBuffer>;
 
@@ -290,6 +299,20 @@ export function createTauriAPI(): AppAPI {
 
     async scanAudioFolder(path: string): Promise<AudioFileMeta[]> {
       return invoke<AudioFileMeta[]>('scan_audio_folder', { path });
+    },
+
+    // ── DeepFilterNet noise reduction (binary IPC) ───────────────
+    async denoiseDeepFilter(samples: Float32Array, params: {
+      denoise: number;
+      dereverb: number;
+      dry: number;
+      sample_rate: number;
+      num_samples: number;
+    }): Promise<ArrayBuffer> {
+      const paramsJson = JSON.stringify(params);
+      return invoke<ArrayBuffer>('denoise_deepfilter', new Uint8Array(samples.buffer), {
+        headers: { 'x-denoise-params': paramsJson },
+      });
     },
 
     // ── Large file via custom protocol ────────────────────────────

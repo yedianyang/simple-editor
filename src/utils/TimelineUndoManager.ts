@@ -756,6 +756,37 @@ export class NormalizeClipCommand implements TimelineCommand {
 }
 
 /**
+ * Undo/redo for denoising a clip's audio (DeepFilterNet).
+ * Swaps between original and denoised buffer IDs.
+ */
+export class DenoiseClipCommand implements TimelineCommand {
+  description = 'Denoise clip (DeepFilterNet)';
+
+  constructor(
+    private model: TimelineModel,
+    private trackId: string,
+    private clipId: string,
+    private originalBufferId: string,
+    private denoisedBufferId: string,
+  ) {}
+
+  execute(): void {
+    const clip = this.findClip();
+    if (clip) clip.bufferId = this.denoisedBufferId;
+  }
+
+  undo(): void {
+    const clip = this.findClip();
+    if (clip) clip.bufferId = this.originalBufferId;
+  }
+
+  private findClip(): Clip | undefined {
+    const track = this.model.timeline.tracks.find(t => t.id === this.trackId);
+    return track?.clips.find(c => c.id === this.clipId);
+  }
+}
+
+/**
  * Undo/redo for importing a file at a specific track + time position.
  * Removes created clips and newly added tracks on undo.
  */

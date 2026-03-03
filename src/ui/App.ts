@@ -32,6 +32,7 @@ import {
   DeleteTimeRangeCommand,
   ReverseClipCommand,
   NormalizeClipCommand,
+  DenoiseClipCommand,
   DeleteTrackCommand,
   ImportFileAtPositionCommand,
 } from '../utils/TimelineUndoManager';
