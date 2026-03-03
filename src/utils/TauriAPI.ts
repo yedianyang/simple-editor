@@ -310,7 +310,7 @@ export function createTauriAPI(): AppAPI {
       num_samples: number;
     }): Promise<ArrayBuffer> {
       const paramsJson = JSON.stringify(params);
-      return invoke<ArrayBuffer>('denoise_deepfilter', new Uint8Array(samples.buffer), {
+      return invoke<ArrayBuffer>('denoise_deepfilter', new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength), {
         headers: { 'x-denoise-params': paramsJson },
       });
     },
