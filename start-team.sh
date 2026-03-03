@@ -12,7 +12,17 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-INITIAL_PROMPT="执行启动流程：1) 读取 CLAUDE.md 2) 运行测试套件（npm test -- --run && cd src-tauri && cargo test）汇报通过/失败数 3) 调用 TaskList 查看任务状态 4) 汇报就绪或继续未完成任务。"
+INITIAL_PROMPT="Session 启动流程（按 AGENTIC_RULES.md）：
+
+1. CLAUDE.md 已自动加载（确认规则）
+2. **First run the tests** (强制):
+   - npm test -- --run (TypeScript + Vitest)
+   - cd src-tauri && cargo test (Rust)
+   - 汇报通过/失败数量
+3. TaskList 查看任务状态
+4. 汇报就绪状态或继续未完成任务
+
+Note: 如果是 Lead agent，可跳过步骤 2（Lead 不直接写代码）。Teammates 必须执行完整流程。"
 
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${BLUE}  FieldCorder Claude Code Team${NC}"
@@ -53,6 +63,12 @@ echo "  团队：main / generator / frontend / quality / docs"
 echo "  任务管理：TaskCreate / TaskList / TaskUpdate（内建工具）"
 echo "  通讯：SendMessage（内建工具）"
 echo ""
+echo -e "${BLUE}── 开发规则 ──────────────────────────────────────${NC}"
+echo "  通用规则：AGENTIC_RULES.md (Agentic Engineering 最佳实践)"
+echo "  项目规范：CLAUDE.md (Team 协作规则)"
+echo "  TDD 规则：.clinerules (测试驱动开发细节)"
+echo "  Session 启动：First run the tests (强制执行)"
+echo ""
 echo -e "${BLUE}── Worktrees ──────────────────────────────────────${NC}"
 echo "  主目录（Lead）:   $PROJECT_DIR"
 echo "  Frontend:         /Volumes/Metro-External/fieldcorder-frontend"
@@ -65,7 +81,12 @@ echo "  后台分离:       Ctrl+B → D"
 echo "  查看历史:       Ctrl+B → [ (方向键滚动, Q 退出)"
 echo "  停止 session:   tmux kill-session -t $SESSION"
 echo ""
-echo -e "${YELLOW}Tip: 进入后 Lead 已自动开始启动流程${NC}"
+echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${YELLOW}Tip: 启动后 agent 将自动执行：${NC}"
+echo -e "${YELLOW}  1. 读取规则（CLAUDE.md + AGENTIC_RULES.md）${NC}"
+echo -e "${YELLOW}  2. First run the tests（验证环境）${NC}"
+echo -e "${YELLOW}  3. TaskList（检查任务状态）${NC}"
+echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 
 read -p "立即 attach 进入？[Y/n] " -n 1 -r
