@@ -1,5 +1,5 @@
 import { AudioEngine } from '../core/AudioEngine';
-import { formatTime, CHANNEL_NAMES, PluginInfo, TrackInsert, ExportMetadata, Clip } from '../core/types';
+import { formatTime, CHANNEL_NAMES, CHANNEL_COLORS, PluginInfo, TrackInsert, ExportMetadata, Clip, TrackChannelCount } from '../core/types';
 import { PluginParameterPanel } from './PluginParameterPanel';
 import { AudioEditor } from '../editor/AudioEditor';
 import { WaveformRenderer } from '../editor/WaveformRenderer';
@@ -33,6 +33,7 @@ import {
   ReverseClipCommand,
   NormalizeClipCommand,
   DeleteTrackCommand,
+  ImportFileAtPositionCommand,
 } from '../utils/TimelineUndoManager';
 import type { AudioFileInfo, AudioFileMeta, ParsedAudioData } from '../utils/TauriAPI';
 import { generateUCSFilename, parseUCSFilename } from '../core/ucs-data';
@@ -475,6 +476,11 @@ export class App {
       );
       this.timelineRenderer?.render();
     };
+
+    // ---- External file drop callback ----
+    this.timelineRenderer.onExternalFileDrop = (filePath, trackIndex, sampleOffset) => {
+      this.importFileAtPosition(filePath, trackIndex, sampleOffset);
+    };
   }
 
   setupEventListeners(): void {
@@ -715,8 +721,13 @@ export class App {
     // Listen on the entire document body for broader drag coverage
     let dragCounter = 0;
 
+    // Helper: check if drag originates from internal file browser (not external OS file drop)
+    const isInternalDrag = (e: DragEvent) =>
+      e.dataTransfer?.types.includes('application/x-fieldcorder-file') ?? false;
+
     document.body.addEventListener('dragenter', (e) => {
       e.preventDefault();
+      if (isInternalDrag(e)) return; // internal drag — let canvas handle it
       dragCounter++;
       dragOverlay.classList.add('visible');
     }, false);
@@ -727,6 +738,7 @@ export class App {
 
     document.body.addEventListener('dragleave', (e) => {
       e.preventDefault();
+      if (isInternalDrag(e)) return;
       dragCounter--;
       if (dragCounter <= 0) {
         dragCounter = 0;
@@ -735,6 +747,7 @@ export class App {
     }, false);
 
     document.body.addEventListener('drop', (e) => {
+      if (isInternalDrag(e)) return; // internal drag — handled by canvas drop handler
       e.preventDefault();
       dragCounter = 0;
       dragOverlay.classList.remove('visible');
@@ -818,7 +831,7 @@ export class App {
       'delete': () => this.deleteSelection(),
       'trim': () => this.trim(),
       'normalize': () => this.showNormalizeModal(),
-      'new-track': () => this.addEmptyTrack(),
+      'new-track': () => this.showCreateTrackDialog(),
       'fade-in': () => this.fadeIn(),
       'fade-out': () => this.fadeOut(),
       'gain': () => this.showGainModal(),
@@ -915,7 +928,7 @@ export class App {
           return;
         case 'n':
           e.preventDefault();
-          if (e.shiftKey) this.addEmptyTrack();
+          if (e.shiftKey) this.showCreateTrackDialog();
           else this.confirmNewProject();
           return;
         case 'b':
@@ -1843,6 +1856,15 @@ export class App {
     menu.style.left = `${clientX}px`;
     menu.style.top = `${clientY}px`;
 
+    const newTrackItem = document.createElement('div');
+    newTrackItem.className = 'context-menu-item';
+    newTrackItem.textContent = 'New Track...';
+    newTrackItem.addEventListener('click', () => {
+      this.dismissContextMenu();
+      this.showCreateTrackDialog();
+    });
+    menu.appendChild(newTrackItem);
+
     const deleteItem = document.createElement('div');
     deleteItem.className = 'context-menu-item';
     deleteItem.textContent = 'Delete Track';
@@ -2036,6 +2058,16 @@ export class App {
         item.appendChild(sizeSpan);
       }
 
+      // Drag → drop onto timeline at specific position
+      item.draggable = true;
+      item.addEventListener('dragstart', (e) => {
+        e.dataTransfer!.setData('application/x-fieldcorder-file', f.path);
+        e.dataTransfer!.effectAllowed = 'copy';
+        if (this.timelineRenderer) {
+          this.timelineRenderer.externalDragChannelCount = f.channels ?? 1;
+        }
+      });
+
       // Single click → select + show metadata
       item.addEventListener('click', () => this.selectBrowserFile(f));
       // Double click → import into timeline
@@ -2068,6 +2100,79 @@ export class App {
     const id = this.fileQueue.addFile({ name: file.name, path: file.path });
     this.renderFileList();
     await this.loadFileFromPath(file.path, id);
+  }
+
+  /**
+   * Import a file at a specific track + time position (drag-and-drop from file browser).
+   * Unlike loadFileFromPath(), this does NOT clear existing tracks.
+   */
+  private async importFileAtPosition(filePath: string, targetTrackIndex: number, sampleOffset: number): Promise<void> {
+    try {
+      const name = filePath.split('/').pop() || 'Untitled';
+      this.showLoadingIndicator(name);
+      await new Promise<void>(r => requestAnimationFrame(() => r()));
+
+      const result = await FileHandler.importFilePath(filePath);
+
+      let audioBuffer: AudioBuffer;
+      let parsedData: ParsedAudioData | null = null;
+      if (result instanceof ArrayBuffer) {
+        audioBuffer = await this.audioEngine.loadAudio(result);
+      } else {
+        parsedData = result;
+        audioBuffer = await this.audioEngine.loadFromParsedData(result);
+      }
+
+      // Ensure audioContext and timeline are initialized for empty timelines
+      if (this.timelineModel.timeline.tracks.length === 0) {
+        this.timelineModel.timeline.sampleRate = audioBuffer.sampleRate;
+        if (!this.audioEditor) {
+          this.audioEditor = new AudioEditor(this.audioEngine.audioContext!);
+        }
+        if (!this.pluginHost) {
+          this.pluginHost = new PluginHost(this.audioEngine.audioContext!);
+          this.mixer.pluginHost = this.pluginHost;
+          this.pluginParameterPanel.setPluginHost(this.pluginHost);
+        }
+      }
+
+      // Sample rate mismatch warning
+      if (this.timelineModel.timeline.tracks.length > 0 &&
+          audioBuffer.sampleRate !== this.timelineModel.timeline.sampleRate) {
+        alert(`Warning: Sample rate mismatch.\nTimeline: ${this.timelineModel.timeline.sampleRate} Hz\nFile: ${audioBuffer.sampleRate} Hz`);
+      }
+
+      // Import into buffer pool
+      const bufferIds = parsedData
+        ? this.bufferPool.importFromRawChannels(
+            parsedData.samples, parsedData.channels,
+            parsedData.num_samples, parsedData.sample_rate, name)
+        : this.bufferPool.importMultiChannel(audioBuffer, name);
+
+      // Use ImportFileAtPositionCommand for undo support
+      const cmd = new ImportFileAtPositionCommand(
+        this.timelineModel, bufferIds, name,
+        audioBuffer.sampleRate, audioBuffer.length,
+        targetTrackIndex, sampleOffset,
+      );
+      this.timelineUndoManager.push(cmd);
+
+      // Update routing and UI
+      this.audioEngine.setupTrackRouting(this.timelineModel.timeline.tracks);
+      this.mixer.setupTracks(this.timelineModel.timeline.tracks);
+      if (this.timelineRenderer) {
+        this.timelineRenderer.setTimeline(this.timelineModel.timeline, this.bufferPool);
+        this.timelineRenderer.render();
+      }
+
+      this.updateUI();
+      this.hideLoadingIndicator();
+    } catch (err: unknown) {
+      console.error('Import at position error:', err);
+      this.hideLoadingIndicator();
+      const msg = err instanceof Error ? err.message : String(err);
+      alert('Error importing file: ' + msg);
+    }
   }
 
   private updateSourceMetadataPanel(file: AudioFileMeta | null): void {
@@ -2467,12 +2572,109 @@ export class App {
     this.updatePositionInfo(0);
   }
 
-  addEmptyTrack(): void {
+  addEmptyTrack(channels: TrackChannelCount = 1): void {
     if (!this.timelineModel.timeline) return;
-    this.timelineModel.addEmptyTrack();
+    this.timelineModel.addEmptyTrack(channels);
     this.audioEngine.setupTrackRouting(this.timelineModel.timeline.tracks);
     this.mixer.setupTracks(this.timelineModel.timeline.tracks);
     this.timelineRenderer?.render();
+  }
+
+  private showCreateTrackDialog(): void {
+    // Remove any existing dialog
+    document.getElementById('createTrackDialog')?.remove();
+
+    const overlay = document.createElement('div');
+    overlay.id = 'createTrackDialog';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:1000';
+
+    const dialog = document.createElement('div');
+    dialog.style.cssText = 'background:#2d2d2d;border-radius:8px;padding:20px;min-width:280px;color:#fff;font-family:-apple-system,BlinkMacSystemFont,sans-serif;box-shadow:0 8px 32px rgba(0,0,0,0.5)';
+
+    const title = document.createElement('div');
+    title.textContent = 'New Track';
+    title.style.cssText = 'font-size:15px;font-weight:600;margin-bottom:16px';
+    dialog.appendChild(title);
+
+    // Name input
+    const nameLabel = document.createElement('label');
+    nameLabel.textContent = 'Name';
+    nameLabel.style.cssText = 'display:block;font-size:11px;color:#aaa;margin-bottom:4px';
+    dialog.appendChild(nameLabel);
+
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    const nextIdx = this.timelineModel.timeline.tracks.length + 1;
+    nameInput.value = `Track ${nextIdx}`;
+    nameInput.style.cssText = 'width:100%;box-sizing:border-box;height:24px;border-radius:4px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.08);color:#fff;padding:0 8px;font-size:13px;margin-bottom:12px;outline:none';
+    dialog.appendChild(nameInput);
+
+    // Type select
+    const typeLabel = document.createElement('label');
+    typeLabel.textContent = 'Type';
+    typeLabel.style.cssText = 'display:block;font-size:11px;color:#aaa;margin-bottom:4px';
+    dialog.appendChild(typeLabel);
+
+    const typeSelect = document.createElement('select');
+    typeSelect.style.cssText = 'width:100%;height:24px;border-radius:4px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.08);color:#fff;font-size:13px;margin-bottom:20px;outline:none';
+    const options: [string, TrackChannelCount][] = [
+      ['Mono', 1], ['Stereo', 2], ['Quad (4.0)', 4], ['5.1 Surround', 6],
+    ];
+    for (const [label, value] of options) {
+      const opt = document.createElement('option');
+      opt.value = String(value);
+      opt.textContent = label;
+      typeSelect.appendChild(opt);
+    }
+    dialog.appendChild(typeSelect);
+
+    // Buttons
+    const btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display:flex;gap:8px;justify-content:flex-end';
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.style.cssText = 'height:24px;padding:0 12px;border-radius:4px;border:1px solid rgba(255,255,255,0.15);background:transparent;color:#ccc;cursor:pointer;font-size:12px';
+
+    const createBtn = document.createElement('button');
+    createBtn.textContent = 'Create';
+    createBtn.style.cssText = 'height:24px;padding:0 12px;border-radius:4px;border:none;background:#2563eb;color:#fff;cursor:pointer;font-size:12px;font-weight:500';
+
+    btnRow.appendChild(cancelBtn);
+    btnRow.appendChild(createBtn);
+    dialog.appendChild(btnRow);
+    overlay.appendChild(dialog);
+    document.body.appendChild(overlay);
+
+    // Focus name input and select all text
+    nameInput.focus();
+    nameInput.select();
+
+    const close = () => overlay.remove();
+
+    const doCreate = () => {
+      const channels = Number(typeSelect.value) as TrackChannelCount;
+      const name = nameInput.value.trim() || `Track ${nextIdx}`;
+
+      // Use addTrack directly for custom name
+      const idx = this.timelineModel.timeline.tracks.length;
+      this.timelineModel.addTrack(name, CHANNEL_COLORS[idx % CHANNEL_COLORS.length], idx, channels);
+      this.audioEngine.setupTrackRouting(this.timelineModel.timeline.tracks);
+      this.mixer.setupTracks(this.timelineModel.timeline.tracks);
+      this.timelineRenderer?.render();
+      close();
+    };
+
+    cancelBtn.addEventListener('click', close);
+    createBtn.addEventListener('click', doCreate);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+    nameInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') doCreate();
+      if (e.key === 'Escape') close();
+    });
+    typeSelect.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') close();
+    });
   }
 
   showNormalizeModal(): void { this.showModal('normalizeModal'); }

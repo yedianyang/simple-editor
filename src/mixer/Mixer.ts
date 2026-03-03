@@ -609,6 +609,7 @@ export class Mixer {
         id: s.trackId,
         name: s.name,
         color: s.color,
+        channels: 1 as const,
         volume: s.volume,
         pan: s.pan,
         mute: s.mute,
@@ -616,6 +617,7 @@ export class Mixer {
         clips: [],
         channelIndex: 0,
         inserts: s.inserts,
+        height: 80,
       })),
       masterVolume: this.masterVolume,
     };

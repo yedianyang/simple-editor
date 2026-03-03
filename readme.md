@@ -1,11 +1,14 @@
 # FieldCorder DAW
 
-A lightweight Digital Audio Workstation designed for multi-channel environmental recording editing on macOS. Supports 2-6 channel audio with VST3/AudioUnit plugin hosting.
+A lightweight Digital Audio Workstation designed for multi-channel environmental recording editing on macOS. Supports Mono, Stereo, Quad, and 5.1 Surround audio with VST3/AudioUnit plugin hosting.
 
 ## Key Features
 
-- **Multi-channel editing**: Native support for Stereo (2ch), Quad (4ch), and 5.1 Surround (6ch)
-- **Per-channel waveform display**: Color-coded waveforms for each channel
+- **Multi-channel tracks**: Mono (1ch), Stereo (2ch), Quad (4ch), and 5.1 Surround (6ch) track types with channel badge indicators
+- **Per-channel waveform display**: Color-coded stacked sub-channel waveforms within each track lane
+- **Poly WAV import**: Multi-channel WAV files create a single multi-channel track with sub-channel clips
+- **Drag-and-drop to timeline**: Drop files from the file browser onto a specific track and time position
+- **Resizable track heights**: Drag the bottom edge of any track header to resize
 - **VST3/AudioUnit plugin support**: Load and use native macOS audio plugins
 - **Built-in effects**: 3-Band EQ, HPF/LPF, Compressor, Reverb, Delay, Gain
 - **Professional metering**: Real-time Peak, RMS, True Peak, LUFS (ITU-R BS.1770-4)
@@ -13,36 +16,33 @@ A lightweight Digital Audio Workstation designed for multi-channel environmental
 - **Multi-file workflow**: File queue with drag-and-drop support
 - **Spectrum analyzer**: Real-time FFT with configurable window size
 - **Non-destructive editing**: Full undo/redo history
-- **Mac-native**: Electron app with macOS menu bar, titlebar, and Core Audio integration
+- **Mac-native**: Tauri 2.x app with macOS menu bar, Rust WAV parser, and native performance
 
 ## Architecture
 
 ```
 FieldCorder/
-├── electron/             # Electron main process
-│   ├── main.ts          # App shell, native menus, IPC
-│   └── preload.ts       # Context bridge for renderer
-├── src/                  # Renderer (Web Audio + Canvas UI)
-│   ├── core/            # Audio engine, types
-│   ├── editor/          # Waveform, spectrogram, cue points
+├── src-tauri/            # Tauri 2.x Rust backend
+│   └── src/             # Commands, WAV parser, menu, localfile protocol
+├── src/                  # Frontend (Web Audio + Canvas UI)
+│   ├── core/            # Audio engine, types, timeline model
+│   ├── editor/          # Waveform, spectrogram, cue points, timeline
 │   ├── mixer/           # Channel strips, routing
 │   ├── plugins/         # VST3/AU host, built-in effects
 │   ├── ui/              # App controller, metering, file queue
-│   └── utils/           # File I/O, undo manager
-├── native/              # C++ native addon (optional)
-│   └── src/             # VST3/AU hosting, Core Audio devices
+│   ├── utils/           # TauriAPI adapter, undo manager
+│   └── styles/          # CSS
 └── resources/           # App icon, entitlements
 ```
 
 ### Technology Stack
 
-- **Electron** - Desktop app framework for macOS
-- **TypeScript** - Type-safe codebase
+- **Tauri 2.x** - Desktop app framework for macOS (Rust backend)
+- **TypeScript** - Type-safe frontend codebase
 - **Vite** - Fast build tooling
 - **Web Audio API** - Audio playback, routing, and built-in effects
 - **Canvas 2D** - Waveform and spectrum visualization
-- **N-API (C++)** - Native VST3/AudioUnit plugin hosting
-- **Core Audio** - macOS audio device enumeration
+- **Rust** - WAV parser, file I/O, native commands
 
 ## Getting Started
 
@@ -50,6 +50,7 @@ FieldCorder/
 
 - Node.js 18+
 - npm or yarn
+- Rust toolchain (for Tauri backend)
 - macOS (for full VST/AU and Core Audio support)
 
 ### Installation
@@ -61,25 +62,21 @@ npm install
 ### Development
 
 ```bash
-# Start Vite dev server + Electron
-npm run electron:dev
-
-# Or just the web UI (browser mode)
+# Start Vite dev server only (browser mode)
 npm run dev
+
+# Start Tauri + Vite full development mode
+npm run tauri:dev
 ```
 
 ### Building
 
 ```bash
-# Build the app
-npm run electron:build
+# Build frontend only
+npm run build:frontend
 
-# Build native addon (optional, for VST3/AU support)
-chmod +x scripts/build-native.sh
-./scripts/build-native.sh
-
-# With VST3 SDK
-VST3_SDK_PATH=/path/to/vst3sdk ./scripts/build-native.sh
+# Build Tauri production app (DMG)
+npm run tauri:build
 ```
 
 ## Multi-Channel Workflow
@@ -96,11 +93,12 @@ FieldCorder is designed for environmental/field recording editing:
 
 ### Channel Layouts
 
-| Layout | Channels | Use Case |
-|--------|----------|----------|
-| Stereo | L, R | Standard stereo recording |
-| Quad | FL, FR, RL, RR | Ambisonic/spatial recording |
-| 5.1 | L, R, C, LFE, Ls, Rs | Surround field recording |
+| Layout | Badge | Channels | Use Case |
+|--------|-------|----------|----------|
+| Mono | [M] | Mono | Single-channel recording |
+| Stereo | [ST] | L, R | Standard stereo recording |
+| Quad | [Q] | FL, FR, RL, RR | Ambisonic/spatial recording |
+| 5.1 | [5.1] | L, R, C, LFE, Ls, Rs | Surround field recording |
 
 ## Plugin System
 
@@ -139,7 +137,7 @@ Requires building the native addon. Scans standard macOS paths:
 | Cmd+T | Trim to selection |
 | Cmd+F | Fade in |
 | Cmd+Shift+F | Fade out |
-| Cmd+Shift+N | Normalize |
+| Cmd+Shift+N | New Track |
 | Cmd+G | Apply gain |
 | Cmd+Z | Undo |
 | Cmd+Shift+Z | Redo |

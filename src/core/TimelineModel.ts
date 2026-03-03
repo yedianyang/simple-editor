@@ -1,4 +1,4 @@
-import { Timeline, Track, Clip, CHANNEL_NAMES, CHANNEL_COLORS } from './types';
+import { Timeline, Track, Clip, CHANNEL_NAMES, CHANNEL_COLORS, TrackChannelCount } from './types';
 
 export interface OverlapResult {
   removed: Clip[];
@@ -51,11 +51,12 @@ export class TimelineModel {
     };
   }
 
-  addTrack(name: string, color: string, channelIndex: number): Track {
+  addTrack(name: string, color: string, channelIndex: number, channels: TrackChannelCount = 1): Track {
     const track: Track = {
       id: genTrackId(),
       name,
       color,
+      channels,
       clips: [],
       volume: 0,
       pan: 0,
@@ -63,6 +64,7 @@ export class TimelineModel {
       solo: false,
       channelIndex,
       inserts: [],
+      height: 80,
     };
     this.timeline.tracks.push(track);
     return track;
@@ -183,8 +185,9 @@ export class TimelineModel {
   }
 
   /**
-   * Create N tracks (one per channel) from a multi-channel file import.
-   * bufferIds: one ID per channel from BufferPool.importMultiChannel().
+   * Import a multi-channel file.
+   * For supported channel counts (1,2,4,6): creates 1 multi-channel track with N clips (each with subChannel).
+   * For unsupported channel counts: falls back to N mono tracks.
    */
   importMultiChannelFile(
     bufferIds: string[],
@@ -196,37 +199,155 @@ export class TimelineModel {
     const names = CHANNEL_NAMES[numChannels] ??
       Array.from({ length: numChannels }, (_, i) => `Ch ${i + 1}`);
 
-    for (let i = 0; i < numChannels; i++) {
+    // Supported multi-channel counts -> single multi-ch track
+    if (numChannels === 1 || numChannels === 2 || numChannels === 4 || numChannels === 6) {
+      const chCount = numChannels as TrackChannelCount;
       const track = this.addTrack(
-        names[i],
-        CHANNEL_COLORS[i % CHANNEL_COLORS.length],
-        i,
+        fileName,
+        CHANNEL_COLORS[0],
+        0,
+        chCount,
       );
 
-      const clip: Clip = {
-        id: genClipId(),
-        bufferId: bufferIds[i],
-        name: `${fileName} — ${names[i]}`,
-        timelineOffset: 0,
-        sourceStart: 0,
-        sourceEnd: numSamples,
-        duration: numSamples,
-        gainDb: 0,
-        fadeInSamples: 0,
-        fadeOutSamples: 0,
-        muted: false,
-      };
-      track.clips.push(clip);
+      for (let i = 0; i < numChannels; i++) {
+        const clip: Clip = {
+          id: genClipId(),
+          bufferId: bufferIds[i],
+          name: `${fileName} — ${names[i]}`,
+          timelineOffset: 0,
+          sourceStart: 0,
+          sourceEnd: numSamples,
+          duration: numSamples,
+          gainDb: 0,
+          fadeInSamples: 0,
+          fadeOutSamples: 0,
+          muted: false,
+          subChannel: i,
+        };
+        track.clips.push(clip);
+      }
+    } else {
+      // Unsupported channel count -- fall back to N mono tracks
+      for (let i = 0; i < numChannels; i++) {
+        const track = this.addTrack(
+          names[i],
+          CHANNEL_COLORS[i % CHANNEL_COLORS.length],
+          i,
+        );
+        const clip: Clip = {
+          id: genClipId(),
+          bufferId: bufferIds[i],
+          name: `${fileName} — ${names[i]}`,
+          timelineOffset: 0,
+          sourceStart: 0,
+          sourceEnd: numSamples,
+          duration: numSamples,
+          gainDb: 0,
+          fadeInSamples: 0,
+          fadeOutSamples: 0,
+          muted: false,
+        };
+        track.clips.push(clip);
+      }
     }
 
     this.timeline.sampleRate = sampleRate;
     this.recalcTotalLength();
   }
 
-  addEmptyTrack(): Track {
+  /**
+   * Import a multi-channel file at a specific track + time position.
+   * Unlike importMultiChannelFile(), this does NOT clear existing tracks.
+   * For supported multi-ch counts (2,4,6): creates 1 multi-ch track with N sub-channel clips.
+   * For mono or unsupported counts: one track per channel (existing behavior).
+   * Returns the IDs of created clips and newly created tracks (for undo).
+   */
+  importFileAtPosition(
+    bufferIds: string[],
+    fileName: string,
+    sampleRate: number,
+    numSamples: number,
+    targetTrackIndex: number,
+    sampleOffset: number,
+  ): { clipIds: string[]; newTrackIds: string[] } {
+    const numChannels = bufferIds.length;
+    const names = CHANNEL_NAMES[numChannels] ??
+      Array.from({ length: numChannels }, (_, i) => `Ch ${i + 1}`);
+    const clipIds: string[] = [];
+    const newTrackIds: string[] = [];
+
+    // Supported multi-ch -> create 1 multi-ch track or reuse existing
+    if ((numChannels === 2 || numChannels === 4 || numChannels === 6)) {
+      const chCount = numChannels as TrackChannelCount;
+      let track: Track;
+
+      if (targetTrackIndex < this.timeline.tracks.length) {
+        track = this.timeline.tracks[targetTrackIndex];
+      } else {
+        track = this.addTrack(fileName, CHANNEL_COLORS[targetTrackIndex % CHANNEL_COLORS.length], targetTrackIndex, chCount);
+        newTrackIds.push(track.id);
+      }
+
+      for (let i = 0; i < numChannels; i++) {
+        const clip: Clip = {
+          id: genClipId(),
+          bufferId: bufferIds[i],
+          name: `${fileName} — ${names[i]}`,
+          timelineOffset: sampleOffset,
+          sourceStart: 0,
+          sourceEnd: numSamples,
+          duration: numSamples,
+          gainDb: 0,
+          fadeInSamples: 0,
+          fadeOutSamples: 0,
+          muted: false,
+          subChannel: i,
+        };
+        track.clips.push(clip);
+        clipIds.push(clip.id);
+      }
+    } else {
+      // Mono or unsupported -- one track per channel (existing behavior)
+      for (let i = 0; i < numChannels; i++) {
+        const trackIndex = targetTrackIndex + i;
+        let track: Track;
+        if (trackIndex < this.timeline.tracks.length) {
+          track = this.timeline.tracks[trackIndex];
+        } else {
+          track = this.addTrack(
+            names[i],
+            CHANNEL_COLORS[trackIndex % CHANNEL_COLORS.length],
+            trackIndex,
+          );
+          newTrackIds.push(track.id);
+        }
+        const clip: Clip = {
+          id: genClipId(),
+          bufferId: bufferIds[i],
+          name: `${fileName} — ${names[i]}`,
+          timelineOffset: sampleOffset,
+          sourceStart: 0,
+          sourceEnd: numSamples,
+          duration: numSamples,
+          gainDb: 0,
+          fadeInSamples: 0,
+          fadeOutSamples: 0,
+          muted: false,
+        };
+        track.clips.push(clip);
+        clipIds.push(clip.id);
+      }
+    }
+
+    this.recalcTotalLength();
+    return { clipIds, newTrackIds };
+  }
+
+  addEmptyTrack(channels: TrackChannelCount = 1): Track {
     const idx = this.timeline.tracks.length;
     const color = CHANNEL_COLORS[idx % CHANNEL_COLORS.length];
-    return this.addTrack(`Track ${idx + 1}`, color, idx);
+    const typeName = channels === 1 ? '' : channels === 2 ? ' (St)' : channels === 4 ? ' (Quad)' : ' (5.1)';
+    return this.addTrack(`Track ${idx + 1}${typeName}`, color, idx, channels);
   }
 
   getTotalLength(): number {

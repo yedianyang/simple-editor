@@ -756,6 +756,46 @@ export class NormalizeClipCommand implements TimelineCommand {
 }
 
 /**
+ * Undo/redo for importing a file at a specific track + time position.
+ * Removes created clips and newly added tracks on undo.
+ */
+export class ImportFileAtPositionCommand implements TimelineCommand {
+  description = 'Import file at position';
+  private clipIds: string[] = [];
+  private newTrackIds: string[] = [];
+
+  constructor(
+    private model: TimelineModel,
+    private bufferIds: string[],
+    private fileName: string,
+    private sampleRate: number,
+    private numSamples: number,
+    private targetTrackIndex: number,
+    private sampleOffset: number,
+  ) {}
+
+  execute(): void {
+    const result = this.model.importFileAtPosition(
+      this.bufferIds, this.fileName, this.sampleRate, this.numSamples,
+      this.targetTrackIndex, this.sampleOffset,
+    );
+    this.clipIds = result.clipIds;
+    this.newTrackIds = result.newTrackIds;
+  }
+
+  undo(): void {
+    // Remove clips by ID from their tracks
+    for (const track of this.model.timeline.tracks) {
+      track.clips = track.clips.filter(c => !this.clipIds.includes(c.id));
+    }
+    // Remove newly created tracks (reverse order to preserve indices)
+    for (const trackId of [...this.newTrackIds].reverse()) {
+      this.model.removeTrack(trackId);
+    }
+  }
+}
+
+/**
  * Undo/redo for deleting an entire track.
  * Deep-copies the track data (including clips) so undo can restore it at the original index.
  */

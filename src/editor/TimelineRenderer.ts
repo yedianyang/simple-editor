@@ -43,7 +43,7 @@ const CUE_FLAG_HEIGHT = 14;
 const CUE_FLAG_WIDTH = 8;
 
 type DragMode = 'none' | 'selection' | 'clipMove' | 'trimStart' | 'trimEnd' | 'marquee'
-  | 'clipGain' | 'fadeIn' | 'fadeOut' | 'cuePoint';
+  | 'clipGain' | 'fadeIn' | 'fadeOut' | 'cuePoint' | 'trackResize';
 
 interface DragState {
   mode: DragMode;
@@ -69,6 +69,10 @@ interface DragState {
   dragCuePointId?: number;
   /** Original cue point sample position at drag start. */
   originalCuePointSample?: number;
+  /** Track index being resized (for trackResize mode). */
+  resizeTrackIndex?: number;
+  /** Original track height at drag start (for trackResize mode). */
+  resizeOriginalHeight?: number;
 }
 
 interface ClipPeakEntry {
@@ -102,6 +106,10 @@ export class TimelineRenderer {
   samplesPerPixel = 256;
   scrollOffsetX = 0;  // horizontal scroll in samples
   scrollOffsetY = 0;  // vertical scroll in pixels
+
+  // ---- Variable track height layout ----
+  private trackTops: number[] = [];
+  private totalTrackHeight = 0;
 
   private playheadSample = 0;
 
@@ -143,6 +151,11 @@ export class TimelineRenderer {
   private marqueeEndY = 0;
   private marqueeOriginalClipIds: string[] = [];
   private marqueeOriginalTrackIds: string[] = [];
+
+  /** External file drop target state (set during drag-over from file browser). */
+  private externalDropTarget: { trackIndex: number; sampleOffset: number } | null = null;
+  /** Number of channels in the file being dragged (set by App.ts on dragstart). */
+  externalDragChannelCount = 1;
 
   /** Per-track meter levels in dB, updated externally from the animation loop. */
   trackMeterLevels: Map<string, number> = new Map();
@@ -187,6 +200,9 @@ export class TimelineRenderer {
   onInsertClick: ((trackId: string, instanceId: string, screenX: number, screenY: number) => void) | null = null;
   onInsertBypass: ((trackId: string, instanceId: string) => void) | null = null;
   onInsertRemove: ((trackId: string, instanceId: string) => void) | null = null;
+
+  /** Called when a file is dropped from the file browser onto the timeline. */
+  onExternalFileDrop: ((filePath: string, trackIndex: number, sampleOffset: number) => void) | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -344,10 +360,25 @@ export class TimelineRenderer {
     const maxScrollX = Math.max(0, this.timeline.totalLength - this.contentWidth * this.samplesPerPixel);
     this.scrollOffsetX = Math.max(0, Math.min(maxScrollX, this.scrollOffsetX));
     // Vertical
-    const totalTrackHeight = this.timeline.tracks.length * TRACK_HEIGHT;
+    const totalTrackHeight = this.totalTrackHeight;
     const visibleHeight = this.height - RULER_HEIGHT;
     const maxScrollY = Math.max(0, totalTrackHeight - visibleHeight);
     this.scrollOffsetY = Math.max(0, Math.min(maxScrollY, this.scrollOffsetY));
+  }
+
+  // ==================================================================
+  // Variable track height layout
+  // ==================================================================
+
+  private recomputeTrackLayout(): void {
+    if (!this.timeline) { this.trackTops = []; this.totalTrackHeight = 0; return; }
+    this.trackTops = [];
+    let y = 0;
+    for (const track of this.timeline.tracks) {
+      this.trackTops.push(y);
+      y += track.height;
+    }
+    this.totalTrackHeight = y;
   }
 
   // ==================================================================
@@ -362,6 +393,9 @@ export class TimelineRenderer {
     this.canvas.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
     this.canvas.addEventListener('keydown', (e) => this.onKeyDown(e));
     this.canvas.addEventListener('contextmenu', (e) => this.onContextMenu(e));
+    this.canvas.addEventListener('dragover', (e) => this.onCanvasDragOver(e));
+    this.canvas.addEventListener('dragleave', () => this.onCanvasDragLeave());
+    this.canvas.addEventListener('drop', (e) => this.onCanvasDrop(e));
     // Make canvas focusable for keyboard events
     this.canvas.tabIndex = 0;
   }
@@ -384,6 +418,34 @@ export class TimelineRenderer {
     this.onTrackHeaderContextMenu?.(trackId, e.clientX, e.clientY);
   }
 
+  private onCanvasDragOver(e: DragEvent): void {
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+    const { x, y } = this.clientToLocal(e);
+    const trackIndex = Math.max(0, this.yToTrackIndex(y));
+    const sampleOffset = Math.max(0, this.pixelToSample(x));
+    this.externalDropTarget = { trackIndex, sampleOffset };
+    this.render();
+  }
+
+  private onCanvasDragLeave(): void {
+    this.externalDropTarget = null;
+    this.render();
+  }
+
+  private onCanvasDrop(e: DragEvent): void {
+    e.preventDefault();
+    const filePath = e.dataTransfer?.getData('application/x-fieldcorder-file');
+    if (filePath && this.onExternalFileDrop) {
+      const { x, y } = this.clientToLocal(e);
+      const trackIndex = Math.max(0, this.yToTrackIndex(y));
+      const sampleOffset = Math.max(0, this.pixelToSample(x));
+      this.onExternalFileDrop(filePath, trackIndex, sampleOffset);
+    }
+    this.externalDropTarget = null;
+    this.render();
+  }
+
   private clientToLocal(e: MouseEvent): { x: number; y: number } {
     const rect = this.canvas.getBoundingClientRect();
     return { x: e.clientX - rect.left, y: e.clientY - rect.top };
@@ -400,7 +462,22 @@ export class TimelineRenderer {
   private yToTrackIndex(y: number): number {
     if (y < RULER_HEIGHT) return -1;
     const localY = y - RULER_HEIGHT + this.scrollOffsetY;
-    return Math.floor(localY / TRACK_HEIGHT);
+    for (let i = 0; i < this.trackTops.length; i++) {
+      const top = this.trackTops[i];
+      const h = this.timeline!.tracks[i].height;
+      if (localY >= top && localY < top + h) return i;
+    }
+    return this.trackTops.length; // below all tracks
+  }
+
+  private yToSubChannel(y: number, trackIndex: number): number {
+    if (!this.timeline || trackIndex < 0 || trackIndex >= this.timeline.tracks.length) return 0;
+    const track = this.timeline.tracks[trackIndex];
+    if (track.channels <= 1) return 0;
+    const trackTopY = RULER_HEIGHT + this.trackTops[trackIndex] - this.scrollOffsetY;
+    const relativeY = y - trackTopY;
+    const laneHeight = track.height / track.channels;
+    return Math.min(track.channels - 1, Math.max(0, Math.floor(relativeY / laneHeight)));
   }
 
   /**
@@ -427,9 +504,10 @@ export class TimelineRenderer {
 
       if (x >= clipStartPx && x <= clipEndPx) {
         // Clip gain handle: bottom-left corner (highest priority in that region)
-        const trackTopY = RULER_HEIGHT + trackIndex * TRACK_HEIGHT - this.scrollOffsetY;
+        const trackH = track.height;
+        const trackTopY = RULER_HEIGHT + this.trackTops[trackIndex] - this.scrollOffsetY;
         const clipY = trackTopY + 4;
-        const clipH = TRACK_HEIGHT - 8;
+        const clipH = trackH - 8;
         const handleX = clipStartPx + 4;
         const handleY = clipY + clipH - GAIN_HANDLE_SIZE - 4;
         if (x >= handleX && x <= handleX + GAIN_HANDLE_SIZE + 4 &&
@@ -473,7 +551,7 @@ export class TimelineRenderer {
         }
 
         // Split body by Y: upper half = select, lower half = move
-        const midY = trackTopY + TRACK_HEIGHT / 2;
+        const midY = trackTopY + trackH / 2;
         const zone = y < midY ? 'select' : 'move';
         return { clip, track, zone };
       }
@@ -491,8 +569,8 @@ export class TimelineRenderer {
     if (trackIndex < 0 || trackIndex >= this.timeline.tracks.length) return null;
     const track = this.timeline.tracks[trackIndex];
 
-    const trackTopY = RULER_HEIGHT + trackIndex * TRACK_HEIGHT - this.scrollOffsetY;
-    const btnY = trackTopY + 60;
+    const trackTopY = RULER_HEIGHT + this.trackTops[trackIndex] - this.scrollOffsetY;
+    const btnY = trackTopY + Math.min(60, track.height - MUTE_SOLO_BTN_SIZE - 4);
     const muteX = 6;
     const soloX = muteX + MUTE_SOLO_BTN_SIZE + MUTE_SOLO_BTN_GAP;
 
@@ -519,7 +597,7 @@ export class TimelineRenderer {
     if (trackIndex < 0 || trackIndex >= this.timeline.tracks.length) return null;
     const track = this.timeline.tracks[trackIndex];
 
-    const trackTopY = RULER_HEIGHT + trackIndex * TRACK_HEIGHT - this.scrollOffsetY;
+    const trackTopY = RULER_HEIGHT + this.trackTops[trackIndex] - this.scrollOffsetY;
     const rackStartY = trackTopY + 6;
 
     const visibleCount = Math.min(track.inserts.length, MAX_INSERT_PILLS);
@@ -581,6 +659,25 @@ export class TimelineRenderer {
       }
       this.render();
       return;
+    }
+
+    // 2b. Check for track resize handle (bottom edge of track header, within 3px)
+    if (x < TRACK_HEADER_WIDTH && y >= RULER_HEIGHT) {
+      const trackIdx = this.yToTrackIndex(y);
+      const tracks = this.timeline.tracks;
+      if (trackIdx >= 0 && trackIdx < tracks.length) {
+        const trackBottom = RULER_HEIGHT + this.trackTops[trackIdx] + tracks[trackIdx].height - this.scrollOffsetY;
+        if (Math.abs(y - trackBottom) <= 3) {
+          this.drag = {
+            mode: 'trackResize', clipId: '', trackId: tracks[trackIdx].id,
+            grabOffsetSamples: 0, originalValue: 0,
+            startMouseX: x, startMouseY: y, hasDragged: false, shiftHeld: false,
+            resizeTrackIndex: trackIdx, resizeOriginalHeight: tracks[trackIdx].height,
+          };
+          this.canvas.style.cursor = 'ns-resize';
+          return;
+        }
+      }
     }
 
     // 3. Track header click (missed buttons/inserts → select track)
@@ -812,7 +909,16 @@ export class TimelineRenderer {
     // Update cursor when not dragging (Smart Tool cursor)
     if (this.drag.mode === 'none') {
       if (x < TRACK_HEADER_WIDTH && y >= RULER_HEIGHT) {
-        this.canvas.style.cursor = 'pointer';
+        // Check for track resize handle (bottom edge within 3px)
+        let isResizeHandle = false;
+        const hoverTrackIdx = this.yToTrackIndex(y);
+        if (hoverTrackIdx >= 0 && hoverTrackIdx < this.timeline.tracks.length) {
+          const trackBottom = RULER_HEIGHT + this.trackTops[hoverTrackIdx] + this.timeline.tracks[hoverTrackIdx].height - this.scrollOffsetY;
+          if (Math.abs(y - trackBottom) <= 3) {
+            isResizeHandle = true;
+          }
+        }
+        this.canvas.style.cursor = isResizeHandle ? 'ns-resize' : 'pointer';
       } else if (x < TRACK_HEADER_WIDTH) {
         this.canvas.style.cursor = 'default';
       } else {
@@ -963,6 +1069,21 @@ export class TimelineRenderer {
       return;
     }
 
+    if (this.drag.mode === 'trackResize') {
+      this.canvas.style.cursor = 'ns-resize';
+      const trackIdx = this.drag.resizeTrackIndex ?? 0;
+      const track = this.timeline.tracks[trackIdx];
+      if (track) {
+        const deltaY = y - this.drag.startMouseY;
+        const minHeight = track.channels * 24;
+        const newHeight = Math.max(minHeight, (this.drag.resizeOriginalHeight ?? TRACK_HEIGHT) + deltaY);
+        track.height = Math.round(newHeight);
+        this.recomputeTrackLayout();
+        this.render();
+      }
+      return;
+    }
+
     if (this.drag.mode === 'marquee') {
       this.marqueeEndX = x;
       this.marqueeEndY = y;
@@ -982,6 +1103,14 @@ export class TimelineRenderer {
   }
 
   private onMouseUp(): void {
+    if (this.drag.mode === 'trackResize') {
+      this.recomputeTrackLayout();
+      this.drag.mode = 'none';
+      this.canvas.style.cursor = 'default';
+      this.render();
+      return;
+    }
+
     if (this.drag.mode === 'selection') {
       if (this.drag.hasDragged) {
         // Normalize selection range
@@ -1062,9 +1191,20 @@ export class TimelineRenderer {
     const sampleStart = (minX - TRACK_HEADER_WIDTH) * this.samplesPerPixel + this.scrollOffsetX;
     const sampleEnd = (maxX - TRACK_HEADER_WIDTH) * this.samplesPerPixel + this.scrollOffsetX;
 
-    // Convert y range to track indices
-    const startTrackIdx = Math.max(0, Math.floor((minY - RULER_HEIGHT + this.scrollOffsetY) / TRACK_HEIGHT));
-    const endTrackIdx = Math.min(tracks.length - 1, Math.floor((maxY - RULER_HEIGHT + this.scrollOffsetY) / TRACK_HEIGHT));
+    // Convert y range to track indices using variable track heights
+    const localMinY = minY - RULER_HEIGHT + this.scrollOffsetY;
+    const localMaxY = maxY - RULER_HEIGHT + this.scrollOffsetY;
+    let startTrackIdx = tracks.length;
+    let endTrackIdx = -1;
+    for (let i = 0; i < tracks.length; i++) {
+      const top = this.trackTops[i];
+      const bottom = top + tracks[i].height;
+      if (bottom > localMinY && top < localMaxY) {
+        if (i < startTrackIdx) startTrackIdx = i;
+        if (i > endTrackIdx) endTrackIdx = i;
+      }
+    }
+    if (startTrackIdx > endTrackIdx) { startTrackIdx = 0; endTrackIdx = -1; }
 
     // Build new selectedTrackIds from range
     const newTrackIds: string[] = [];
@@ -1289,6 +1429,8 @@ export class TimelineRenderer {
       return;
     }
 
+    this.recomputeTrackLayout();
+
     this.renderRuler();
     this.renderCueMarkers();
 
@@ -1314,8 +1456,8 @@ export class TimelineRenderer {
         for (let i = 0; i < tracks.length; i++) {
           // If no tracks selected, highlight all (fallback matches Delete behavior)
           if (selected.length > 0 && !selected.includes(tracks[i].id)) continue;
-          const topY = RULER_HEIGHT + i * TRACK_HEIGHT - this.scrollOffsetY;
-          const bottomY = topY + TRACK_HEIGHT;
+          const topY = RULER_HEIGHT + this.trackTops[i] - this.scrollOffsetY;
+          const bottomY = topY + tracks[i].height;
           // Skip off-screen tracks, clamp to ruler boundary
           if (bottomY <= RULER_HEIGHT || topY >= h) continue;
           const clampedTop = Math.max(RULER_HEIGHT, topY);
@@ -1350,6 +1492,40 @@ export class TimelineRenderer {
       ctx.lineWidth = 1;
       ctx.strokeRect(minX, minY, maxX - minX, maxY - minY);
       ctx.setLineDash([]);
+    }
+
+    // External drop target preview
+    if (this.externalDropTarget) {
+      const { trackIndex, sampleOffset } = this.externalDropTarget;
+      const channelCount = this.externalDragChannelCount;
+      const dropX = this.sampleToPixel(sampleOffset);
+
+      ctx.save();
+      // Blue semi-transparent highlight over target tracks
+      ctx.fillStyle = 'rgba(37, 99, 235, 0.15)';
+      for (let i = 0; i < channelCount; i++) {
+        const ti = trackIndex + i;
+        if (ti >= this.trackTops.length) continue;
+        const topY = RULER_HEIGHT + this.trackTops[ti] - this.scrollOffsetY;
+        const trackH = this.timeline!.tracks[ti].height;
+        const clampedTop = Math.max(RULER_HEIGHT, topY);
+        const clampedBottom = Math.min(h, topY + trackH);
+        if (clampedBottom <= RULER_HEIGHT || clampedTop >= h) continue;
+        ctx.fillRect(TRACK_HEADER_WIDTH, clampedTop, w - TRACK_HEADER_WIDTH, clampedBottom - clampedTop);
+      }
+
+      // Dashed vertical line at drop position
+      if (dropX >= TRACK_HEADER_WIDTH && dropX <= w) {
+        ctx.strokeStyle = 'rgba(37, 99, 235, 0.8)';
+        ctx.setLineDash([4, 4]);
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(dropX, RULER_HEIGHT);
+        ctx.lineTo(dropX, h);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      ctx.restore();
     }
   }
 
@@ -1463,15 +1639,16 @@ export class TimelineRenderer {
 
     for (let i = 0; i < tracks.length; i++) {
       const track = tracks[i];
-      const topY = RULER_HEIGHT + i * TRACK_HEIGHT - this.scrollOffsetY;
-      const bottomY = topY + TRACK_HEIGHT;
+      const trackH = track.height;
+      const topY = RULER_HEIGHT + this.trackTops[i] - this.scrollOffsetY;
+      const bottomY = topY + trackH;
 
       // Skip off-screen tracks
       if (bottomY < RULER_HEIGHT || topY > this.height) continue;
 
       // Background
       ctx.fillStyle = COLOR_HEADER_BG;
-      ctx.fillRect(0, topY, TRACK_HEADER_WIDTH, TRACK_HEIGHT);
+      ctx.fillRect(0, topY, TRACK_HEADER_WIDTH, trackH);
 
       // Right border
       ctx.strokeStyle = COLOR_TRACK_BORDER;
@@ -1494,10 +1671,10 @@ export class TimelineRenderer {
       // Selected track header highlight (drawn after color bar so blue tint is visible)
       if (this.timeline!.selectedTrackIds.includes(track.id)) {
         ctx.fillStyle = 'rgba(37, 99, 235, 0.15)';
-        ctx.fillRect(0, topY, TRACK_HEADER_WIDTH, TRACK_HEIGHT);
+        ctx.fillRect(0, topY, TRACK_HEADER_WIDTH, trackH);
         // Blue accent bar at left edge
         ctx.fillStyle = COLOR_SELECTED_BORDER;
-        ctx.fillRect(0, topY, 3, TRACK_HEIGHT);
+        ctx.fillRect(0, topY, 3, trackH);
       }
 
       // Track name (left column, clipped to 0-48px)
@@ -1511,14 +1688,22 @@ export class TimelineRenderer {
       ctx.fillText(track.name, 6, topY + 17);
       ctx.restore();
 
+      // Channel badge (M, ST, Q, 5.1)
+      const badges: Record<number, string> = { 1: 'M', 2: 'ST', 4: 'Q', 6: '5.1' };
+      const badge = badges[track.channels] || `${track.channels}ch`;
+      ctx.fillStyle = '#666';
+      ctx.font = '8px -apple-system, BlinkMacSystemFont, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillText(badge, 6, topY + 28);
+
       // Insert rack (right column, 5 pill slots)
       this.renderInsertRack(track, topY);
 
       // Vertical meter strip (right of insert rack)
       this.renderTrackMeter(track, topY);
 
-      // Mute / Solo buttons (left column bottom)
-      const btnY = topY + 60;
+      // Mute / Solo buttons (left column bottom, clamped to track height)
+      const btnY = topY + Math.min(60, trackH - MUTE_SOLO_BTN_SIZE - 4);
       const muteX = 6;
       const soloX = muteX + MUTE_SOLO_BTN_SIZE + MUTE_SOLO_BTN_GAP;
 
@@ -1600,7 +1785,7 @@ export class TimelineRenderer {
     const ctx = this.ctx;
     const db = this.trackMeterLevels.get(track.id) ?? -60;
     const meterTop = topY + 6;
-    const meterHeight = 68;  // full meter height (almost full track)
+    const meterHeight = Math.max(10, track.height - 12);  // adapt to track height
 
     // Meter background (dark well)
     ctx.fillStyle = '#111';
@@ -1648,8 +1833,9 @@ export class TimelineRenderer {
 
     for (let i = 0; i < tracks.length; i++) {
       const track = tracks[i];
-      const topY = RULER_HEIGHT + i * TRACK_HEIGHT - this.scrollOffsetY;
-      const bottomY = topY + TRACK_HEIGHT;
+      const trackH = track.height;
+      const topY = RULER_HEIGHT + this.trackTops[i] - this.scrollOffsetY;
+      const bottomY = topY + trackH;
 
       if (bottomY < RULER_HEIGHT || topY > this.height) continue;
 
@@ -1659,12 +1845,26 @@ export class TimelineRenderer {
       } else {
         ctx.fillStyle = i % 2 === 0 ? COLOR_TRACK_EVEN : COLOR_TRACK_ODD;
       }
-      ctx.fillRect(TRACK_HEADER_WIDTH, topY, w - TRACK_HEADER_WIDTH, TRACK_HEIGHT);
+      ctx.fillRect(TRACK_HEADER_WIDTH, topY, w - TRACK_HEADER_WIDTH, trackH);
 
       // Selected track lane tint
       if (this.timeline!.selectedTrackIds.includes(track.id)) {
         ctx.fillStyle = 'rgba(37, 99, 235, 0.06)';
-        ctx.fillRect(TRACK_HEADER_WIDTH, topY, w - TRACK_HEADER_WIDTH, TRACK_HEIGHT);
+        ctx.fillRect(TRACK_HEADER_WIDTH, topY, w - TRACK_HEADER_WIDTH, trackH);
+      }
+
+      // Sub-channel divider lines for multi-channel tracks
+      if (track.channels > 1) {
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+        ctx.lineWidth = 1;
+        const laneH = trackH / track.channels;
+        for (let ch = 1; ch < track.channels; ch++) {
+          const divY = topY + ch * laneH;
+          ctx.beginPath();
+          ctx.moveTo(TRACK_HEADER_WIDTH, divY);
+          ctx.lineTo(w, divY);
+          ctx.stroke();
+        }
       }
 
       // Lane bottom border
@@ -1698,8 +1898,18 @@ export class TimelineRenderer {
     const visWidth = visRight - visLeft;
     if (visWidth <= 0) return;
 
-    const clipY = trackTopY + 4;
-    const clipH = TRACK_HEIGHT - 8;
+    // If multi-channel track and clip has a subChannel, render in sub-lane
+    const trackH = track.height;
+    let clipY: number;
+    let clipH: number;
+    if (track.channels > 1 && clip.subChannel != null) {
+      const laneH = trackH / track.channels;
+      clipY = trackTopY + clip.subChannel * laneH + 2;
+      clipH = laneH - 4;
+    } else {
+      clipY = trackTopY + 4;
+      clipH = trackH - 8;
+    }
     const isSelected = this.timeline!.selectedClipIds.includes(clip.id);
     const isMuted = clip.muted || track.mute;
 
@@ -1893,15 +2103,20 @@ export class TimelineRenderer {
     // Get cached peaks for the full clip
     const peaks = this.getClipPeaks(clip, fullWidthPx);
 
-    // Waveform draw area (leave room for clip name at top)
-    const waveTop = clipY + 16;
-    const waveHeight = clipH - 18;
+    // Waveform draw area (leave room for clip name at top, reduce padding for small lanes)
+    const nameSpace = clipH > 30 ? 16 : 2;
+    const waveTop = clipY + nameSpace;
+    const waveHeight = clipH - nameSpace - 2;
     if (waveHeight <= 2) return;
 
     const centerY = waveTop + waveHeight / 2;
     const amplitude = waveHeight / 2;
 
-    ctx.fillStyle = isMuted ? '#444' : track.color;
+    // Use sub-channel color if clip has a subChannel defined
+    const waveColor = (clip.subChannel != null && clip.subChannel < CHANNEL_COLORS.length)
+      ? CHANNEL_COLORS[clip.subChannel]
+      : track.color;
+    ctx.fillStyle = isMuted ? '#444' : waveColor;
     ctx.globalAlpha = isMuted ? 0.3 : 0.7;
 
     // Draw only the visible portion

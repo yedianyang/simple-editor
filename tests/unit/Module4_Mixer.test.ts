@@ -9,6 +9,7 @@ function makeTrack(id: string, overrides: Partial<Track> = {}): Track {
     id,
     name: `Track ${id}`,
     color: '#3b82f6',
+    channels: 1,
     clips: [],
     volume: 0,
     pan: 0,
@@ -16,6 +17,7 @@ function makeTrack(id: string, overrides: Partial<Track> = {}): Track {
     solo: false,
     channelIndex: 0,
     inserts: [],
+    height: 80,
     ...overrides,
   };
 }

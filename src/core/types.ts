@@ -31,6 +31,8 @@ export const CHANNEL_COLORS: string[] = [
   '#ec4899', // Pink - Right Surround
 ];
 
+export type TrackChannelCount = 1 | 2 | 4 | 6;
+
 export interface PluginInfo {
   id: string;
   name: string;
@@ -277,6 +279,7 @@ export interface Clip {
   fadeOutSamples: number;
   muted: boolean;
   reversed?: boolean;
+  subChannel?: number;
 }
 
 export interface TrackInsert {
@@ -290,6 +293,7 @@ export interface Track {
   id: string;
   name: string;
   color: string;
+  channels: TrackChannelCount;
   clips: Clip[];
   volume: number;
   pan: number;
@@ -297,6 +301,7 @@ export interface Track {
   solo: boolean;
   channelIndex: number;
   inserts: TrackInsert[];
+  height: number;
 }
 
 export interface Timeline {
