@@ -1979,9 +1979,10 @@
                 <select id="exportFormat">
                     <option value="wav">WAV</option>
                     <option value="aif">AIF</option>
+                    <option value="mp3">MP3</option>
                 </select>
             </div>
-            <div class="modal-row">
+            <div class="modal-row" id="exportBitDepthRow">
                 <label>Bit Depth</label>
                 <select id="exportBitDepth">
                     <option value="16">16-bit</option>
@@ -1989,12 +1990,21 @@
                     <option value="32">32-bit float</option>
                 </select>
             </div>
-            <div class="modal-row">
+            <div class="modal-row" id="exportDitherRow">
                 <label>Dither</label>
                 <select id="exportDither">
                     <option value="none" selected>None</option>
                     <option value="tpdf">TPDF</option>
                     <option value="shaped">Noise shaped</option>
+                </select>
+            </div>
+            <div class="modal-row" id="exportBitrateRow" style="display: none;">
+                <label>Bitrate</label>
+                <select id="exportBitrate">
+                    <option value="128">128 kbps</option>
+                    <option value="192">192 kbps</option>
+                    <option value="256" selected>256 kbps</option>
+                    <option value="320">320 kbps</option>
                 </select>
             </div>
             <div class="modal-row">

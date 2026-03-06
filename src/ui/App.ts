@@ -18,6 +18,7 @@ import { ProjectManager } from './ProjectManager';
 import { FileHandler } from '../utils/FileHandler';
 import { BufferPool } from '../core/BufferPool';
 import { encodeWavAsync } from '../core/WavEncoder';
+import { encodeMp3Async, Mp3Metadata } from '../core/Mp3Encoder';
 import { TimelineModel } from '../core/TimelineModel';
 import {
   TimelineUndoManager,
@@ -587,6 +588,7 @@ export class App {
     // Modal buttons
     document.getElementById('exportCancelBtn')!.addEventListener('click', () => this.hideModal('exportModal'));
     document.getElementById('exportConfirmBtn')!.addEventListener('click', () => this.exportFile());
+    document.getElementById('exportFormat')!.addEventListener('change', () => this.onExportFormatChange());
     document.getElementById('normalizeCancelBtn')!.addEventListener('click', () => this.hideModal('normalizeModal'));
     document.getElementById('normalizeConfirmBtn')!.addEventListener('click', () => this.normalize());
     document.getElementById('gainCancelBtn')!.addEventListener('click', () => this.hideModal('gainModal'));
@@ -2900,9 +2902,21 @@ export class App {
     document.getElementById(id)?.classList.remove('visible');
   }
 
+  onExportFormatChange(): void {
+    const format = (document.getElementById('exportFormat') as HTMLSelectElement).value;
+    const isMp3 = format === 'mp3';
+    const bitDepthRow = document.getElementById('exportBitDepthRow');
+    const ditherRow = document.getElementById('exportDitherRow');
+    const bitrateRow = document.getElementById('exportBitrateRow');
+    if (bitDepthRow) bitDepthRow.style.display = isMp3 ? 'none' : '';
+    if (ditherRow) ditherRow.style.display = isMp3 ? 'none' : '';
+    if (bitrateRow) bitrateRow.style.display = isMp3 ? '' : 'none';
+  }
+
   async exportFile(): Promise<void> {
     const format = (document.getElementById('exportFormat') as HTMLSelectElement).value;
     const bitDepth = parseInt((document.getElementById('exportBitDepth') as HTMLSelectElement).value);
+    const bitrate = parseInt((document.getElementById('exportBitrate') as HTMLSelectElement).value) as 128 | 192 | 256 | 320;
     const dither = (document.getElementById('exportDither') as HTMLSelectElement).value;
     const exportSelection = (document.getElementById('exportSelection') as HTMLInputElement).checked;
 
@@ -2964,6 +2978,24 @@ export class App {
         );
         blob = new Blob([wavBytes.buffer as ArrayBuffer], { type: 'audio/wav' });
         extension = '.wav';
+      } else if (format === 'mp3') {
+        // MP3 export
+        const chans: Float32Array[] = [];
+        for (let c = 0; c < bufferToExport.numberOfChannels; c++) {
+          chans.push(bufferToExport.getChannelData(c));
+        }
+        const mp3Meta: Mp3Metadata | undefined = exportMeta ? {
+          title: exportMeta.bpiDescription || undefined,
+          artist: exportMeta.originator || undefined,
+          comment: exportMeta.note || undefined,
+          date: undefined,
+        } : undefined;
+        const mp3Bytes = await encodeMp3Async(
+          { sampleRate: bufferToExport.sampleRate, channels: chans, bitrate, metadata: mp3Meta },
+          (progress) => { if (confirmBtn) confirmBtn.textContent = `Exporting ${Math.round(progress * 100)}%...`; },
+        );
+        blob = new Blob([mp3Bytes.buffer as ArrayBuffer], { type: 'audio/mpeg' });
+        extension = '.mp3';
       } else {
         // AIF export — yield first so button text updates
         if (confirmBtn) confirmBtn.textContent = 'Exporting...';
@@ -2988,7 +3020,7 @@ export class App {
         const savePath = await window.appAPI.showSaveDialog({
           title: 'Export Audio',
           defaultPath: defaultName,
-          filters: [{ name: format === 'wav' ? 'WAV Audio' : 'AIFF Audio', extensions: [format === 'wav' ? 'wav' : 'aif'] }],
+          filters: [{ name: format === 'wav' ? 'WAV Audio' : format === 'mp3' ? 'MP3 Audio' : 'AIFF Audio', extensions: [format === 'wav' ? 'wav' : format === 'mp3' ? 'mp3' : 'aif'] }],
         });
         if (savePath) {
           if (confirmBtn) confirmBtn.textContent = 'Writing...';
