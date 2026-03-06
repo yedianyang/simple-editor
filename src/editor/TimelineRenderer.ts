@@ -156,6 +156,10 @@ export class TimelineRenderer {
   private externalDropTarget: { trackIndex: number; sampleOffset: number } | null = null;
   /** Number of channels in the file being dragged (set by App.ts on dragstart). */
   externalDragChannelCount = 1;
+  /** Duration in seconds of the file being dragged (set by App.ts on dragstart). */
+  externalDragDuration = 0;
+  /** File name of the file being dragged (set by App.ts on dragstart). */
+  externalDragFileName = '';
 
   /** Per-track meter levels in dB, updated externally from the animation loop. */
   trackMeterLevels: Map<string, number> = new Map();
@@ -430,6 +434,8 @@ export class TimelineRenderer {
 
   private onCanvasDragLeave(): void {
     this.externalDropTarget = null;
+    this.externalDragDuration = 0;
+    this.externalDragFileName = '';
     this.render();
   }
 
@@ -445,6 +451,8 @@ export class TimelineRenderer {
       this.onExternalFileDrop(filePath, trackIndex, sampleOffset);
     }
     this.externalDropTarget = null;
+    this.externalDragDuration = 0;
+    this.externalDragFileName = '';
     this.render();
   }
 
@@ -1496,27 +1504,114 @@ export class TimelineRenderer {
       ctx.setLineDash([]);
     }
 
-    // External drop target preview
+    // External drop target preview — ghost tracks + ghost clip
     if (this.externalDropTarget) {
       const { trackIndex, sampleOffset } = this.externalDropTarget;
       const channelCount = this.externalDragChannelCount;
-      const dropX = this.sampleToPixel(sampleOffset);
+      const totalTracks = this.timeline!.tracks.length;
+      const defaultTrackH = 80;
+      const sampleRate = this.timeline!.sampleRate;
+
+      // Determine how many new tracks are needed (multi-channel = 1 track, mono split = N)
+      const isMultiChannel = channelCount === 2 || channelCount === 4 || channelCount === 6;
+      const newTrackCount = isMultiChannel ? 1 : channelCount;
 
       ctx.save();
-      // Blue semi-transparent highlight over target tracks
-      ctx.fillStyle = 'rgba(37, 99, 235, 0.15)';
-      for (let i = 0; i < channelCount; i++) {
-        const ti = trackIndex + i;
-        if (ti >= this.trackTops.length) continue;
-        const topY = RULER_HEIGHT + this.trackTops[ti] - this.scrollOffsetY;
-        const trackH = this.timeline!.tracks[ti].height;
-        const clampedTop = Math.max(RULER_HEIGHT, topY);
-        const clampedBottom = Math.min(h, topY + trackH);
-        if (clampedBottom <= RULER_HEIGHT || clampedTop >= h) continue;
-        ctx.fillRect(TRACK_HEADER_WIDTH, clampedTop, w - TRACK_HEADER_WIDTH, clampedBottom - clampedTop);
+
+      // --- Ghost Tracks (dashed outline for new tracks below existing ones) ---
+      if (trackIndex >= totalTracks) {
+        const ghostBaseY = RULER_HEIGHT + this.totalTrackHeight - this.scrollOffsetY;
+        for (let i = 0; i < newTrackCount; i++) {
+          const gy = ghostBaseY + i * defaultTrackH;
+          const clampedTop = Math.max(RULER_HEIGHT, gy);
+          const clampedBottom = Math.min(h, gy + defaultTrackH);
+          if (clampedBottom <= RULER_HEIGHT || clampedTop >= h) continue;
+
+          // Dashed border + subtle fill
+          ctx.setLineDash([6, 4]);
+          ctx.strokeStyle = 'rgba(37, 99, 235, 0.6)';
+          ctx.fillStyle = 'rgba(37, 99, 235, 0.08)';
+          ctx.lineWidth = 1;
+          ctx.fillRect(TRACK_HEADER_WIDTH, clampedTop, w - TRACK_HEADER_WIDTH, clampedBottom - clampedTop);
+          ctx.strokeRect(TRACK_HEADER_WIDTH, clampedTop, w - TRACK_HEADER_WIDTH, clampedBottom - clampedTop);
+
+          // Track name label in header area
+          ctx.setLineDash([]);
+          ctx.fillStyle = 'rgba(37, 99, 235, 0.5)';
+          ctx.font = '11px -apple-system, BlinkMacSystemFont, sans-serif';
+          ctx.textAlign = 'left';
+          ctx.fillText('New Track', 8, clampedTop + (clampedBottom - clampedTop) / 2 + 4);
+        }
+        ctx.setLineDash([]);
+      } else {
+        // Highlight existing target tracks
+        ctx.fillStyle = 'rgba(37, 99, 235, 0.12)';
+        const tracksToHighlight = Math.min(isMultiChannel ? 1 : channelCount, totalTracks - trackIndex);
+        for (let i = 0; i < tracksToHighlight; i++) {
+          const ti = trackIndex + i;
+          if (ti >= this.trackTops.length) continue;
+          const topY = RULER_HEIGHT + this.trackTops[ti] - this.scrollOffsetY;
+          const trackH = this.timeline!.tracks[ti].height;
+          const clampedTop = Math.max(RULER_HEIGHT, topY);
+          const clampedBottom = Math.min(h, topY + trackH);
+          if (clampedBottom <= RULER_HEIGHT || clampedTop >= h) continue;
+          ctx.fillRect(TRACK_HEADER_WIDTH, clampedTop, w - TRACK_HEADER_WIDTH, clampedBottom - clampedTop);
+        }
+      }
+
+      // --- Ghost Clip (dashed outline at drop position with file name) ---
+      const clipDuration = this.externalDragDuration;
+      if (clipDuration > 0) {
+        const clipDurationSamples = clipDuration * sampleRate;
+        const clipX = this.sampleToPixel(sampleOffset);
+        const clipEndX = this.sampleToPixel(sampleOffset + clipDurationSamples);
+        const clipW = Math.max(20, clipEndX - clipX);
+
+        // Determine Y position and height for the ghost clip
+        let clipY: number;
+        let clipH: number;
+        if (trackIndex < totalTracks) {
+          clipY = RULER_HEIGHT + this.trackTops[trackIndex] - this.scrollOffsetY;
+          clipH = this.timeline!.tracks[trackIndex].height;
+        } else {
+          clipY = RULER_HEIGHT + this.totalTrackHeight - this.scrollOffsetY;
+          clipH = defaultTrackH;
+        }
+        const clampedClipTop = Math.max(RULER_HEIGHT, clipY);
+        const clampedClipBottom = Math.min(h, clipY + clipH);
+
+        if (clampedClipBottom > RULER_HEIGHT && clampedClipTop < h && clipX < w) {
+          // Dashed clip outline
+          ctx.setLineDash([4, 3]);
+          ctx.strokeStyle = 'rgba(37, 99, 235, 0.8)';
+          ctx.fillStyle = 'rgba(37, 99, 235, 0.12)';
+          ctx.lineWidth = 1;
+          const drawX = Math.max(TRACK_HEADER_WIDTH, clipX);
+          const drawW = Math.min(clipW - (drawX - clipX), w - drawX);
+          if (drawW > 0) {
+            ctx.fillRect(drawX, clampedClipTop, drawW, clampedClipBottom - clampedClipTop);
+            ctx.strokeRect(drawX, clampedClipTop, drawW, clampedClipBottom - clampedClipTop);
+          }
+          ctx.setLineDash([]);
+
+          // File name label inside ghost clip
+          const label = this.externalDragFileName;
+          if (label && drawW > 28) {
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+            ctx.font = '10px -apple-system, BlinkMacSystemFont, sans-serif';
+            ctx.textAlign = 'left';
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(drawX, clampedClipTop, drawW, clampedClipBottom - clampedClipTop);
+            ctx.clip();
+            ctx.fillText(label, drawX + 4, clampedClipTop + 14);
+            ctx.restore();
+          }
+        }
       }
 
       // Dashed vertical line at drop position
+      const dropX = this.sampleToPixel(sampleOffset);
       if (dropX >= TRACK_HEADER_WIDTH && dropX <= w) {
         ctx.strokeStyle = 'rgba(37, 99, 235, 0.8)';
         ctx.setLineDash([4, 4]);

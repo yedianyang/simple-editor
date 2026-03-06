@@ -2142,6 +2142,8 @@ export class App {
         this.draggedFilePath = f.path;
         if (this.timelineRenderer) {
           this.timelineRenderer.externalDragChannelCount = f.channels ?? 1;
+          this.timelineRenderer.externalDragDuration = f.duration_secs ?? 0;
+          this.timelineRenderer.externalDragFileName = f.name;
         }
       });
       item.addEventListener('dragend', () => {
