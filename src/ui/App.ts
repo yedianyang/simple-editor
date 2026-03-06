@@ -101,6 +101,8 @@ export class App {
   private fileStatuses: Map<string, 'pending' | 'done' | 'skip'> = new Map();
   private searchFilter = '';
   private selectedBrowserFile: AudioFileMeta | null = null;
+  /** Path of file currently being dragged from file browser (WKWebView dataTransfer workaround). */
+  private draggedFilePath: string | null = null;
 
   constructor() {
     this.audioEngine = new AudioEngine();
@@ -533,7 +535,11 @@ export class App {
 
     // ---- External file drop callback ----
     this.timelineRenderer.onExternalFileDrop = (filePath, trackIndex, sampleOffset) => {
-      this.importFileAtPosition(filePath, trackIndex, sampleOffset);
+      const actualPath = filePath || this.draggedFilePath;
+      if (actualPath) {
+        this.importFileAtPosition(actualPath, trackIndex, sampleOffset);
+      }
+      this.draggedFilePath = null;
     };
   }
 
@@ -2133,9 +2139,13 @@ export class App {
       item.addEventListener('dragstart', (e) => {
         e.dataTransfer!.setData('application/x-fieldcorder-file', f.path);
         e.dataTransfer!.effectAllowed = 'copy';
+        this.draggedFilePath = f.path;
         if (this.timelineRenderer) {
           this.timelineRenderer.externalDragChannelCount = f.channels ?? 1;
         }
+      });
+      item.addEventListener('dragend', () => {
+        this.draggedFilePath = null;
       });
 
       // Single click → select + show metadata

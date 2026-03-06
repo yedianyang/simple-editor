@@ -435,8 +435,10 @@ export class TimelineRenderer {
 
   private onCanvasDrop(e: DragEvent): void {
     e.preventDefault();
-    const filePath = e.dataTransfer?.getData('application/x-fieldcorder-file');
-    if (filePath && this.onExternalFileDrop) {
+    const filePath = e.dataTransfer?.getData('application/x-fieldcorder-file') || '';
+    // WKWebView may return empty from getData() — fall back to checking types
+    const hasFieldcorderDrag = filePath || e.dataTransfer?.types.includes('application/x-fieldcorder-file');
+    if (hasFieldcorderDrag && this.onExternalFileDrop) {
       const { x, y } = this.clientToLocal(e);
       const trackIndex = Math.max(0, this.yToTrackIndex(y));
       const sampleOffset = Math.max(0, this.pixelToSample(x));
