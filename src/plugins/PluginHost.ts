@@ -384,10 +384,9 @@ export class PluginHost {
         (audioNode as any)._workletPort = workletNode.port;
 
         parameters = [
-          { id: 0, name: 'Reduction', value: 0.5, min: 0, max: 1, defaultValue: 0.5 },
+          { id: 0, name: 'Reduction', value: 12, min: 0, max: 40, defaultValue: 12, unit: 'dB' },
           { id: 1, name: 'Smoothing', value: 0.98, min: 0.5, max: 0.999, defaultValue: 0.98 },
-          // id 2 is a trigger parameter for Learn Noise (value: 0=idle, 1=learning)
-          { id: 2, name: 'Learn Noise', value: 0, min: 0, max: 1, defaultValue: 0 },
+          { id: 2, name: 'Sensitivity', value: 1.5, min: 1.0, max: 3.0, defaultValue: 1.5 },
         ];
         break;
       }
@@ -566,11 +565,12 @@ export class PluginHost {
         const port = node._workletPort as MessagePort | undefined;
         if (!port) break;
         if (paramId === 0) {
-          port.postMessage({ type: 'setReductionStrength', value });
+          port.postMessage({ type: 'setReductionDb', value });
         } else if (paramId === 1) {
           port.postMessage({ type: 'setSmoothingFactor', value });
+        } else if (paramId === 2) {
+          port.postMessage({ type: 'setSensitivity', value });
         }
-        // paramId 2 (Learn Noise) is handled via sendNoiseProfile() / clearNoiseProfile()
         break;
       }
     }

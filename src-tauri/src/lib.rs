@@ -153,6 +153,7 @@ struct AudioFileData {
     sample_rate: u32,
     num_channels: u16,
     num_samples: usize,
+    bits_per_sample: u16,
     channels: Vec<Vec<f32>>,
 }
 
@@ -367,6 +368,7 @@ fn parse_wav_data(data: &[u8]) -> Result<AudioFileData, String> {
         sample_rate,
         num_channels,
         num_samples,
+        bits_per_sample,
         channels,
     })
 }
@@ -377,7 +379,7 @@ fn parse_wav_data(data: &[u8]) -> Result<AudioFileData, String> {
 /// Binary layout:
 /// - [0..4]   sample_rate: u32 LE
 /// - [4..6]   num_channels: u16 LE
-/// - [6..8]   padding: u16 (0)
+/// - [6..8]   bits_per_sample: u16 LE
 /// - [8..16]  num_samples: u64 LE
 /// - [16..]   raw f32 PCM, channel-sequential: [ch0_all, ch1_all, ...]
 #[tauri::command]
@@ -390,7 +392,7 @@ async fn read_audio_file_binary(path: String) -> Result<Response, String> {
 
     buf.extend_from_slice(&parsed.sample_rate.to_le_bytes());
     buf.extend_from_slice(&parsed.num_channels.to_le_bytes());
-    buf.extend_from_slice(&0u16.to_le_bytes()); // padding for alignment
+    buf.extend_from_slice(&parsed.bits_per_sample.to_le_bytes());
     buf.extend_from_slice(&(parsed.num_samples as u64).to_le_bytes());
 
     for ch_data in &parsed.channels {
@@ -955,6 +957,15 @@ fn apply_dry_wet_mix(original: &[f32], processed: &[f32], dry: f32) -> Vec<f32> 
         .collect()
 }
 
+/// Calculate RMS (root mean square) level of an audio signal (for logging).
+fn rms(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let sum_sq: f32 = samples.iter().map(|s| s * s).sum();
+    (sum_sq / samples.len() as f32).sqrt()
+}
+
 /// DeepFilter-based noise reduction via binary IPC.
 ///
 /// Request format:
@@ -982,6 +993,17 @@ async fn denoise_deepfilter(
     let params: DenoiseParams = serde_json::from_str(params_json)
         .map_err(|e| format!("Failed to parse denoise params: {}", e))?;
 
+    log::info!(
+        "[DeepFilter] Start: denoise={:.2}, dereverb={:.2}, dry={:.2}, sr={}, samples={}",
+        params.denoise, params.dereverb, params.dry, params.sample_rate, params.num_samples
+    );
+    if params.dry > 0.99 {
+        log::warn!(
+            "[DeepFilter] dry={:.2} ≈ 1.0 — output will be nearly identical to input (no processing effect)",
+            params.dry
+        );
+    }
+
     // 2. Extract raw f32 PCM from body
     let input_samples: Vec<f32> = {
         let raw_bytes = match request.body() {
@@ -998,6 +1020,11 @@ async fn denoise_deepfilter(
             .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
             .collect()
     };
+
+    log::debug!(
+        "[DeepFilter] Extracted {} input samples, RMS={:.4}",
+        input_samples.len(), rms(&input_samples)
+    );
 
     if input_samples.len() != params.num_samples as usize {
         return Err(format!(
@@ -1024,6 +1051,11 @@ async fn denoise_deepfilter(
         (input_samples, false)
     };
 
+    log::info!(
+        "[DeepFilter] Resample: {} samples @ {}Hz → {} samples @ 48000Hz (resampled={})",
+        original.len(), params.sample_rate, samples_48k.len(), was_resampled
+    );
+
     // 4. Create DfTract processor
     let atten_lim = denoise_to_atten_lim_db(params.denoise);
     let pf_beta = dereverb_to_pf_beta(params.dereverb);
@@ -1035,11 +1067,18 @@ async fn denoise_deepfilter(
     let mut model = df::tract::DfTract::new(df_params, &r_params)
         .map_err(|e| format!("DfTract init failed: {}", e))?;
 
+    log::info!(
+        "[DeepFilter] Model loaded: atten_lim={:.1}dB, pf_beta={:.4}, hop_size={}",
+        atten_lim, pf_beta, model.hop_size
+    );
+
     // 5. Process in hop_size chunks
     let hop_size = model.hop_size;
     let num_48k = samples_48k.len();
     let total_hops = num_48k.div_ceil(hop_size);
     let mut output_48k = vec![0.0f32; num_48k];
+
+    log::info!("[DeepFilter] Processing {} hops (hop_size={})", total_hops, hop_size);
 
     for (i, start) in (0..num_48k).step_by(hop_size).enumerate() {
         let end = (start + hop_size).min(num_48k);
@@ -1068,6 +1107,11 @@ async fn denoise_deepfilter(
         }
     }
 
+    log::info!(
+        "[DeepFilter] Processing complete. Input RMS={:.4}, Output RMS={:.4}",
+        rms(&original), rms(&output_48k)
+    );
+
     // 7. Resample back to original sample rate if needed
     let processed = if was_resampled {
         let arr = ndarray::Array2::from_shape_vec((1, output_48k.len()), output_48k)
@@ -1083,7 +1127,15 @@ async fn denoise_deepfilter(
     };
 
     // 8. Apply dry/wet mix
+    log::info!(
+        "[DeepFilter] Applying dry/wet: dry={:.2}, wet={:.2}",
+        params.dry, 1.0 - params.dry
+    );
     let final_output = apply_dry_wet_mix(&original, &processed, params.dry);
+    log::info!(
+        "[DeepFilter] Done. Output: {} samples, RMS={:.4}",
+        final_output.len(), rms(&final_output)
+    );
 
     // 9. Build binary response
     let num_out_samples = final_output.len();
@@ -1304,7 +1356,7 @@ mod tests {
         let mut buf = Vec::with_capacity(16 + total_floats * 4);
         buf.extend_from_slice(&parsed.sample_rate.to_le_bytes());
         buf.extend_from_slice(&parsed.num_channels.to_le_bytes());
-        buf.extend_from_slice(&0u16.to_le_bytes());
+        buf.extend_from_slice(&parsed.bits_per_sample.to_le_bytes());
         buf.extend_from_slice(&(parsed.num_samples as u64).to_le_bytes());
         for ch_data in &parsed.channels {
             let bytes: &[u8] = unsafe {
@@ -1317,7 +1369,7 @@ mod tests {
         assert_eq!(buf.len(), 16 + 2 * 4); // 16 header + 2 floats
         assert_eq!(u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]), 44100);
         assert_eq!(u16::from_le_bytes([buf[4], buf[5]]), 2);
-        assert_eq!(u16::from_le_bytes([buf[6], buf[7]]), 0); // padding
+        assert_eq!(u16::from_le_bytes([buf[6], buf[7]]), 32); // bits_per_sample
         assert_eq!(u64::from_le_bytes([buf[8], buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15]]), 1);
 
         // Verify PCM data: ch0 then ch1
@@ -1557,4 +1609,108 @@ mod tests {
         assert!((result[0] - 0.5).abs() < f32::EPSILON);
         assert!((result[1] - 0.5).abs() < f32::EPSILON);
     }
+
+    #[test]
+    fn test_dry_1_produces_no_processing_effect() {
+        // BUG REGRESSION: dry=1.0 means output = 100% original + 0% processed
+        // This documents that dry=1.0 produces NO denoising effect
+        let original = vec![0.5, -0.3, 0.8, -0.1];
+        let processed = vec![0.1, 0.0, 0.2, -0.05];
+        let result = apply_dry_wet_mix(&original, &processed, 1.0);
+        for (i, (r, o)) in result.iter().zip(original.iter()).enumerate() {
+            assert!(
+                (r - o).abs() < f32::EPSILON,
+                "dry=1.0: sample[{}] output={} should equal original={}", i, r, o
+            );
+        }
+    }
+
+    #[test]
+    fn test_rms_silence() {
+        let silence = vec![0.0f32; 100];
+        assert!(rms(&silence) < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_rms_constant() {
+        let constant = vec![0.5f32; 100];
+        assert!((rms(&constant) - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_rms_empty() {
+        assert!(rms(&[]) < f32::EPSILON);
+    }
+
+    // ── DeepFilter integration tests ──────────────────────────────
+
+    #[test]
+    fn test_deepfilter_model_loads() {
+        // Verify the embedded DfTract model can be loaded successfully
+        let df_params = df::tract::DfParams::default();
+        let r_params = df::tract::RuntimeParams::default_with_ch(1)
+            .with_atten_lim(50.0)
+            .with_post_filter(0.025);
+        let model = df::tract::DfTract::new(df_params, &r_params);
+        assert!(model.is_ok(), "DfTract model should load: {:?}", model.err());
+    }
+
+    #[test]
+    fn test_deepfilter_processes_audio() {
+        // Integration test: load model, process synthetic audio, verify output differs
+        let df_params = df::tract::DfParams::default();
+        let r_params = df::tract::RuntimeParams::default_with_ch(1)
+            .with_atten_lim(50.0)
+            .with_post_filter(0.025);
+        let mut model = df::tract::DfTract::new(df_params, &r_params)
+            .expect("Model should load");
+        let hop_size = model.hop_size;
+
+        // Process 10 hops of synthetic signal (sine + pseudo-noise) to let model warm up
+        let mut all_input = Vec::new();
+        let mut all_output = Vec::new();
+
+        for hop_idx in 0..10 {
+            let input: Vec<f32> = (0..hop_size)
+                .map(|i| {
+                    let t = (hop_idx * hop_size + i) as f32 / 48000.0;
+                    // 440Hz sine + deterministic pseudo-noise
+                    (440.0 * 2.0 * std::f32::consts::PI * t).sin() * 0.5
+                        + ((i * 13 + 7) % 256) as f32 / 256.0 * 0.3 - 0.15
+                })
+                .collect();
+
+            let noisy = ndarray::Array2::from_shape_vec((1, hop_size), input.clone())
+                .unwrap();
+            let mut enh = ndarray::Array2::<f32>::zeros((1, hop_size));
+
+            model
+                .process(noisy.view(), enh.view_mut())
+                .expect("Processing should succeed");
+
+            all_input.extend_from_slice(&input);
+            all_output.extend(enh.row(0).iter().copied());
+        }
+
+        // After warm-up, output should differ from input
+        let diff: f32 = all_output
+            .iter()
+            .zip(all_input.iter())
+            .map(|(o, i)| (o - i).abs())
+            .sum();
+        assert!(diff > 0.0, "DfTract output should differ from input");
+
+        // Output should not be silence
+        let out_rms = rms(&all_output);
+        assert!(out_rms > 0.0, "Output should not be silence");
+
+        // Input and output RMS should differ (model modified the signal)
+        let in_rms = rms(&all_input);
+        assert!(
+            (out_rms - in_rms).abs() > 0.001,
+            "Output RMS ({:.4}) should differ from input RMS ({:.4})",
+            out_rms, in_rms
+        );
+    }
+
 }

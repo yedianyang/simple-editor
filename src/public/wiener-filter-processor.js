@@ -12,7 +12,8 @@
  * MessagePort commands:
  *   { type: 'learnNoise', samples: Float32Array }
  *   { type: 'clearNoise' }
- *   { type: 'setReductionStrength', value: number }
+ *   { type: 'setReductionDb', value: number }       — max reduction in dB (0-40)
+ *   { type: 'setSensitivity', value: number }        — adaptive noise sensitivity
  *   { type: 'setSmoothingFactor', value: number }
  */
 
@@ -98,16 +99,14 @@ function computeMagnitudeSquared(real, imag) {
   return result;
 }
 
-const GAIN_FLOOR = 0.001;
-
-function computeWienerGain(signalPSD, noisePSD, strength) {
+function computeWienerGain(signalPSD, noisePSD, reductionDb) {
   const N = signalPSD.length;
+  const gainFloor = Math.pow(10, -reductionDb / 20);
   const gain = new Float64Array(N);
   for (let i = 0; i < N; i++) {
     const denom = signalPSD[i] + noisePSD[i];
-    const h = denom > 0 ? signalPSD[i] / denom : GAIN_FLOOR;
-    const clamped = Math.max(GAIN_FLOOR, h);
-    gain[i] = 1.0 - strength * (1.0 - clamped);
+    const h = denom > 0 ? signalPSD[i] / denom : gainFloor;
+    gain[i] = Math.max(gainFloor, h);
   }
   return gain;
 }
@@ -118,13 +117,22 @@ class WienerFilterKernel {
   constructor(fftSize, sr) {
     this.fftSize = fftSize;
     this.hopSize = fftSize >> 1;
-    this.reductionStrength = 0.5;
+    this.reductionDb = 12;
     this.smoothingFactor = 0.98;
+    this.sensitivity = 1.5;
     this.window = hanningWindow(fftSize);
     this.noisePSD = null;
     this.prevInput = new Float32Array(this.hopSize);
     this.overlapBuffer = new Float64Array(this.hopSize);
     this.smoothedPSD = new Float64Array(fftSize);
+    this.adaptiveNoisePSD = new Float64Array(fftSize);
+    this.minWindowSize = 96;
+    this.windowWritePos = 0;
+    this.windowFilled = 0;
+    this.minPSDWindow = [];
+    for (let i = 0; i < this.minWindowSize; i++) {
+      this.minPSDWindow.push(new Float64Array(fftSize));
+    }
   }
 
   get hasNoiseProfile() {
@@ -161,15 +169,35 @@ class WienerFilterKernel {
     this.noisePSD = null;
   }
 
+  updateAdaptiveNoise() {
+    const N = this.fftSize;
+
+    const slot = this.minPSDWindow[this.windowWritePos];
+    for (let i = 0; i < N; i++) {
+      slot[i] = this.smoothedPSD[i];
+    }
+    this.windowWritePos = (this.windowWritePos + 1) % this.minWindowSize;
+    if (this.windowFilled < this.minWindowSize) {
+      this.windowFilled++;
+    }
+
+    if (this.windowFilled < (this.minWindowSize >> 1)) {
+      return;
+    }
+
+    for (let bin = 0; bin < N; bin++) {
+      let min = Infinity;
+      for (let f = 0; f < this.windowFilled; f++) {
+        const val = this.minPSDWindow[f][bin];
+        if (val < min) min = val;
+      }
+      this.adaptiveNoisePSD[bin] = min * this.sensitivity;
+    }
+  }
+
   process(input, output) {
     const N = this.fftSize;
     const hop = this.hopSize;
-
-    if (!this.noisePSD) {
-      for (let i = 0; i < hop; i++) output[i] = input[i];
-      this.prevInput.set(input);
-      return;
-    }
 
     const real = new Float64Array(N);
     const imag = new Float64Array(N);
@@ -188,7 +216,10 @@ class WienerFilterKernel {
       this.smoothedPSD[i] = alpha * this.smoothedPSD[i] + (1 - alpha) * psd[i];
     }
 
-    const gain = computeWienerGain(this.smoothedPSD, this.noisePSD, this.reductionStrength);
+    this.updateAdaptiveNoise();
+
+    const noisePSD = this.noisePSD ?? this.adaptiveNoisePSD;
+    const gain = computeWienerGain(this.smoothedPSD, noisePSD, this.reductionDb);
 
     for (let i = 0; i < N; i++) {
       real[i] *= gain[i];
@@ -248,8 +279,10 @@ class WienerFilterProcessor extends AudioWorkletProcessor {
       this.port.postMessage({ type: 'noiseProfileLearned' });
     } else if (type === 'clearNoise') {
       for (const k of this.kernels) k.clearNoise();
-    } else if (type === 'setReductionStrength') {
-      for (const k of this.kernels) k.reductionStrength = e.data.value;
+    } else if (type === 'setReductionDb') {
+      for (const k of this.kernels) k.reductionDb = e.data.value;
+    } else if (type === 'setSensitivity') {
+      for (const k of this.kernels) k.sensitivity = e.data.value;
     } else if (type === 'setSmoothingFactor') {
       for (const k of this.kernels) k.smoothingFactor = e.data.value;
     }
@@ -285,8 +318,8 @@ class WienerFilterProcessor extends AudioWorkletProcessor {
         this.outputReadPos[ch] += this.blockSize;
         this.outputReady[ch] -= this.blockSize;
       } else {
-        // Initial latency — no output yet
-        outData.fill(0);
+        // Initial latency — passthrough instead of silence
+        outData.set(inData);
       }
     }
 

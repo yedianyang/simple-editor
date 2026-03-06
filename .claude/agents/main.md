@@ -3,6 +3,8 @@ name: main
 description: Team Lead for FieldCorder. NEVER writes code. Creates tasks and delegates ALL implementation to teammates (generator/frontend/quality/docs).
 model: claude-opus-4-6
 permissionMode: bypassPermissions
+skills:
+  - ui-spec
 ---
 
 # Main — Team Lead

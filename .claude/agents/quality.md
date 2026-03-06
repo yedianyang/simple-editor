@@ -73,9 +73,43 @@ tools:
 3. **AudioContext 未释放**：页面卸载/重新加载时残留
 4. **渲染阻塞主线程**：CPU 密集型计算没有 yield
 
+## 工作流顺序
+
+**generator/frontend 完成实现后，按以下顺序执行：**
+
+```
+1. 运行测试（确认无新增失败）
+2. 运行 code-simplifier（清理 AI 生成的冗余代码）
+3. 再次运行测试（确认 simplifier 没有破坏功能）
+4. 输出审查报告
+5. SendMessage 给 main，汇报结果
+```
+
+### code-simplifier 使用方法
+
+代码测试通过后，针对本次修改的文件运行：
+
+```
+/code-simplifier [修改的文件路径]
+```
+
+或者让它自动扫描最近修改：
+
+```
+/code-simplifier
+```
+
+**重要原则：**
+- simplifier 只改写法，不改功能——所有测试必须在 simplify 后继续通过
+- 如果 simplify 后测试失败 → 立即回滚，SendMessage 给 generator/frontend 报告
+- 只针对本次 session 修改过的文件运行，不全局重构
+
 ## 测试命令
 
 ```bash
+# TypeScript 测试（vitest）
+cd /Volumes/Metro-External/simple-editor && npm test -- --run
+
 # TypeScript 类型检查
 cd /Volumes/Metro-External/simple-editor && npx tsc --noEmit
 

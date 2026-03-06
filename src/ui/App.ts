@@ -52,6 +52,7 @@ export class App {
   metering: Metering;
   audioEditor: AudioEditor | null = null;
   fileName: string | null = null;
+  private originalBitDepth: number | null = null;
   fileQueue: FileQueue;
   cuePointManager: CuePointManager;
   cuePointRenderer: CuePointRenderer;
@@ -1139,11 +1140,13 @@ export class App {
         // Non-WAV: raw bytes need decodeAudioData
         console.log(`[IMPORT] Step 2: File read complete (${(result.byteLength / 1024 / 1024).toFixed(1)} MB). Decoding...`);
         audioBuffer = await this.audioEngine.loadAudio(result);
+        this.originalBitDepth = null; // Non-WAV: no original bit depth info
       } else {
         // WAV: already parsed by Rust — create AudioBuffer directly
         parsedData = result;
+        this.originalBitDepth = result.bits_per_sample;
         const dataMB = (result.num_samples * result.channels * 4 / (1024 * 1024)).toFixed(1);
-        console.log(`[IMPORT] Step 2: Rust WAV parse complete (${result.channels}ch, ${result.sample_rate}Hz, ${dataMB} MB). Loading...`);
+        console.log(`[IMPORT] Step 2: Rust WAV parse complete (${result.channels}ch, ${result.sample_rate}Hz, ${result.bits_per_sample}bit, ${dataMB} MB). Loading...`);
         audioBuffer = await this.audioEngine.loadFromParsedData(result);
       }
 
@@ -1326,6 +1329,7 @@ export class App {
       this.bufferPool.clear();
       this.waveformRenderer.disabled = false;
       this.fileName = null;
+      this.originalBitDepth = null;
       this.updateUI();
       this.updateFileInfo();
 
@@ -2182,8 +2186,10 @@ export class App {
       let parsedData: ParsedAudioData | null = null;
       if (result instanceof ArrayBuffer) {
         audioBuffer = await this.audioEngine.loadAudio(result);
+        this.originalBitDepth = null;
       } else {
         parsedData = result;
+        this.originalBitDepth = result.bits_per_sample;
         audioBuffer = await this.audioEngine.loadFromParsedData(result);
       }
 
@@ -2251,20 +2257,22 @@ export class App {
       if (el) el.value = value || '';
     };
 
-    // Populate existing iXML tab fields from file metadata
-    if (file.ixml) {
-      const getTag = (tag: string): string => {
-        const match = file.ixml!.match(new RegExp(`<${tag}>([^<]*)</${tag}>`, 'i'));
-        return match ? match[1].trim() : '';
-      };
-      setInput('inlineDescription', file.bext_description || getTag('NOTE'));
-      setInput('inlineScene', getTag('SCENE'));
-      setInput('inlineTake', getTag('TAKE'));
-      setInput('inlineTape', getTag('TAPE'));
-      setInput('inlineNote', getTag('NOTE'));
-    } else if (file.bext_description) {
-      setInput('inlineDescription', file.bext_description);
-    }
+    // Helper to extract iXML tags
+    const getTag = (tag: string): string => {
+      if (!file.ixml) return '';
+      const match = file.ixml.match(new RegExp(`<${tag}>([^<]*)</${tag}>`, 'i'));
+      return match ? match[1].trim() : '';
+    };
+
+    // Populate BWF tab: BEXT fields first, iXML as fallback
+    setInput('inlineDescription', file.bext_description || getTag('NOTE'));
+    setInput('inlineOriginator', file.bext_originator);
+    setInput('inlineDate', file.bext_date);
+    setInput('inlineTime', file.bext_time);
+    setInput('inlineScene', getTag('SCENE'));
+    setInput('inlineTake', getTag('TAKE'));
+    setInput('inlineTape', getTag('TAPE'));
+    setInput('inlineNote', getTag('NOTE'));
 
     // Populate existing UCS tab fields from filename parsing
     const ucs = parseUCSFilename(file.name);
@@ -2631,6 +2639,7 @@ export class App {
     this.mixer.setupTracks([]);
     this.audioEngine.cleanupTrackNodes();
     this.fileName = null;
+    this.originalBitDepth = null;
     this.updateUI();
     this.updateFileInfo();
     this.updatePositionInfo(0);
@@ -2756,8 +2765,8 @@ export class App {
   private initDenoiseSliders(): void {
     const presets: Record<string, [number, number, number]> = {
       gentle: [30, 10, 80],
-      balanced: [50, 30, 100],
-      aggressive: [85, 50, 100],
+      balanced: [50, 30, 30],
+      aggressive: [85, 50, 0],
     };
 
     const presetSelect = document.getElementById('denoisePreset') as HTMLSelectElement;
@@ -3086,7 +3095,14 @@ export class App {
     if (chEl) chEl.textContent = ch === 1 ? 'Mono' : ch === 2 ? 'Stereo' :
       ch === 4 ? 'Quad' : ch === 6 ? '5.1' : `${ch}ch`;
     if (srEl) srEl.textContent = (buffer.sampleRate / 1000).toFixed(1) + ' kHz';
-    if (bdEl) bdEl.textContent = '32-bit float'; // Web Audio always uses 32-bit float internally
+    if (bdEl) {
+      const bps = this.originalBitDepth;
+      if (bps === 32 || bps === null) {
+        bdEl.textContent = '32-bit float';
+      } else {
+        bdEl.textContent = `${bps}-bit`;
+      }
+    }
     if (durEl) durEl.textContent = formatTime(buffer.duration);
   }
 

@@ -111,31 +111,26 @@ export function computeMagnitudeSquared(real: Float64Array, imag: Float64Array):
   return result;
 }
 
-/** Minimum gain floor to avoid total silence artifacts. */
-const GAIN_FLOOR = 0.001;
-
 /**
  * Compute Wiener filter gain: H(f) = P_signal(f) / (P_signal(f) + P_noise(f))
- * With reduction strength: gain = lerp(1.0, H(f), strength)
+ * With dB-based reduction: gain floor = 10^(-reductionDb/20)
  *
  * @param signalPSD - estimated signal PSD (|X(f)|² of noisy signal)
- * @param noisePSD - estimated noise PSD (learned from noise-only segment)
- * @param strength - reduction strength in [0, 1]
+ * @param noisePSD - estimated noise PSD
+ * @param reductionDb - maximum noise reduction in dB (0 = no reduction, 40 = max)
  */
 export function computeWienerGain(
   signalPSD: Float64Array,
   noisePSD: Float64Array,
-  strength: number,
+  reductionDb: number,
 ): Float64Array {
   const N = signalPSD.length;
+  const gainFloor = Math.pow(10, -reductionDb / 20);
   const gain = new Float64Array(N);
   for (let i = 0; i < N; i++) {
     const denom = signalPSD[i] + noisePSD[i];
-    const h = denom > 0 ? signalPSD[i] / denom : GAIN_FLOOR;
-    // Clamp to floor
-    const clamped = Math.max(GAIN_FLOOR, h);
-    // Interpolate with strength: 0 = no reduction, 1 = full reduction
-    gain[i] = 1.0 - strength * (1.0 - clamped);
+    const h = denom > 0 ? signalPSD[i] / denom : gainFloor;
+    gain[i] = Math.max(gainFloor, h);
   }
   return gain;
 }
@@ -156,10 +151,12 @@ export class WienerFilterKernel {
   readonly fftSize: number;
   readonly hopSize: number;
 
-  /** Reduction strength 0-1 (maps to 0-100% UI). */
-  reductionStrength = 0.5;
+  /** Maximum noise reduction in dB (0 = no reduction, 40 = max). */
+  reductionDb = 12;
   /** PSD smoothing factor (exponential moving average alpha). */
   smoothingFactor = 0.98;
+  /** Adaptive noise sensitivity multiplier applied to min-PSD estimate. */
+  sensitivity = 1.5;
 
   private window: Float64Array;
   private noisePSD: Float64Array | null = null;
@@ -171,6 +168,13 @@ export class WienerFilterKernel {
   // Smoothed signal PSD
   private smoothedPSD: Float64Array;
 
+  // Adaptive noise estimation state
+  private adaptiveNoisePSD: Float64Array;
+  private minPSDWindow: Float64Array[];
+  private minWindowSize = 96;
+  private windowWritePos = 0;
+  private windowFilled = 0;
+
   constructor(fftSize: number, _sampleRate: number) {
     this.fftSize = fftSize;
     this.hopSize = fftSize >> 1; // 50% overlap
@@ -178,6 +182,11 @@ export class WienerFilterKernel {
     this.prevInput = new Float32Array(this.hopSize);
     this.overlapBuffer = new Float64Array(this.hopSize);
     this.smoothedPSD = new Float64Array(fftSize);
+    this.adaptiveNoisePSD = new Float64Array(fftSize);
+    this.minPSDWindow = [];
+    for (let i = 0; i < this.minWindowSize; i++) {
+      this.minPSDWindow.push(new Float64Array(fftSize));
+    }
   }
 
   get hasNoiseProfile(): boolean {
@@ -220,6 +229,39 @@ export class WienerFilterKernel {
   }
 
   /**
+   * Update adaptive noise estimate using minimum-statistics approach.
+   * Tracks the per-bin minimum of smoothedPSD over a sliding window.
+   */
+  private updateAdaptiveNoise(): void {
+    const N = this.fftSize;
+
+    // Store current smoothedPSD snapshot into ring buffer
+    const slot = this.minPSDWindow[this.windowWritePos];
+    for (let i = 0; i < N; i++) {
+      slot[i] = this.smoothedPSD[i];
+    }
+    this.windowWritePos = (this.windowWritePos + 1) % this.minWindowSize;
+    if (this.windowFilled < this.minWindowSize) {
+      this.windowFilled++;
+    }
+
+    // Warmup: need at least half the window filled (~0.5s)
+    if (this.windowFilled < (this.minWindowSize >> 1)) {
+      return;
+    }
+
+    // Compute per-bin minimum across filled window, then scale by sensitivity
+    for (let bin = 0; bin < N; bin++) {
+      let min = Infinity;
+      for (let f = 0; f < this.windowFilled; f++) {
+        const val = this.minPSDWindow[f][bin];
+        if (val < min) min = val;
+      }
+      this.adaptiveNoisePSD[bin] = min * this.sensitivity;
+    }
+  }
+
+  /**
    * Process one hop-sized block (hopSize samples).
    * Uses overlap-add with 50% overlap and Hanning window.
    *
@@ -229,13 +271,6 @@ export class WienerFilterKernel {
   process(input: Float32Array, output: Float32Array): void {
     const N = this.fftSize;
     const hop = this.hopSize;
-
-    if (!this.noisePSD) {
-      // No noise profile — passthrough
-      for (let i = 0; i < hop; i++) output[i] = input[i];
-      this.prevInput.set(input);
-      return;
-    }
 
     // Assemble full FFT frame: [prevInput | input]
     const real = new Float64Array(N);
@@ -257,8 +292,14 @@ export class WienerFilterKernel {
       this.smoothedPSD[i] = alpha * this.smoothedPSD[i] + (1 - alpha) * psd[i];
     }
 
+    // Update adaptive noise estimate
+    this.updateAdaptiveNoise();
+
+    // Use manual noise profile if available, otherwise adaptive estimate
+    const noisePSD = this.noisePSD ?? this.adaptiveNoisePSD;
+
     // Compute Wiener gain
-    const gain = computeWienerGain(this.smoothedPSD, this.noisePSD, this.reductionStrength);
+    const gain = computeWienerGain(this.smoothedPSD, noisePSD, this.reductionDb);
 
     // Apply gain in frequency domain
     for (let i = 0; i < N; i++) {

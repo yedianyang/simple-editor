@@ -1775,15 +1775,27 @@
             <div class="sidebar-section metadata-inline" id="metadataSection">
                 <div class="sidebar-section-header">Metadata</div>
                 <div class="metadata-tab-bar">
-                    <button class="metadata-tab-btn active" data-tab="ixml-inline">iXML</button>
+                    <button class="metadata-tab-btn active" data-tab="bwf-inline">BWF</button>
                     <button class="metadata-tab-btn" data-tab="ucs-inline">UCS</button>
                 </div>
 
-                <!-- iXML Inline Tab -->
-                <div class="metadata-tab-panel" id="ixmlInlinePanel" data-tab="ixml-inline">
+                <!-- BWF Inline Tab (BEXT + iXML fields) -->
+                <div class="metadata-tab-panel" id="bwfInlinePanel" data-tab="bwf-inline">
                     <div class="metadata-inline-field">
                         <label>Description</label>
                         <input type="text" id="inlineDescription" placeholder="Description...">
+                    </div>
+                    <div class="metadata-inline-field">
+                        <label>Originator</label>
+                        <input type="text" id="inlineOriginator" placeholder="Originator...">
+                    </div>
+                    <div class="metadata-inline-field">
+                        <label>Date</label>
+                        <input type="text" id="inlineDate" placeholder="Date...">
+                    </div>
+                    <div class="metadata-inline-field">
+                        <label>Time</label>
+                        <input type="text" id="inlineTime" placeholder="Time...">
                     </div>
                     <div class="metadata-inline-field">
                         <label>Scene</label>
@@ -2060,8 +2072,8 @@
             </div>
             <div class="modal-row" style="display: flex; align-items: center; gap: 8px;">
                 <label style="min-width: 70px;">Dry Sound</label>
-                <input type="range" id="drySoundAmount" min="0" max="100" value="100" style="flex:1;">
-                <span id="drySoundAmountLabel" style="min-width: 36px; text-align: right;">100%</span>
+                <input type="range" id="drySoundAmount" min="0" max="100" value="30" style="flex:1;">
+                <span id="drySoundAmountLabel" style="min-width: 36px; text-align: right;">30%</span>
             </div>
             <div class="modal-row" id="denoiseProgressRow" style="display: none;">
                 <div style="background: var(--bg-tertiary); border-radius: 4px; overflow: hidden; height: 18px; position: relative;">

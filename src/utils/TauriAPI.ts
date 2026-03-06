@@ -16,6 +16,7 @@ export interface ParsedAudioData {
   sample_rate: number;
   channels: number;
   num_samples: number;
+  bits_per_sample: number;
   samples: Float32Array;
 }
 
@@ -177,19 +178,20 @@ export function createTauriAPI(): AppAPI {
       // Binary layout:
       //   [0..4]   sample_rate: u32 LE
       //   [4..6]   num_channels: u16 LE
-      //   [6..8]   padding: u16
+      //   [6..8]   bits_per_sample: u16 LE
       //   [8..16]  num_samples: u64 LE
       //   [16..]   raw f32 PCM, channel-sequential
       const buf: ArrayBuffer = await invoke('read_audio_file_binary', { path });
       const header = new DataView(buf, 0, 16);
       const sample_rate = header.getUint32(0, true);
       const channels = header.getUint16(4, true);
+      const bits_per_sample = header.getUint16(6, true);
       const num_samples = Number(header.getBigUint64(8, true));
 
       // Zero-copy Float32Array view over the PCM data (starts at byte 16)
       const samples = new Float32Array(buf, 16);
 
-      return { sample_rate, channels, num_samples, samples };
+      return { sample_rate, channels, num_samples, bits_per_sample, samples };
     },
 
     // ── Dialogs ───────────────────────────────────────────────────
