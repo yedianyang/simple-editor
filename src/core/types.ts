@@ -280,6 +280,7 @@ export interface Clip {
   muted: boolean;
   reversed?: boolean;
   subChannel?: number;
+  groupId?: string;
 }
 
 export interface TrackInsert {

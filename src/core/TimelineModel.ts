@@ -9,6 +9,11 @@ export interface OverlapResult {
 let clipIdCounter = 0;
 let trackIdCounter = 0;
 
+/** Generate a unique group ID for linking related clips (e.g. multi-channel sub-channels). */
+export function generateGroupId(): string {
+  return `g-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 function genClipId(): string {
   clipIdCounter++;
   return `clip_${clipIdCounter}_${Math.random().toString(36).substring(2, 8)}`;
@@ -209,6 +214,9 @@ export class TimelineModel {
         chCount,
       );
 
+      // Multi-channel files share a groupId so sub-channel clips stay linked
+      const groupId = numChannels > 1 ? generateGroupId() : undefined;
+
       for (let i = 0; i < numChannels; i++) {
         const clip: Clip = {
           id: genClipId(),
@@ -223,6 +231,7 @@ export class TimelineModel {
           fadeOutSamples: 0,
           muted: false,
           subChannel: i,
+          ...(groupId ? { groupId } : {}),
         };
         track.clips.push(clip);
       }
@@ -288,6 +297,9 @@ export class TimelineModel {
         newTrackIds.push(track.id);
       }
 
+      // Multi-channel files share a groupId so sub-channel clips stay linked
+      const groupId = generateGroupId();
+
       for (let i = 0; i < numChannels; i++) {
         const clip: Clip = {
           id: genClipId(),
@@ -302,6 +314,7 @@ export class TimelineModel {
           fadeOutSamples: 0,
           muted: false,
           subChannel: i,
+          groupId,
         };
         track.clips.push(clip);
         clipIds.push(clip.id);
@@ -583,6 +596,34 @@ export class TimelineModel {
     if (!clip) return;
     clip.bufferId = newBufferId;
     clip.reversed = !clip.reversed;
+  }
+
+  /**
+   * Get sibling clips within the same track that share the same groupId.
+   * Returns clips that belong to the same group, excluding the queried clip itself.
+   */
+  getSiblingClips(trackId: string, clipId: string): Clip[] {
+    const track = this.findTrack(trackId);
+    if (!track) return [];
+    const clip = track.clips.find(c => c.id === clipId);
+    if (!clip?.groupId) return [];
+    return track.clips.filter(c => c.groupId === clip.groupId && c.id !== clipId);
+  }
+
+  /**
+   * Get all clips across all tracks that share a given groupId.
+   * Returns track + clip pairs for cross-track group operations.
+   */
+  getAllGroupClips(groupId: string): { track: Track; clip: Clip }[] {
+    const results: { track: Track; clip: Clip }[] = [];
+    for (const track of this.timeline.tracks) {
+      for (const clip of track.clips) {
+        if (clip.groupId === groupId) {
+          results.push({ track, clip });
+        }
+      }
+    }
+    return results;
   }
 
   private recalcTotalLength(): void {
