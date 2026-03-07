@@ -397,9 +397,7 @@ export class TimelineRenderer {
     this.canvas.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
     this.canvas.addEventListener('keydown', (e) => this.onKeyDown(e));
     this.canvas.addEventListener('contextmenu', (e) => this.onContextMenu(e));
-    this.canvas.addEventListener('dragover', (e) => this.onCanvasDragOver(e));
-    this.canvas.addEventListener('dragleave', () => this.onCanvasDragLeave());
-    this.canvas.addEventListener('drop', (e) => this.onCanvasDrop(e));
+    // Note: HTML5 drag/drop removed — file browser uses custom mouse drag via App.ts
     // Make canvas focusable for keyboard events
     this.canvas.tabIndex = 0;
   }
@@ -422,37 +420,41 @@ export class TimelineRenderer {
     this.onTrackHeaderContextMenu?.(trackId, e.clientX, e.clientY);
   }
 
-  private onCanvasDragOver(e: DragEvent): void {
-    e.preventDefault();
-    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
-    const { x, y } = this.clientToLocal(e);
+  /** Update drag overlay position during custom mouse drag from file browser. */
+  updateExternalDrag(clientX: number, clientY: number): void {
+    const rect = this.canvas.getBoundingClientRect();
+    const x = clientX - rect.left;
+    const y = clientY - rect.top;
     const trackIndex = Math.max(0, this.yToTrackIndex(y));
     const sampleOffset = Math.max(0, this.pixelToSample(x));
     this.externalDropTarget = { trackIndex, sampleOffset };
     this.render();
   }
 
-  private onCanvasDragLeave(): void {
-    this.externalDropTarget = null;
-    this.externalDragDuration = 0;
-    this.externalDragFileName = '';
-    this.render();
+  /** Check if a screen-space point is within the canvas bounds. */
+  isPointInCanvas(clientX: number, clientY: number): boolean {
+    const rect = this.canvas.getBoundingClientRect();
+    return clientX >= rect.left && clientX <= rect.right &&
+           clientY >= rect.top && clientY <= rect.bottom;
   }
 
-  private onCanvasDrop(e: DragEvent): void {
-    e.preventDefault();
-    const filePath = e.dataTransfer?.getData('application/x-fieldcorder-file') || '';
-    // WKWebView may return empty from getData() — fall back to checking types
-    const hasFieldcorderDrag = filePath || e.dataTransfer?.types.includes('application/x-fieldcorder-file');
-    if (hasFieldcorderDrag && this.onExternalFileDrop) {
-      const { x, y } = this.clientToLocal(e);
-      const trackIndex = Math.max(0, this.yToTrackIndex(y));
-      const sampleOffset = Math.max(0, this.pixelToSample(x));
-      this.onExternalFileDrop(filePath, trackIndex, sampleOffset);
-    }
+  /** Get the track index and sample offset for a screen-space point. */
+  getDropPosition(clientX: number, clientY: number): { trackIndex: number; sampleOffset: number } {
+    const rect = this.canvas.getBoundingClientRect();
+    const x = clientX - rect.left;
+    const y = clientY - rect.top;
+    return {
+      trackIndex: Math.max(0, this.yToTrackIndex(y)),
+      sampleOffset: Math.max(0, this.pixelToSample(x)),
+    };
+  }
+
+  /** Clear drag overlay state after drop or cancel. */
+  clearExternalDrag(): void {
     this.externalDropTarget = null;
     this.externalDragDuration = 0;
     this.externalDragFileName = '';
+    this.externalDragChannelCount = 1;
     this.render();
   }
 

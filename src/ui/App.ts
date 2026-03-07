@@ -101,8 +101,15 @@ export class App {
   private fileStatuses: Map<string, 'pending' | 'done' | 'skip'> = new Map();
   private searchFilter = '';
   private selectedBrowserFile: AudioFileMeta | null = null;
-  /** Path of file currently being dragged from file browser (WKWebView dataTransfer workaround). */
-  private draggedFilePath: string | null = null;
+  /** Custom mouse drag state for file browser → timeline drag (replaces HTML5 drag/drop for WKWebView). */
+  private fileDragState: {
+    file: AudioFileMeta;
+    active: boolean;
+    startX: number;
+    startY: number;
+  } | null = null;
+  /** Suppress the next click event after a drag completes (prevent click firing on drag-end). */
+  private suppressNextClick = false;
 
   constructor() {
     this.audioEngine = new AudioEngine();
@@ -533,13 +540,11 @@ export class App {
       this.timelineRenderer?.render();
     };
 
-    // ---- External file drop callback ----
+    // ---- External file drop callback (OS-level drag only; file browser uses custom mouse drag) ----
     this.timelineRenderer.onExternalFileDrop = (filePath, trackIndex, sampleOffset) => {
-      const actualPath = filePath || this.draggedFilePath;
-      if (actualPath) {
-        this.importFileAtPosition(actualPath, trackIndex, sampleOffset);
+      if (filePath) {
+        this.importFileAtPosition(filePath, trackIndex, sampleOffset);
       }
-      this.draggedFilePath = null;
     };
   }
 
@@ -610,6 +615,42 @@ export class App {
 
     // Keyboard
     document.addEventListener('keydown', this.boundKeydown);
+
+    // Custom mouse drag for file browser → timeline (replaces HTML5 drag/drop)
+    document.addEventListener('mousemove', (e) => {
+      if (!this.fileDragState) return;
+      if (!this.fileDragState.active) {
+        const dx = e.clientX - this.fileDragState.startX;
+        const dy = e.clientY - this.fileDragState.startY;
+        if (dx * dx + dy * dy < 25) return; // 5px threshold
+        this.fileDragState.active = true;
+        this.suppressNextClick = true;
+        document.body.style.cursor = 'grabbing';
+        if (this.timelineRenderer) {
+          const f = this.fileDragState.file;
+          this.timelineRenderer.externalDragChannelCount = f.channels ?? 1;
+          this.timelineRenderer.externalDragDuration = f.duration_secs ?? 0;
+          this.timelineRenderer.externalDragFileName = f.name;
+        }
+      }
+      if (this.fileDragState.active && this.timelineRenderer) {
+        this.timelineRenderer.updateExternalDrag(e.clientX, e.clientY);
+      }
+    });
+
+    document.addEventListener('mouseup', (e) => {
+      if (!this.fileDragState) return;
+      const wasActive = this.fileDragState.active;
+      if (wasActive) {
+        document.body.style.cursor = '';
+        if (this.timelineRenderer?.isPointInCanvas(e.clientX, e.clientY)) {
+          const pos = this.timelineRenderer.getDropPosition(e.clientX, e.clientY);
+          this.importFileAtPosition(this.fileDragState.file.path, pos.trackIndex, pos.sampleOffset);
+        }
+        this.timelineRenderer?.clearExternalDrag();
+      }
+      this.fileDragState = null;
+    });
 
     // FFT size
     document.getElementById('fftSize')!.addEventListener('change', (e) => {
@@ -785,16 +826,11 @@ export class App {
     const dragOverlay = document.getElementById('dragOverlay');
     if (!dragOverlay) return;
 
-    // Listen on the entire document body for broader drag coverage
+    // Listen on the entire document body for OS-level file drag (not internal file browser)
     let dragCounter = 0;
-
-    // Helper: check if drag originates from internal file browser (not external OS file drop)
-    const isInternalDrag = (e: DragEvent) =>
-      e.dataTransfer?.types.includes('application/x-fieldcorder-file') ?? false;
 
     document.body.addEventListener('dragenter', (e) => {
       e.preventDefault();
-      if (isInternalDrag(e)) return; // internal drag — let canvas handle it
       dragCounter++;
       dragOverlay.classList.add('visible');
     }, false);
@@ -805,7 +841,6 @@ export class App {
 
     document.body.addEventListener('dragleave', (e) => {
       e.preventDefault();
-      if (isInternalDrag(e)) return;
       dragCounter--;
       if (dragCounter <= 0) {
         dragCounter = 0;
@@ -814,7 +849,6 @@ export class App {
     }, false);
 
     document.body.addEventListener('drop', (e) => {
-      if (isInternalDrag(e)) return; // internal drag — handled by canvas drop handler
       e.preventDefault();
       dragCounter = 0;
       dragOverlay.classList.remove('visible');
@@ -2134,24 +2168,20 @@ export class App {
         item.appendChild(sizeSpan);
       }
 
-      // Drag → drop onto timeline at specific position
-      item.draggable = true;
-      item.addEventListener('dragstart', (e) => {
-        e.dataTransfer!.setData('application/x-fieldcorder-file', f.path);
-        e.dataTransfer!.effectAllowed = 'copy';
-        this.draggedFilePath = f.path;
-        if (this.timelineRenderer) {
-          this.timelineRenderer.externalDragChannelCount = f.channels ?? 1;
-          this.timelineRenderer.externalDragDuration = f.duration_secs ?? 0;
-          this.timelineRenderer.externalDragFileName = f.name;
-        }
-      });
-      item.addEventListener('dragend', () => {
-        this.draggedFilePath = null;
+      // Custom mouse drag → drop onto timeline (replaces HTML5 drag/drop for WKWebView)
+      item.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
+        this.fileDragState = { file: f, active: false, startX: e.clientX, startY: e.clientY };
       });
 
-      // Single click → select + show metadata
-      item.addEventListener('click', () => this.selectBrowserFile(f));
+      // Single click → select + show metadata (suppressed after drag)
+      item.addEventListener('click', () => {
+        if (this.suppressNextClick) {
+          this.suppressNextClick = false;
+          return;
+        }
+        this.selectBrowserFile(f);
+      });
       // Double click → import into timeline
       item.addEventListener('dblclick', () => this.importFromBrowser(f));
       listEl.appendChild(item);
