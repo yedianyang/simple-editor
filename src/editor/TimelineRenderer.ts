@@ -143,6 +143,8 @@ export class TimelineRenderer {
 
   /** Index of the track the clip is being dragged over (-1 = none). */
   private dropTargetTrackIndex = -1;
+  /** Whether the current drop target is incompatible (channel mismatch). */
+  private dropTargetIncompatible = false;
 
   // ---- Marquee selection state ----
   private marqueeStartX = 0;
@@ -585,6 +587,47 @@ export class TimelineRenderer {
   }
 
   /**
+   * Check if a cross-track channel move is compatible (valid split/merge scenario).
+   * sourceChannels → targetChannels at targetIdx:
+   * - Same channels: always OK
+   * - Stereo → Mono: need 2 consecutive Mono tracks from targetIdx
+   * - Quad → Stereo: need 2 consecutive Stereo tracks from targetIdx
+   * - Quad → Mono: need 4 consecutive Mono tracks from targetIdx
+   * - 2x Mono → Stereo: OK (merge)
+   * - Mono → Stereo: rejected (can't upmix single mono to stereo)
+   */
+  private isChannelMoveCompatible(
+    sourceChannels: number, targetChannels: number, targetIdx: number,
+  ): boolean {
+    if (!this.timeline) return false;
+    const tracks = this.timeline.tracks;
+
+    // Split scenarios: higher channel count → lower
+    if (sourceChannels > targetChannels) {
+      const requiredTracks = sourceChannels / targetChannels;
+      if (!Number.isInteger(requiredTracks)) return false;
+      // Check consecutive tracks of matching channel count from targetIdx
+      for (let i = 0; i < requiredTracks; i++) {
+        const idx = targetIdx + i;
+        if (idx >= tracks.length) return false;
+        if (tracks[idx].channels !== targetChannels) return false;
+      }
+      return true;
+    }
+
+    // Merge scenarios: lower channel count → higher
+    if (sourceChannels < targetChannels) {
+      // Mono → Stereo is a merge (need the clip to have a partner being dragged together)
+      // For now, allow if target can hold source (e.g. mono clips can be placed in stereo tracks)
+      // The actual merge logic is handled in App.ts onDragEnd
+      if (targetChannels % sourceChannels === 0) return true;
+      return false;
+    }
+
+    return true; // same channel count
+  }
+
+  /**
    * Hit-test the mute/solo buttons in a track header.
    * Returns the track id and which button was hit, or null.
    */
@@ -1021,6 +1064,21 @@ export class TimelineRenderer {
       const validTarget = targetIdx >= 0 && targetIdx < tracks.length;
       this.dropTargetTrackIndex = validTarget ? targetIdx : -1;
       const targetTrackId = validTarget ? tracks[targetIdx].id : this.drag.trackId;
+      // Check channel compatibility for cross-track moves
+      if (validTarget && this.drag.trackId !== targetTrackId) {
+        const sourceTrack = tracks.find(t => t.id === this.drag.trackId);
+        const targetTrack = tracks[targetIdx];
+        if (sourceTrack && targetTrack && sourceTrack.channels !== targetTrack.channels) {
+          // Check if this is a valid split/merge scenario or incompatible
+          this.dropTargetIncompatible = !this.isChannelMoveCompatible(
+            sourceTrack.channels, targetTrack.channels, targetIdx);
+        } else {
+          this.dropTargetIncompatible = false;
+        }
+      } else {
+        this.dropTargetIncompatible = false;
+      }
+
       if (this.onClipMove) {
         this.onClipMove(this.drag.clipId, this.drag.trackId, targetTrackId, newOffset);
       }
@@ -1203,6 +1261,7 @@ export class TimelineRenderer {
     const wasClipDrag = this.drag.mode === 'clipMove' ||
       this.drag.mode === 'trimStart' || this.drag.mode === 'trimEnd';
     this.dropTargetTrackIndex = -1;
+    this.dropTargetIncompatible = false;
     this.drag.mode = 'none';
     if (wasClipDrag && this.onDragEnd) {
       this.onDragEnd();
@@ -1963,7 +2022,7 @@ export class TimelineRenderer {
 
       // Lane background (alternating colors, highlight drop target)
       if (this.dropTargetTrackIndex === i && this.drag.mode === 'clipMove') {
-        ctx.fillStyle = '#1e2a3a';  // subtle blue highlight for drop target
+        ctx.fillStyle = this.dropTargetIncompatible ? '#3a1e1e' : '#1e2a3a';  // red for incompatible, blue for valid
       } else {
         ctx.fillStyle = i % 2 === 0 ? COLOR_TRACK_EVEN : COLOR_TRACK_ODD;
       }

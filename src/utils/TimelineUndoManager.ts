@@ -844,6 +844,42 @@ export class ImportFileAtPositionCommand implements TimelineCommand {
  * Undo/redo for deleting an entire track.
  * Deep-copies the track data (including clips) so undo can restore it at the original index.
  */
+/**
+ * Snapshot-based undo for cross-track channel split/merge operations.
+ * Saves the full state of all affected tracks before and after the operation.
+ */
+export class CrossTrackChannelCommand implements TimelineCommand {
+  description: string;
+
+  constructor(
+    private model: TimelineModel,
+    /** Track snapshots before the operation: [trackId, clips snapshot][] */
+    private beforeSnapshots: Array<{ trackId: string; clips: Clip[] }>,
+    /** Track snapshots after the operation: [trackId, clips snapshot][] */
+    private afterSnapshots: Array<{ trackId: string; clips: Clip[] }>,
+    description: string,
+  ) {
+    this.description = description;
+  }
+
+  execute(): void {
+    this.applySnapshots(this.afterSnapshots);
+  }
+
+  undo(): void {
+    this.applySnapshots(this.beforeSnapshots);
+  }
+
+  private applySnapshots(snapshots: Array<{ trackId: string; clips: Clip[] }>): void {
+    for (const { trackId, clips } of snapshots) {
+      const track = this.model.timeline.tracks.find(t => t.id === trackId);
+      if (track) {
+        track.clips = clips.map(c => ({ ...c }));
+      }
+    }
+  }
+}
+
 export class DeleteTrackCommand implements TimelineCommand {
   description: string;
   private savedTrack: Track | null = null;

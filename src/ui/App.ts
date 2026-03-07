@@ -37,6 +37,7 @@ import {
   DenoiseClipCommand,
   DeleteTrackCommand,
   ImportFileAtPositionCommand,
+  CrossTrackChannelCommand,
 } from '../utils/TimelineUndoManager';
 import type { AudioFileInfo, AudioFileMeta, ParsedAudioData } from '../utils/TauriAPI';
 import { generateUCSFilename, parseUCSFilename } from '../core/ucs-data';
@@ -84,6 +85,8 @@ export class App {
   private _dragCurrentTrackId: string | null = null;
   private _dragGainOriginal: number | null = null;
   private _dragFadeOriginal: { fadeIn: number; fadeOut: number } | null = null;
+  /** When dragging over a compatible cross-channel track, stores target track ID for split/merge on drag end. */
+  private _dragCrossChannelTarget: { targetTrackId: string; newOffset: number } | null = null;
 
   // ---- Collapsible Panels ----
   private leftPanel: CollapsiblePanel | null = null;
@@ -234,9 +237,33 @@ export class App {
           }
         }
       }
+
+      // Channel compatibility check for cross-track moves
+      let effectiveTargetTrackId = targetTrackId;
+      if (sourceTrackId !== targetTrackId) {
+        const sourceTrack = this.timelineModel.timeline.tracks.find(t => t.id === sourceTrackId);
+        const targetTrack = this.timelineModel.timeline.tracks.find(t => t.id === targetTrackId);
+        if (sourceTrack && targetTrack && sourceTrack.channels !== targetTrack.channels) {
+          // Different channel count: block move during drag, handle on drag end
+          effectiveTargetTrackId = sourceTrackId;
+          const compatible = this.isChannelMoveCompatible(sourceTrack, targetTrack);
+          if (compatible) {
+            // Track intended target for split/merge on drag end
+            this._dragCrossChannelTarget = { targetTrackId, newOffset };
+          } else {
+            this._dragCrossChannelTarget = null;
+          }
+        } else {
+          // Same channel count or same track: clear cross-channel target
+          this._dragCrossChannelTarget = null;
+        }
+      } else {
+        this._dragCrossChannelTarget = null;
+      }
+
       // Apply move directly (single undo entry created on drag end)
-      this.timelineModel.moveClipToTrack(sourceTrackId, targetTrackId, clipId, newOffset);
-      this._dragCurrentTrackId = targetTrackId;
+      this.timelineModel.moveClipToTrack(sourceTrackId, effectiveTargetTrackId, clipId, newOffset);
+      this._dragCurrentTrackId = effectiveTargetTrackId;
 
       // Batch-move other selected clips by the same delta
       if (this._dragBatchSnapshots && this._dragBatchSnapshots.length > 0 && this._dragStartSnapshot) {
@@ -364,57 +391,114 @@ export class App {
       if (this._dragStartSnapshot) {
         const { clipId, trackId: originalTrackId, clip: originalState } = this._dragStartSnapshot;
         const finalTrackId = this._dragCurrentTrackId ?? originalTrackId;
-        const commands: ClipDragCommand[] = [];
 
-        // Primary clip
-        const track = this.timelineModel.timeline.tracks.find(t => t.id === finalTrackId);
-        const clip = track?.clips.find(c => c.id === clipId);
-        if (clip) {
-          const changed = originalState.timelineOffset !== clip.timelineOffset
-            || originalState.sourceStart !== clip.sourceStart
-            || originalState.sourceEnd !== clip.sourceEnd
-            || originalTrackId !== finalTrackId;
-          if (changed) {
-            const overlapResult = this.timelineModel.resolveOverlaps(finalTrackId, clipId);
-            const hasOverlaps = overlapResult.removed.length > 0 || overlapResult.trimmed.length > 0;
-            commands.push(new ClipDragCommand(
-              this.timelineModel, clipId, originalTrackId, finalTrackId,
-              originalState, { ...clip }, hasOverlaps ? overlapResult : null,
-            ));
+        // Check for cross-channel split/merge operation
+        if (this._dragCrossChannelTarget) {
+          const { targetTrackId: crossTargetId, newOffset: crossOffset } = this._dragCrossChannelTarget;
+          this._dragCrossChannelTarget = null;
+
+          const sourceTrack = this.timelineModel.timeline.tracks.find(t => t.id === originalTrackId);
+          const targetTrack = this.timelineModel.timeline.tracks.find(t => t.id === crossTargetId);
+          if (sourceTrack && targetTrack) {
+            // Revert the dragged clip (and siblings) back to original offset before snapshotting
+            const draggedClip = sourceTrack.clips.find(c => c.id === clipId);
+            if (draggedClip) {
+              const siblings = draggedClip.groupId
+                ? sourceTrack.clips.filter(c => c.groupId === draggedClip.groupId)
+                : [draggedClip];
+              for (const sib of siblings) {
+                sib.timelineOffset = originalState.timelineOffset;
+              }
+            }
+
+            // Also revert batch-moved clips
+            if (this._dragBatchSnapshots) {
+              for (const snap of this._dragBatchSnapshots) {
+                const t = this.timelineModel.timeline.tracks.find(tr => tr.id === snap.trackId);
+                const c = t?.clips.find(cl => cl.id === snap.clipId);
+                if (c) c.timelineOffset = snap.clip.timelineOffset;
+              }
+            }
+
+            const targetIndex = this.timelineModel.timeline.tracks.indexOf(targetTrack);
+            let result: ReturnType<typeof this.executeCrossTrackSplit> = null;
+
+            if (sourceTrack.channels > targetTrack.channels) {
+              // Split: e.g. stereo → 2x mono
+              result = this.executeCrossTrackSplit(originalTrackId, targetIndex, clipId, crossOffset);
+            } else {
+              // Merge: e.g. 2x mono → stereo
+              result = this.executeCrossTrackMerge(originalTrackId, crossTargetId, clipId, crossOffset);
+            }
+
+            if (result) {
+              const desc = sourceTrack.channels > targetTrack.channels
+                ? `Split ${sourceTrack.channels}ch to ${targetTrack.channels}ch tracks`
+                : `Merge ${sourceTrack.channels}ch clips to ${targetTrack.channels}ch track`;
+              this.timelineUndoManager.pushExecuted(
+                new CrossTrackChannelCommand(this.timelineModel, result.before, result.after, desc),
+              );
+              this.timelineRenderer?.render();
+            }
           }
-        }
 
-        // Batch clips (other selected clips moved together)
-        if (this._dragBatchSnapshots) {
-          for (const snap of this._dragBatchSnapshots) {
-            const t = this.timelineModel.timeline.tracks.find(tr => tr.id === snap.trackId);
-            const c = t?.clips.find(cl => cl.id === snap.clipId);
-            if (c && (snap.clip.timelineOffset !== c.timelineOffset
-              || snap.clip.sourceStart !== c.sourceStart
-              || snap.clip.sourceEnd !== c.sourceEnd)) {
-              const overlapResult = this.timelineModel.resolveOverlaps(snap.trackId, snap.clipId);
+          this._dragStartSnapshot = null;
+          this._dragBatchSnapshots = null;
+          this._dragCurrentTrackId = null;
+        } else {
+          // Normal drag (same channel count or same track)
+          const commands: ClipDragCommand[] = [];
+
+          // Primary clip
+          const track = this.timelineModel.timeline.tracks.find(t => t.id === finalTrackId);
+          const clip = track?.clips.find(c => c.id === clipId);
+          if (clip) {
+            const changed = originalState.timelineOffset !== clip.timelineOffset
+              || originalState.sourceStart !== clip.sourceStart
+              || originalState.sourceEnd !== clip.sourceEnd
+              || originalTrackId !== finalTrackId;
+            if (changed) {
+              const overlapResult = this.timelineModel.resolveOverlaps(finalTrackId, clipId);
               const hasOverlaps = overlapResult.removed.length > 0 || overlapResult.trimmed.length > 0;
               commands.push(new ClipDragCommand(
-                this.timelineModel, snap.clipId, snap.trackId, snap.trackId,
-                snap.clip, { ...c }, hasOverlaps ? overlapResult : null,
+                this.timelineModel, clipId, originalTrackId, finalTrackId,
+                originalState, { ...clip }, hasOverlaps ? overlapResult : null,
               ));
             }
           }
-        }
 
-        // Push as single compound undo entry
-        if (commands.length === 1) {
-          this.timelineUndoManager.pushExecuted(commands[0]);
-        } else if (commands.length > 1) {
-          this.timelineUndoManager.pushExecuted(new CompoundCommand(commands, 'Drag clips'));
-        }
-        if (commands.length > 0) {
-          this.timelineRenderer?.render();
-        }
+          // Batch clips (other selected clips moved together)
+          if (this._dragBatchSnapshots) {
+            for (const snap of this._dragBatchSnapshots) {
+              const t = this.timelineModel.timeline.tracks.find(tr => tr.id === snap.trackId);
+              const c = t?.clips.find(cl => cl.id === snap.clipId);
+              if (c && (snap.clip.timelineOffset !== c.timelineOffset
+                || snap.clip.sourceStart !== c.sourceStart
+                || snap.clip.sourceEnd !== c.sourceEnd)) {
+                const overlapResult = this.timelineModel.resolveOverlaps(snap.trackId, snap.clipId);
+                const hasOverlaps = overlapResult.removed.length > 0 || overlapResult.trimmed.length > 0;
+                commands.push(new ClipDragCommand(
+                  this.timelineModel, snap.clipId, snap.trackId, snap.trackId,
+                  snap.clip, { ...c }, hasOverlaps ? overlapResult : null,
+                ));
+              }
+            }
+          }
 
-        this._dragStartSnapshot = null;
-        this._dragBatchSnapshots = null;
-        this._dragCurrentTrackId = null;
+          // Push as single compound undo entry
+          if (commands.length === 1) {
+            this.timelineUndoManager.pushExecuted(commands[0]);
+          } else if (commands.length > 1) {
+            this.timelineUndoManager.pushExecuted(new CompoundCommand(commands, 'Drag clips'));
+          }
+          if (commands.length > 0) {
+            this.timelineRenderer?.render();
+          }
+
+          this._dragStartSnapshot = null;
+          this._dragBatchSnapshots = null;
+          this._dragCurrentTrackId = null;
+        }
       }
 
       if (this._pendingPlaybackResume) {
@@ -1081,6 +1165,222 @@ export class App {
         clip.groupId = rightGroupId;
       }
     }
+  }
+
+  /**
+   * Check if a cross-track channel move is compatible.
+   * Returns true for same channels, valid split (higher→lower), or valid merge (lower→higher).
+   * Returns false for incompatible scenarios (e.g. mono→stereo without partner).
+   */
+  private isChannelMoveCompatible(
+    sourceTrack: { channels: number },
+    targetTrack: { channels: number },
+  ): boolean {
+    const src = sourceTrack.channels;
+    const tgt = targetTrack.channels;
+    if (src === tgt) return true;
+
+    // Split: higher channel count → lower (e.g. stereo→mono, quad→stereo, quad→mono)
+    if (src > tgt) {
+      return src % tgt === 0;
+    }
+
+    // Merge: lower → higher (e.g. mono→stereo, stereo→quad)
+    // Only allowed if the target channels is a multiple of source channels
+    return tgt % src === 0;
+  }
+
+  /**
+   * Execute cross-track channel split operation.
+   * Moves grouped clips from a multi-channel track to consecutive lower-channel tracks.
+   *
+   * Returns before/after snapshots for undo, or null if the operation failed.
+   */
+  private executeCrossTrackSplit(
+    sourceTrackId: string,
+    targetTrackStartIndex: number,
+    clipId: string,
+    newOffset: number,
+  ): { before: Array<{ trackId: string; clips: Clip[] }>; after: Array<{ trackId: string; clips: Clip[] }> } | null {
+    const tracks = this.timelineModel.timeline.tracks;
+    const sourceTrack = tracks.find(t => t.id === sourceTrackId);
+    if (!sourceTrack) return null;
+
+    // Find the clip and its group
+    const clip = sourceTrack.clips.find(c => c.id === clipId);
+    if (!clip) return null;
+
+    const groupClips = clip.groupId
+      ? sourceTrack.clips.filter(c => c.groupId === clip.groupId).sort((a, b) => (a.subChannel ?? 0) - (b.subChannel ?? 0))
+      : [clip];
+
+    const sourceChannels = sourceTrack.channels;
+    const targetTrack = tracks[targetTrackStartIndex];
+    if (!targetTrack) return null;
+    const targetChannels = targetTrack.channels;
+
+    const clipsPerTarget = targetChannels; // e.g. stereo→mono: 1 clip per target, quad→stereo: 2 clips per target
+    const numTargetTracks = sourceChannels / targetChannels;
+
+    // Verify we have enough consecutive target tracks
+    for (let i = 0; i < numTargetTracks; i++) {
+      const idx = targetTrackStartIndex + i;
+      if (idx >= tracks.length || tracks[idx].channels !== targetChannels) return null;
+    }
+
+    // Compute offset delta from original clip position
+    const offsetDelta = newOffset - clip.timelineOffset;
+
+    // Snapshot before state
+    const affectedTrackIds = [sourceTrackId];
+    for (let i = 0; i < numTargetTracks; i++) {
+      const tId = tracks[targetTrackStartIndex + i].id;
+      if (!affectedTrackIds.includes(tId)) affectedTrackIds.push(tId);
+    }
+    const before = affectedTrackIds.map(tId => {
+      const t = tracks.find(tr => tr.id === tId)!;
+      return { trackId: tId, clips: t.clips.map(c => ({ ...c })) };
+    });
+
+    // Execute split: remove group clips from source, distribute to target tracks
+    sourceTrack.clips = sourceTrack.clips.filter(c => !groupClips.some(gc => gc.id === c.id));
+
+    for (let targetOffset = 0; targetOffset < numTargetTracks; targetOffset++) {
+      const tTrack = tracks[targetTrackStartIndex + targetOffset];
+      const startSubCh = targetOffset * clipsPerTarget;
+      const endSubCh = startSubCh + clipsPerTarget;
+      const clipsForThisTrack = groupClips.filter(c => {
+        const sub = c.subChannel ?? 0;
+        return sub >= startSubCh && sub < endSubCh;
+      });
+
+      // Assign new groupId if multiple clips go to the same target track
+      const newGroupId = clipsForThisTrack.length > 1 ? generateGroupId() : undefined;
+
+      for (const gc of clipsForThisTrack) {
+        const newClip: Clip = {
+          ...gc,
+          timelineOffset: Math.max(0, gc.timelineOffset + offsetDelta),
+          subChannel: clipsPerTarget > 1 ? (gc.subChannel ?? 0) - startSubCh : undefined,
+          groupId: newGroupId,
+        };
+        tTrack.clips.push(newClip);
+
+        // Resolve overlaps for the newly placed clip
+        this.timelineModel.resolveOverlaps(tTrack.id, newClip.id);
+      }
+    }
+
+    // Snapshot after state
+    const after = affectedTrackIds.map(tId => {
+      const t = tracks.find(tr => tr.id === tId)!;
+      return { trackId: tId, clips: t.clips.map(c => ({ ...c })) };
+    });
+
+    return { before, after };
+  }
+
+  /**
+   * Execute cross-track channel merge operation.
+   * Moves clips from lower-channel tracks into a single higher-channel track.
+   *
+   * Returns before/after snapshots for undo, or null if the operation failed.
+   */
+  private executeCrossTrackMerge(
+    sourceTrackId: string,
+    targetTrackId: string,
+    clipId: string,
+    newOffset: number,
+  ): { before: Array<{ trackId: string; clips: Clip[] }>; after: Array<{ trackId: string; clips: Clip[] }> } | null {
+    const tracks = this.timelineModel.timeline.tracks;
+    const sourceTrack = tracks.find(t => t.id === sourceTrackId);
+    const targetTrack = tracks.find(t => t.id === targetTrackId);
+    if (!sourceTrack || !targetTrack) return null;
+
+    const clip = sourceTrack.clips.find(c => c.id === clipId);
+    if (!clip) return null;
+
+    const sourceChannels = sourceTrack.channels;
+    const targetChannels = targetTrack.channels;
+
+    // How many source clips are needed to fill target track channels
+    const clipsNeeded = targetChannels / sourceChannels;
+
+    // Collect all selected clips that are candidates for merging
+    // They should be from consecutive source-channel-count tracks
+    const selectedClipIds = this.timelineModel.timeline.selectedClipIds;
+    const candidateClips: Array<{ clip: Clip; trackId: string; trackIndex: number }> = [];
+
+    for (const selId of selectedClipIds) {
+      for (let ti = 0; ti < tracks.length; ti++) {
+        const c = tracks[ti].clips.find(cl => cl.id === selId);
+        if (c && tracks[ti].channels === sourceChannels) {
+          candidateClips.push({ clip: c, trackId: tracks[ti].id, trackIndex: ti });
+          break;
+        }
+      }
+    }
+
+    // We need exactly clipsNeeded clips with similar timing
+    if (candidateClips.length < clipsNeeded) return null;
+
+    // Sort by track index to assign subChannels in order
+    candidateClips.sort((a, b) => a.trackIndex - b.trackIndex);
+
+    // Take the first clipsNeeded candidates
+    const mergeSet = candidateClips.slice(0, clipsNeeded);
+
+    // Compute offset delta
+    const offsetDelta = newOffset - clip.timelineOffset;
+
+    // Snapshot before state
+    const affectedTrackIds = new Set<string>([targetTrackId]);
+    for (const mc of mergeSet) affectedTrackIds.add(mc.trackId);
+    const affectedIds = Array.from(affectedTrackIds);
+
+    const before = affectedIds.map(tId => {
+      const t = tracks.find(tr => tr.id === tId)!;
+      return { trackId: tId, clips: t.clips.map(c => ({ ...c })) };
+    });
+
+    // Execute merge: remove clips from source tracks, add to target with subChannel assignment
+    const newGroupId = generateGroupId();
+
+    for (let i = 0; i < mergeSet.length; i++) {
+      const mc = mergeSet[i];
+      const srcTrack = tracks.find(t => t.id === mc.trackId)!;
+      srcTrack.clips = srcTrack.clips.filter(c => c.id !== mc.clip.id);
+
+      const baseSubChannel = i * sourceChannels;
+      // For each source channel in the clip
+      for (let ch = 0; ch < sourceChannels; ch++) {
+        const newClip: Clip = {
+          ...mc.clip,
+          timelineOffset: Math.max(0, mc.clip.timelineOffset + offsetDelta),
+          subChannel: baseSubChannel + ch,
+          groupId: newGroupId,
+        };
+        // If source clip already has subChannel, it only represents one channel
+        if (mc.clip.subChannel != null) {
+          newClip.subChannel = baseSubChannel;
+          targetTrack.clips.push(newClip);
+          this.timelineModel.resolveOverlaps(targetTrackId, newClip.id);
+          break; // Only one clip per source
+        }
+        if (ch === 0) {
+          targetTrack.clips.push(newClip);
+          this.timelineModel.resolveOverlaps(targetTrackId, newClip.id);
+        }
+      }
+    }
+
+    // Snapshot after state
+    const after = affectedIds.map(tId => {
+      const t = tracks.find(tr => tr.id === tId)!;
+      return { trackId: tId, clips: t.clips.map(c => ({ ...c })) };
+    });
+
+    return { before, after };
   }
 
   handleKeyboard(e: KeyboardEvent): void {
