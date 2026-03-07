@@ -65,6 +65,7 @@ export class App {
   meterAnimationFrame = 0;
   private pendingExportMetadata: ExportMetadata | null = null;
   private pendingUCSFilename: string | null = null;
+  private filenameLocked = false;
   private pluginInsertTargetTrackId: string | null = null;
 
   // ---- Timeline / Multi-track ----
@@ -2474,18 +2475,42 @@ export class App {
 
     const exportActionBtn = document.getElementById('exportActionBtn');
     if (exportActionBtn) {
-      exportActionBtn.addEventListener('click', async () => {
-        const pathEl = document.getElementById('exportPath');
-        const exportFolder = pathEl?.dataset.fullPath;
-        if (!exportFolder) {
-          // Fallback to the modal-based export
-          this.showExportModal();
-          return;
-        }
-        // Quick export to the chosen folder using current settings
-        await this.quickExport(exportFolder);
+      exportActionBtn.addEventListener('click', () => {
+        this.showExportModal();
       });
     }
+
+    // Auto-fill export filename from UCS fields
+    for (const id of ['inlineCatId', 'inlineFxName', 'inlineCreatorId']) {
+      const el = document.getElementById(id);
+      if (el) {
+        el.addEventListener('input', () => {
+          this.filenameLocked = false;
+          this.updateExportFilename();
+        });
+      }
+    }
+
+    // Manual edit of filename locks auto-fill
+    const filenameEl = document.getElementById('exportFilename');
+    if (filenameEl) {
+      filenameEl.addEventListener('input', () => {
+        this.filenameLocked = true;
+      });
+    }
+  }
+
+  private updateExportFilename(): void {
+    if (this.filenameLocked) return;
+    const catId = (document.getElementById('inlineCatId') as HTMLInputElement)?.value || '';
+    const fxName = (document.getElementById('inlineFxName') as HTMLInputElement)?.value || '';
+    const creatorId = (document.getElementById('inlineCreatorId') as HTMLInputElement)?.value || '';
+
+    let name = [catId, fxName, creatorId].filter(Boolean).join('_');
+    if (!name) name = this.fileName?.replace(/\.[^/.]+$/, '') || 'audio';
+
+    const el = document.getElementById('exportFilename') as HTMLInputElement;
+    if (el) el.value = name;
   }
 
   private async quickExport(folder: string): Promise<void> {
@@ -2499,19 +2524,11 @@ export class App {
 
     try {
       const buffer = this.audioEngine.audioBuffer;
-      const formatEl = document.getElementById('exportFilenameFormat') as HTMLInputElement | null;
-      const pattern = formatEl?.value || '{filename}';
+      const filenameEl = document.getElementById('exportFilename') as HTMLInputElement | null;
+      let baseName = filenameEl?.value || '';
 
-      // Build filename from pattern
-      let baseName = pattern
-        .replace('{filename}', (this.fileName || 'audio').replace(/\.[^/.]+$/, ''))
-        .replace('{CatID}', (document.getElementById('inlineCatId') as HTMLInputElement)?.value || '')
-        .replace('{FXName}', (document.getElementById('inlineFxName') as HTMLInputElement)?.value || '')
-        .replace('{CreatorID}', (document.getElementById('inlineCreatorId') as HTMLInputElement)?.value || '')
-        .replace('{SourceID}', (document.getElementById('inlineSourceId') as HTMLInputElement)?.value || '');
-
-      // Remove trailing underscores/hyphens from empty tokens
-      baseName = baseName.replace(/[_-]+$/, '').replace(/[_-]{2,}/g, '_');
+      // Strip any extension the user may have typed
+      baseName = baseName.replace(/\.[^/.]+$/, '');
       if (!baseName) baseName = this.fileName?.replace(/\.[^/.]+$/, '') || 'audio';
 
       // Gather inline metadata for quick export
@@ -3047,9 +3064,12 @@ export class App {
         extension = '.aif';
       }
 
-      // Use UCS filename if available, otherwise use original filename
+      // Use sidebar exportFilename if filled, else UCS filename, else original filename
+      const sidebarFilename = (document.getElementById('exportFilename') as HTMLInputElement)?.value?.replace(/\.[^/.]+$/, '') || '';
       let baseName: string;
-      if (this.pendingUCSFilename) {
+      if (sidebarFilename) {
+        baseName = sidebarFilename;
+      } else if (this.pendingUCSFilename) {
         baseName = this.pendingUCSFilename;
       } else {
         baseName = this.fileName ? this.fileName.replace(/\.[^/.]+$/, '') : 'audio';
@@ -3058,17 +3078,36 @@ export class App {
       const defaultName = baseName + fileNameSuffix + extension;
 
       if (window.appAPI) {
-        // Tauri: show native save dialog → write via fs plugin
-        const savePath = await window.appAPI.showSaveDialog({
-          title: 'Export Audio',
-          defaultPath: defaultName,
-          filters: [{ name: format === 'wav' ? 'WAV Audio' : format === 'mp3' ? 'MP3 Audio' : 'AIFF Audio', extensions: [format === 'wav' ? 'wav' : format === 'mp3' ? 'mp3' : 'aif'] }],
-        });
+        // Check if sidebar already has a preselected export folder
+        const preselectedFolder = document.getElementById('exportPath')?.dataset?.fullPath;
+        let savePath: string | null = null;
+
+        if (preselectedFolder) {
+          // Direct export to preselected folder without Finder dialog
+          savePath = `${preselectedFolder}/${defaultName}`;
+        } else {
+          // Show native save dialog
+          savePath = await window.appAPI.showSaveDialog({
+            title: 'Export Audio',
+            defaultPath: defaultName,
+            filters: [{ name: format === 'wav' ? 'WAV Audio' : format === 'mp3' ? 'MP3 Audio' : 'AIFF Audio', extensions: [format === 'wav' ? 'wav' : format === 'mp3' ? 'mp3' : 'aif'] }],
+          });
+        }
         if (savePath) {
           if (confirmBtn) confirmBtn.textContent = 'Writing...';
           const arrayBuf = await blob.arrayBuffer();
           await window.appAPI.writeFile(savePath, arrayBuf);
           console.log(`[Export] Written to ${savePath}`);
+
+          // Mark file as done in browser if it matches
+          const activeId = this.fileQueue.getActive();
+          if (activeId !== null) {
+            const activeFile = this.fileQueue.getFile(activeId);
+            if (activeFile && 'path' in activeFile) {
+              this.fileStatuses.set((activeFile as { path: string }).path, 'done');
+              this.renderFileBrowser();
+            }
+          }
         }
       } else {
         // Browser fallback
