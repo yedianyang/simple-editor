@@ -572,6 +572,19 @@ export class TimelineRenderer {
   }
 
   /**
+   * Get all clip IDs in the same group (same track, same groupId).
+   * Returns just [clipId] if the clip has no groupId.
+   */
+  private getGroupClipIds(trackId: string, clipId: string): string[] {
+    if (!this.timeline) return [clipId];
+    const track = this.timeline.tracks.find(t => t.id === trackId);
+    if (!track) return [clipId];
+    const clip = track.clips.find(c => c.id === clipId);
+    if (!clip?.groupId) return [clipId];
+    return track.clips.filter(c => c.groupId === clip.groupId).map(c => c.id);
+  }
+
+  /**
    * Hit-test the mute/solo buttons in a track header.
    * Returns the track id and which button was hit, or null.
    */
@@ -764,7 +777,7 @@ export class TimelineRenderer {
       const { clip, track, zone } = hit;
 
       if (zone === 'trimStart') {
-        this.timeline.selectedClipIds = [clip.id];
+        this.timeline.selectedClipIds = this.getGroupClipIds(track.id, clip.id);
         if (this.onClipSelect) this.onClipSelect(clip.id, track.id);
         this.drag = {
           mode: 'trimStart', clipId: clip.id, trackId: track.id,
@@ -776,7 +789,7 @@ export class TimelineRenderer {
       }
 
       if (zone === 'trimEnd') {
-        this.timeline.selectedClipIds = [clip.id];
+        this.timeline.selectedClipIds = this.getGroupClipIds(track.id, clip.id);
         if (this.onClipSelect) this.onClipSelect(clip.id, track.id);
         this.drag = {
           mode: 'trimEnd', clipId: clip.id, trackId: track.id,
@@ -801,7 +814,7 @@ export class TimelineRenderer {
       }
 
       if (zone === 'fadeIn') {
-        this.timeline.selectedClipIds = [clip.id];
+        this.timeline.selectedClipIds = this.getGroupClipIds(track.id, clip.id);
         if (this.onClipSelect) this.onClipSelect(clip.id, track.id);
         this.drag = {
           mode: 'fadeIn', clipId: clip.id, trackId: track.id,
@@ -814,7 +827,7 @@ export class TimelineRenderer {
       }
 
       if (zone === 'fadeOut') {
-        this.timeline.selectedClipIds = [clip.id];
+        this.timeline.selectedClipIds = this.getGroupClipIds(track.id, clip.id);
         if (this.onClipSelect) this.onClipSelect(clip.id, track.id);
         this.drag = {
           mode: 'fadeOut', clipId: clip.id, trackId: track.id,
@@ -828,18 +841,23 @@ export class TimelineRenderer {
 
       if (zone === 'move') {
         // Lower half of track → move clip
+        const groupIds = this.getGroupClipIds(track.id, clip.id);
         if (e.shiftKey) {
-          // Shift: toggle clip in selection
-          const idx = this.timeline.selectedClipIds.indexOf(clip.id);
-          if (idx >= 0) {
-            this.timeline.selectedClipIds.splice(idx, 1);
+          // Shift: toggle clip group in selection
+          const allInSelection = groupIds.every(id => this.timeline!.selectedClipIds.includes(id));
+          if (allInSelection) {
+            this.timeline.selectedClipIds = this.timeline.selectedClipIds.filter(id => !groupIds.includes(id));
           } else {
-            this.timeline.selectedClipIds.push(clip.id);
+            for (const id of groupIds) {
+              if (!this.timeline.selectedClipIds.includes(id)) {
+                this.timeline.selectedClipIds.push(id);
+              }
+            }
           }
         } else {
           // Without shift: replace selection only if clip not already selected
           if (!this.timeline.selectedClipIds.includes(clip.id)) {
-            this.timeline.selectedClipIds = [clip.id];
+            this.timeline.selectedClipIds = [...groupIds];
           }
         }
         // Auto-add parent track to selectedTrackIds
@@ -858,16 +876,21 @@ export class TimelineRenderer {
         return;
       }
 
-      // zone === 'select' → select clip, then fall through to time selection
+      // zone === 'select' → select clip group, then fall through to time selection
+      const selectGroupIds = this.getGroupClipIds(track.id, clip.id);
       if (e.shiftKey) {
-        const idx = this.timeline.selectedClipIds.indexOf(clip.id);
-        if (idx >= 0) {
-          this.timeline.selectedClipIds.splice(idx, 1);
+        const allInSelection = selectGroupIds.every(id => this.timeline!.selectedClipIds.includes(id));
+        if (allInSelection) {
+          this.timeline.selectedClipIds = this.timeline.selectedClipIds.filter(id => !selectGroupIds.includes(id));
         } else {
-          this.timeline.selectedClipIds.push(clip.id);
+          for (const id of selectGroupIds) {
+            if (!this.timeline.selectedClipIds.includes(id)) {
+              this.timeline.selectedClipIds.push(id);
+            }
+          }
         }
       } else {
-        this.timeline.selectedClipIds = [clip.id];
+        this.timeline.selectedClipIds = [...selectGroupIds];
       }
     }
 

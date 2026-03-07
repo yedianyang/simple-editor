@@ -19,7 +19,7 @@ import { FileHandler } from '../utils/FileHandler';
 import { BufferPool } from '../core/BufferPool';
 import { encodeWavAsync } from '../core/WavEncoder';
 import { encodeMp3Async, Mp3Metadata } from '../core/Mp3Encoder';
-import { TimelineModel } from '../core/TimelineModel';
+import { TimelineModel, generateGroupId } from '../core/TimelineModel';
 import {
   TimelineUndoManager,
   CompoundCommand,
@@ -277,15 +277,30 @@ export class App {
         clamped = Math.max(clip.sourceStart + 1, Math.min(bufferLength, newValue));
       }
 
-      // Snapshot original state on first trim of this drag
+      // Snapshot original state on first trim of this drag (including siblings)
       if (!this._dragStartSnapshot) {
         this._dragStartSnapshot = { clipId, trackId, clip: { ...clip } };
+        // Snapshot sibling clips for grouped trim undo
+        this._dragBatchSnapshots = [];
+        const siblings = this.timelineModel.getSiblingClips(trackId, clipId);
+        for (const sib of siblings) {
+          this._dragBatchSnapshots.push({ clipId: sib.id, trackId, clip: { ...sib } });
+        }
       }
       // Apply trim directly (single undo entry created on drag end)
       if (edge === 'start') {
         this.timelineModel.trimClipStart(trackId, clipId, clamped);
       } else {
         this.timelineModel.trimClipEnd(trackId, clipId, clamped);
+      }
+      // Sync trim to sibling clips in the same group
+      const trimSiblings = this.timelineModel.getSiblingClips(trackId, clipId);
+      for (const sib of trimSiblings) {
+        if (edge === 'start') {
+          this.timelineModel.trimClipStart(trackId, sib.id, clamped);
+        } else {
+          this.timelineModel.trimClipEnd(trackId, sib.id, clamped);
+        }
       }
       this._dragCurrentTrackId = trackId;
       this.timelineRenderer?.clearPeakCaches();
@@ -298,16 +313,49 @@ export class App {
     };
 
     this.timelineRenderer.onClipSplit = (trackId, clipId, splitSample) => {
-      this.timelineUndoManager.push(
+      const track = this.timelineModel.timeline.tracks.find(t => t.id === trackId);
+      const clip = track?.clips.find(c => c.id === clipId);
+      const siblings = clip?.groupId
+        ? this.timelineModel.getSiblingClips(trackId, clipId)
+        : [];
+
+      // Split primary + all siblings
+      const commands: SplitClipCommand[] = [
         new SplitClipCommand(this.timelineModel, trackId, clipId, splitSample),
-      );
+      ];
+      for (const sib of siblings) {
+        commands.push(new SplitClipCommand(this.timelineModel, trackId, sib.id, splitSample));
+      }
+
+      if (commands.length === 1) {
+        this.timelineUndoManager.push(commands[0]);
+      } else {
+        this.timelineUndoManager.push(new CompoundCommand(commands, 'Split grouped clips'));
+        // After split, assign new groupIds to left and right halves
+        this.regroupAfterSplit(trackId, clip!.groupId!, splitSample);
+      }
       this.timelineRenderer?.render();
     };
 
     this.timelineRenderer.onClipDelete = (trackId, clipId) => {
-      this.timelineUndoManager.push(
+      const track = this.timelineModel.timeline.tracks.find(t => t.id === trackId);
+      const clip = track?.clips.find(c => c.id === clipId);
+      const siblings = clip?.groupId
+        ? this.timelineModel.getSiblingClips(trackId, clipId)
+        : [];
+
+      const commands: DeleteClipCommand[] = [
         new DeleteClipCommand(this.timelineModel, trackId, clipId),
-      );
+      ];
+      for (const sib of siblings) {
+        commands.push(new DeleteClipCommand(this.timelineModel, trackId, sib.id));
+      }
+
+      if (commands.length === 1) {
+        this.timelineUndoManager.push(commands[0]);
+      } else {
+        this.timelineUndoManager.push(new CompoundCommand(commands, 'Delete grouped clips'));
+      }
       this.timelineRenderer?.render();
     };
 
@@ -341,7 +389,9 @@ export class App {
           for (const snap of this._dragBatchSnapshots) {
             const t = this.timelineModel.timeline.tracks.find(tr => tr.id === snap.trackId);
             const c = t?.clips.find(cl => cl.id === snap.clipId);
-            if (c && snap.clip.timelineOffset !== c.timelineOffset) {
+            if (c && (snap.clip.timelineOffset !== c.timelineOffset
+              || snap.clip.sourceStart !== c.sourceStart
+              || snap.clip.sourceEnd !== c.sourceEnd)) {
               const overlapResult = this.timelineModel.resolveOverlaps(snap.trackId, snap.clipId);
               const hasOverlaps = overlapResult.removed.length > 0 || overlapResult.trimmed.length > 0;
               commands.push(new ClipDragCommand(
@@ -465,6 +515,12 @@ export class App {
         }
         if (edge === 'in') clip.fadeInSamples = samples;
         else clip.fadeOutSamples = samples;
+        // Sync fade to sibling clips in the same group
+        const fadeSiblings = this.timelineModel.getSiblingClips(trackId, clipId);
+        for (const sib of fadeSiblings) {
+          if (edge === 'in') sib.fadeInSamples = samples;
+          else sib.fadeOutSamples = samples;
+        }
       }
     };
 
@@ -492,19 +548,25 @@ export class App {
       // Check for fade drag undo
       if (this._dragFadeOriginal != null) {
         const selected = this.timelineModel.timeline.selectedClipIds;
-        if (selected.length === 1) {
+        const { fadeIn: prevIn, fadeOut: prevOut } = this._dragFadeOriginal;
+        const fadeCommands: EditClipFadeCommand[] = [];
+        for (const selId of selected) {
           for (const track of this.timelineModel.timeline.tracks) {
-            const clip = track.clips.find(c => c.id === selected[0]);
+            const clip = track.clips.find(c => c.id === selId);
             if (clip) {
-              const { fadeIn: prevIn, fadeOut: prevOut } = this._dragFadeOriginal;
               if (clip.fadeInSamples !== prevIn || clip.fadeOutSamples !== prevOut) {
-                this.timelineUndoManager.pushExecuted(
+                fadeCommands.push(
                   new EditClipFadeCommand(this.timelineModel, track.id, clip.id, prevIn, prevOut, clip.fadeInSamples, clip.fadeOutSamples),
                 );
               }
               break;
             }
           }
+        }
+        if (fadeCommands.length === 1) {
+          this.timelineUndoManager.pushExecuted(fadeCommands[0]);
+        } else if (fadeCommands.length > 1) {
+          this.timelineUndoManager.pushExecuted(new CompoundCommand(fadeCommands, 'Edit grouped clip fades'));
         }
         this._dragFadeOriginal = null;
         return;
@@ -1000,6 +1062,27 @@ export class App {
     }
   }
 
+  /**
+   * After splitting all clips in a group, assign new groupIds to the left and right halves.
+   * Left halves are clips ending at or before splitSample, right halves start at or after.
+   */
+  private regroupAfterSplit(trackId: string, oldGroupId: string, splitSample: number): void {
+    const track = this.timelineModel.timeline.tracks.find(t => t.id === trackId);
+    if (!track) return;
+    const leftGroupId = generateGroupId();
+    const rightGroupId = generateGroupId();
+    for (const clip of track.clips) {
+      if (clip.groupId !== oldGroupId) continue;
+      // Left half: ends at splitSample (timelineOffset + duration <= splitSample)
+      const clipEnd = clip.timelineOffset + clip.duration;
+      if (clipEnd <= splitSample) {
+        clip.groupId = leftGroupId;
+      } else if (clip.timelineOffset >= splitSample) {
+        clip.groupId = rightGroupId;
+      }
+    }
+  }
+
   handleKeyboard(e: KeyboardEvent): void {
     if ((e.target as HTMLElement).tagName === 'INPUT' || (e.target as HTMLElement).tagName === 'SELECT') return;
 
@@ -1069,22 +1152,35 @@ export class App {
         if (this.audioEngine.audioBuffer) this.movePlayhead(1);
         break;
       case 's': case 'S': {
-        // Split is handled by TimelineRenderer's own keydown handler
-        // (when canvas is focused), but also allow from global keyboard
+        // Split all selected clips (including group siblings via selection sync)
         const selected = this.timelineModel.timeline.selectedClipIds;
         if (selected.length > 0) {
-          const toSplit: Array<{ trackId: string; clipId: string }> = [];
+          const splitSample = this.timelineModel.timeline.playheadSample;
+          // Collect clips to split and track groupIds for re-grouping
+          const toSplit: Array<{ trackId: string; clipId: string; groupId?: string }> = [];
           for (const track of this.timelineModel.timeline.tracks) {
             for (const clip of track.clips) {
               if (selected.includes(clip.id)) {
-                toSplit.push({ trackId: track.id, clipId: clip.id });
+                toSplit.push({ trackId: track.id, clipId: clip.id, groupId: clip.groupId });
               }
             }
           }
+          const commands: SplitClipCommand[] = [];
           for (const { trackId, clipId } of toSplit) {
-            this.timelineUndoManager.push(
-              new SplitClipCommand(this.timelineModel, trackId, clipId, this.timelineModel.timeline.playheadSample),
-            );
+            commands.push(new SplitClipCommand(this.timelineModel, trackId, clipId, splitSample));
+          }
+          if (commands.length === 1) {
+            this.timelineUndoManager.push(commands[0]);
+          } else if (commands.length > 1) {
+            this.timelineUndoManager.push(new CompoundCommand(commands, 'Split clips'));
+          }
+          // Re-group split halves for grouped clips
+          const processedGroupIds = new Set<string>();
+          for (const { trackId, groupId } of toSplit) {
+            if (groupId && !processedGroupIds.has(groupId)) {
+              processedGroupIds.add(groupId);
+              this.regroupAfterSplit(trackId, groupId, splitSample);
+            }
           }
           if (toSplit.length > 0) {
             this.timelineRenderer?.render();
