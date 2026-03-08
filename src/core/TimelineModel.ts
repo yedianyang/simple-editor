@@ -433,7 +433,7 @@ export class TimelineModel {
     const movedEnd = moved.timelineOffset + moved.duration;
 
     // Snapshot the clip list — we'll modify the array during iteration
-    const others = track.clips.filter(c => c.id !== protectedClipId);
+    const others = track.clips.filter(c => c.id !== protectedClipId && !(moved.groupId && c.groupId === moved.groupId));
 
     for (const existing of others) {
       const existStart = existing.timelineOffset;

@@ -423,4 +423,27 @@ describe('Cross-track Overlap Resolution', () => {
     expect(result.removed[0].id).toBe('small');
     expect(model.timeline.tracks[0].clips.find(c => c.id === 'small')).toBeUndefined();
   });
+
+  it('should NOT remove sibling clips in the same group during resolveOverlaps', () => {
+    const model = new TimelineModel();
+    const track = model.addTrack('Stereo', '#3b82f6', 0, 2);
+
+    const groupId = generateGroupId();
+    // Two grouped sub-channel clips at the same position (stereo pair)
+    model.addClip(track.id, createClip({
+      id: 'clip-L', subChannel: 0, groupId, timelineOffset: 0, sourceEnd: 48000, duration: 48000,
+    }));
+    model.addClip(track.id, createClip({
+      id: 'clip-R', subChannel: 1, groupId, timelineOffset: 0, sourceEnd: 48000, duration: 48000,
+    }));
+
+    // resolveOverlaps on the L clip should leave the R clip intact
+    const result = model.resolveOverlaps(track.id, 'clip-L');
+
+    expect(result.removed.length).toBe(0);
+    expect(result.trimmed.length).toBe(0);
+    const trackClips = model.timeline.tracks[0].clips;
+    expect(trackClips.find(c => c.id === 'clip-L')).toBeDefined();
+    expect(trackClips.find(c => c.id === 'clip-R')).toBeDefined();
+  });
 });
