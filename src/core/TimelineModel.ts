@@ -205,7 +205,7 @@ export class TimelineModel {
       Array.from({ length: numChannels }, (_, i) => `Ch ${i + 1}`);
 
     // Supported multi-channel counts -> single multi-ch track
-    if (numChannels === 1 || numChannels === 2 || numChannels === 4 || numChannels === 6) {
+    if (numChannels === 1 || numChannels === 2 || numChannels === 4 || numChannels === 5 || numChannels === 6) {
       const chCount = numChannels as TrackChannelCount;
       const track = this.addTrack(
         fileName,
@@ -267,7 +267,7 @@ export class TimelineModel {
   /**
    * Import a multi-channel file at a specific track + time position.
    * Unlike importMultiChannelFile(), this does NOT clear existing tracks.
-   * For supported multi-ch counts (2,4,6): creates 1 multi-ch track with N sub-channel clips.
+   * For supported multi-ch counts (2,4,5,6): creates 1 multi-ch track with N sub-channel clips.
    * For mono or unsupported counts: one track per channel (existing behavior).
    * Returns the IDs of created clips and newly created tracks (for undo).
    */
@@ -286,7 +286,7 @@ export class TimelineModel {
     const newTrackIds: string[] = [];
 
     // Supported multi-ch -> create 1 multi-ch track or reuse existing
-    if ((numChannels === 2 || numChannels === 4 || numChannels === 6)) {
+    if ((numChannels === 2 || numChannels === 4 || numChannels === 5 || numChannels === 6)) {
       const chCount = numChannels as TrackChannelCount;
       let track: Track;
 

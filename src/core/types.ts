@@ -10,6 +10,7 @@ export const CHANNEL_NAMES: Record<number, string[]> = {
   1: ['Mono'],
   2: ['Left', 'Right'],
   4: ['Front L', 'Front R', 'Rear L', 'Rear R'],
+  5: ['Left', 'Right', 'Center', 'Left Surr', 'Right Surr'],
   6: ['Left', 'Right', 'Center', 'LFE', 'Left Surr', 'Right Surr'],
 };
 
@@ -18,6 +19,7 @@ export const CHANNEL_WEIGHTS: Record<number, number[]> = {
   1: [1.0],
   2: [1.0, 1.0],
   4: [1.0, 1.0, 1.41, 1.41],
+  5: [1.0, 1.0, 1.0, 1.41, 1.41],
   6: [1.0, 1.0, 1.0, 0.0, 1.41, 1.41],
 };
 
@@ -31,7 +33,7 @@ export const CHANNEL_COLORS: string[] = [
   '#ec4899', // Pink - Right Surround
 ];
 
-export type TrackChannelCount = 1 | 2 | 4 | 6;
+export type TrackChannelCount = 1 | 2 | 4 | 5 | 6;
 
 export interface PluginInfo {
   id: string;

@@ -3148,7 +3148,7 @@ export class App {
     const typeSelect = document.createElement('select');
     typeSelect.style.cssText = 'width:100%;height:24px;border-radius:4px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.08);color:#fff;font-size:13px;margin-bottom:20px;outline:none';
     const options: [string, TrackChannelCount][] = [
-      ['Mono', 1], ['Stereo', 2], ['Quad (4.0)', 4], ['5.1 Surround', 6],
+      ['Mono', 1], ['Stereo', 2], ['Quad (4.0)', 4], ['5.0 Surround', 5], ['5.1 Surround', 6],
     ];
     for (const [label, value] of options) {
       const opt = document.createElement('option');
