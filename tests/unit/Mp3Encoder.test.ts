@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { encodeMp3Async, Mp3EncodeOptions } from '../../src/core/Mp3Encoder';
+import { encodeMp3Async, Mp3EncodeOptions, downmixToStereo, softLimit } from '../../src/core/Mp3Encoder';
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -265,5 +265,129 @@ describe('Mp3Encoder — edge cases', () => {
       channels: [new Float32Array(0)],
     });
     expect(result.length).toBe(0);
+  });
+});
+
+// ── ITU-R BS.775-3 downmix ─────────────────────────────────────────────
+
+describe('downmixToStereo — ITU-R BS.775-3', () => {
+  const COEF = Math.SQRT1_2; // 0.7071...
+
+  it('mono passthrough: 1ch -> L=R=input', () => {
+    const ch0 = new Float32Array([0.5, -0.3, 0.8]);
+    const [L, R] = downmixToStereo([ch0]);
+    expect(L).toBe(ch0);
+    expect(R).toBe(ch0);
+  });
+
+  it('stereo passthrough: 2ch -> L=ch0, R=ch1', () => {
+    const ch0 = new Float32Array([0.5, -0.3]);
+    const ch1 = new Float32Array([0.2, 0.7]);
+    const [L, R] = downmixToStereo([ch0, ch1]);
+    expect(L).toBe(ch0);
+    expect(R).toBe(ch1);
+  });
+
+  it('3.0 downmix (L,R,C): L_out = L + 0.707*C, R_out = R + 0.707*C', () => {
+    const ch0 = new Float32Array([0.5]);  // L
+    const ch1 = new Float32Array([0.3]);  // R
+    const ch2 = new Float32Array([0.4]);  // C
+    const [L, R] = downmixToStereo([ch0, ch1, ch2]);
+    // After soft limiter, values below 0.95 pass through unchanged
+    expect(L[0]).toBeCloseTo(0.5 + COEF * 0.4, 5);
+    expect(R[0]).toBeCloseTo(0.3 + COEF * 0.4, 5);
+  });
+
+  it('4.0 downmix (L,R,Ls,Rs): L_out = L + 0.707*Ls, R_out = R + 0.707*Rs', () => {
+    const ch0 = new Float32Array([0.5]);  // L
+    const ch1 = new Float32Array([0.3]);  // R
+    const ch2 = new Float32Array([0.4]);  // Ls
+    const ch3 = new Float32Array([0.2]);  // Rs
+    const [L, R] = downmixToStereo([ch0, ch1, ch2, ch3]);
+    expect(L[0]).toBeCloseTo(0.5 + COEF * 0.4, 5);
+    expect(R[0]).toBeCloseTo(0.3 + COEF * 0.2, 5);
+  });
+
+  it('5.0 downmix (L,R,C,Ls,Rs): L_out = L + 0.707*C + 0.707*Ls', () => {
+    const ch0 = new Float32Array([0.3]);  // L
+    const ch1 = new Float32Array([0.2]);  // R
+    const ch2 = new Float32Array([0.4]);  // C
+    const ch3 = new Float32Array([0.1]);  // Ls
+    const ch4 = new Float32Array([0.15]); // Rs
+    const [L, R] = downmixToStereo([ch0, ch1, ch2, ch3, ch4]);
+    expect(L[0]).toBeCloseTo(0.3 + COEF * 0.4 + COEF * 0.1, 5);
+    expect(R[0]).toBeCloseTo(0.2 + COEF * 0.4 + COEF * 0.15, 5);
+  });
+
+  it('5.1 downmix (L,R,C,LFE,Ls,Rs): includes LFE at -3dB', () => {
+    const ch0 = new Float32Array([0.2]);  // L
+    const ch1 = new Float32Array([0.15]); // R
+    const ch2 = new Float32Array([0.3]);  // C
+    const ch3 = new Float32Array([0.1]);  // LFE
+    const ch4 = new Float32Array([0.05]); // Ls
+    const ch5 = new Float32Array([0.08]); // Rs
+    const [L, R] = downmixToStereo([ch0, ch1, ch2, ch3, ch4, ch5]);
+    expect(L[0]).toBeCloseTo(0.2 + COEF * 0.3 + COEF * 0.05 + COEF * 0.1, 5);
+    expect(R[0]).toBeCloseTo(0.15 + COEF * 0.3 + COEF * 0.08 + COEF * 0.1, 5);
+  });
+
+  it('7.1 downmix (L,R,C,LFE,Lss,Rss,Lsr,Rsr): surround at -6dB', () => {
+    const ch0 = new Float32Array([0.3]);  // L
+    const ch1 = new Float32Array([0.25]); // R
+    const ch2 = new Float32Array([0.4]);  // C
+    const ch3 = new Float32Array([0.1]);  // LFE
+    const ch4 = new Float32Array([0.2]);  // Lss
+    const ch5 = new Float32Array([0.15]); // Rss
+    const ch6 = new Float32Array([0.12]); // Lsr
+    const ch7 = new Float32Array([0.08]); // Rsr
+    const [L, R] = downmixToStereo([ch0, ch1, ch2, ch3, ch4, ch5, ch6, ch7]);
+    // No LFE in 7.1 ITU downmix per spec
+    expect(L[0]).toBeCloseTo(0.3 + COEF * 0.4 + 0.5 * 0.2 + 0.5 * 0.12, 5);
+    expect(R[0]).toBeCloseTo(0.25 + COEF * 0.4 + 0.5 * 0.15 + 0.5 * 0.08, 5);
+  });
+
+  it('unknown channel count (9ch) does not crash and uses fallback', () => {
+    const channels = Array.from({ length: 9 }, () => new Float32Array([0.1]));
+    expect(() => downmixToStereo(channels)).not.toThrow();
+    const [L, R] = downmixToStereo(channels);
+    expect(L.length).toBe(1);
+    expect(R.length).toBe(1);
+    // Should produce finite values
+    expect(Number.isFinite(L[0])).toBe(true);
+    expect(Number.isFinite(R[0])).toBe(true);
+  });
+});
+
+// ── Soft limiter ────────────────────────────────────────────────────────
+
+describe('softLimit', () => {
+  it('sample below threshold passes through unchanged', () => {
+    expect(softLimit(0.5)).toBe(0.5);
+    expect(softLimit(0.0)).toBe(0.0);
+    expect(softLimit(-0.5)).toBe(-0.5);
+    expect(softLimit(0.94)).toBe(0.94);
+  });
+
+  it('sample at 1.5 is compressed below 1.0', () => {
+    const result = softLimit(1.5);
+    expect(result).toBeLessThan(1.0);
+    expect(result).toBeGreaterThan(0.95);
+  });
+
+  it('sample at -1.5 is compressed above -1.0', () => {
+    const result = softLimit(-1.5);
+    expect(result).toBeGreaterThan(-1.0);
+    expect(result).toBeLessThan(-0.95);
+  });
+
+  it('preserves sign: negative inputs stay negative', () => {
+    expect(softLimit(-0.3)).toBeLessThan(0);
+    expect(softLimit(-1.0)).toBeLessThan(0);
+    expect(softLimit(-2.0)).toBeLessThan(0);
+  });
+
+  it('at threshold boundary, output equals input', () => {
+    expect(softLimit(0.95)).toBeCloseTo(0.95, 5);
+    expect(softLimit(-0.95)).toBeCloseTo(-0.95, 5);
   });
 });

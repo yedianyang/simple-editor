@@ -6,7 +6,7 @@
  *
  * Features:
  * - Automatic resampling to nearest MP3-supported sample rate
- * - Multi-channel (>2) downmix to stereo via L/R interleave summing
+ * - Multi-channel (>2) downmix to stereo via ITU-R BS.775-3 coefficients + soft limiter
  * - ID3v2.3 metadata tags (TIT2, TPE1, COMM, TDRC)
  * - Async chunked encoding with progress callback (non-blocking)
  *
@@ -98,47 +98,92 @@ function resampleLinear(
   return output;
 }
 
-// ── Multi-channel downmix ─────────────────────────────────────────────────
+// ── Soft limiter ──────────────────────────────────────────────────────────
 
 /**
- * Downmix >2 channels to stereo.
- * L_out = (ch0 + ch2 + ch4 + ...) / sqrt(N/2)
- * R_out = (ch1 + ch3 + ch5 + ...) / sqrt(N/2)
+ * Soft limiter using tanh compression above threshold.
+ * Samples below threshold pass through unchanged.
+ * Samples above threshold are smoothly compressed toward 1.0.
  *
- * For mono input, duplicates to both channels.
- * For stereo input, returns as-is.
+ * @param sample - Input sample value
+ * @param threshold - Threshold above which compression begins (default 0.95)
+ * @returns Limited sample value
  */
-function downmixToStereo(channels: Float32Array[]): [Float32Array, Float32Array] {
-  const numChannels = channels.length;
-  const numSamples = channels[0].length;
+export function softLimit(sample: number, threshold = 0.95): number {
+  const abs = Math.abs(sample);
+  if (abs <= threshold) return sample;
+  const sign = Math.sign(sample);
+  return sign * (threshold + (1 - threshold) * Math.tanh((abs - threshold) / (1 - threshold)));
+}
 
-  if (numChannels === 1) {
-    // Mono: duplicate to L and R
-    return [channels[0], channels[0]];
-  }
+// ── Multi-channel downmix ─────────────────────────────────────────────────
 
-  if (numChannels === 2) {
-    return [channels[0], channels[1]];
-  }
+/** -3 dB coefficient per ITU-R BS.775-3 */
+const COEF_3DB = Math.SQRT1_2; // 0.7071067811865476
 
-  // >2 channels: interleave-sum with sqrt(N/2) normalization
-  const left = new Float32Array(numSamples);
-  const right = new Float32Array(numSamples);
-  const halfN = numChannels / 2;
-  const scale = 1.0 / Math.sqrt(halfN);
+/**
+ * Downmix multi-channel audio to stereo using ITU-R BS.775-3 standard coefficients.
+ *
+ * Channel order follows SMPTE/WAV convention:
+ * - 3.0: L, R, C
+ * - 4.0: L, R, Ls, Rs
+ * - 5.0: L, R, C, Ls, Rs
+ * - 5.1: L, R, C, LFE, Ls, Rs
+ * - 7.1: L, R, C, LFE, Lss, Rss, Lsr, Rsr
+ *
+ * For mono input, duplicates to both channels (no limiter).
+ * For stereo input, returns as-is (no limiter).
+ * For >2 channels, applies soft limiter after downmix.
+ * For unknown channel counts, falls back to equal-power interleave sum.
+ */
+export function downmixToStereo(channels: Float32Array[]): [Float32Array, Float32Array] {
+  const n = channels.length;
+  const len = channels[0].length;
 
-  for (let i = 0; i < numSamples; i++) {
-    let lSum = 0;
-    let rSum = 0;
-    for (let c = 0; c < numChannels; c++) {
-      if (c % 2 === 0) {
-        lSum += channels[c][i];
-      } else {
-        rSum += channels[c][i];
+  if (n === 1) return [channels[0], channels[0]];
+  if (n === 2) return [channels[0], channels[1]];
+
+  const left = new Float32Array(len);
+  const right = new Float32Array(len);
+
+  for (let i = 0; i < len; i++) {
+    switch (n) {
+      case 3: // L, R, C
+        left[i] = channels[0][i] + COEF_3DB * channels[2][i];
+        right[i] = channels[1][i] + COEF_3DB * channels[2][i];
+        break;
+      case 4: // L, R, Ls, Rs
+        left[i] = channels[0][i] + COEF_3DB * channels[2][i];
+        right[i] = channels[1][i] + COEF_3DB * channels[3][i];
+        break;
+      case 5: // L, R, C, Ls, Rs
+        left[i] = channels[0][i] + COEF_3DB * channels[2][i] + COEF_3DB * channels[3][i];
+        right[i] = channels[1][i] + COEF_3DB * channels[2][i] + COEF_3DB * channels[4][i];
+        break;
+      case 6: // L, R, C, LFE, Ls, Rs
+        left[i] = channels[0][i] + COEF_3DB * channels[2][i] + COEF_3DB * channels[4][i] + COEF_3DB * channels[3][i];
+        right[i] = channels[1][i] + COEF_3DB * channels[2][i] + COEF_3DB * channels[5][i] + COEF_3DB * channels[3][i];
+        break;
+      case 8: // L, R, C, LFE, Lss, Rss, Lsr, Rsr
+        left[i] = channels[0][i] + COEF_3DB * channels[2][i] + 0.5 * channels[4][i] + 0.5 * channels[6][i];
+        right[i] = channels[1][i] + COEF_3DB * channels[2][i] + 0.5 * channels[5][i] + 0.5 * channels[7][i];
+        break;
+      default: {
+        // Fallback: equal-power interleave sum for unknown layouts
+        let lSum = 0;
+        let rSum = 0;
+        for (let c = 0; c < n; c++) {
+          if (c % 2 === 0) lSum += channels[c][i];
+          else rSum += channels[c][i];
+        }
+        const scale = 1.0 / Math.sqrt(n / 2);
+        left[i] = lSum * scale;
+        right[i] = rSum * scale;
       }
     }
-    left[i] = lSum * scale;
-    right[i] = rSum * scale;
+    // Apply soft limiter to prevent clipping from summed channels
+    left[i] = softLimit(left[i]);
+    right[i] = softLimit(right[i]);
   }
 
   return [left, right];
