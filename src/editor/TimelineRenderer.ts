@@ -201,6 +201,9 @@ export class TimelineRenderer {
   // Track header context menu callback
   onTrackHeaderContextMenu: ((trackId: string, clientX: number, clientY: number) => void) | null = null;
 
+  // Track name edit callback (double-click inline rename)
+  onTrackNameChange: ((trackId: string, newName: string) => void) | null = null;
+
   // Insert rack callbacks
   onInsertAdd: ((trackId: string) => void) | null = null;
   onInsertClick: ((trackId: string, instanceId: string, screenX: number, screenY: number) => void) | null = null;
@@ -399,6 +402,7 @@ export class TimelineRenderer {
     this.canvas.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
     this.canvas.addEventListener('keydown', (e) => this.onKeyDown(e));
     this.canvas.addEventListener('contextmenu', (e) => this.onContextMenu(e));
+    this.canvas.addEventListener('dblclick', (e) => this.onDoubleClick(e));
     // Note: HTML5 drag/drop removed — file browser uses custom mouse drag via App.ts
     // Make canvas focusable for keyboard events
     this.canvas.tabIndex = 0;
@@ -420,6 +424,74 @@ export class TimelineRenderer {
       this.render();
     }
     this.onTrackHeaderContextMenu?.(trackId, e.clientX, e.clientY);
+  }
+
+  private onDoubleClick(e: MouseEvent): void {
+    if (!this.timeline) return;
+    const { x, y } = this.clientToLocal(e);
+    // Only respond in track header name area
+    if (x >= TRACK_HEADER_WIDTH || y < RULER_HEIGHT) return;
+    const trackIdx = this.yToTrackIndex(y);
+    if (trackIdx < 0 || trackIdx >= this.timeline.tracks.length) return;
+
+    // Check if click is in the track name region (top-left of header: x 4-48, y topY+6 to topY+20)
+    const topY = RULER_HEIGHT + this.trackTops[trackIdx] - this.scrollOffsetY;
+    const nameTop = topY + 6;
+    const nameBottom = topY + 20;
+    if (x < 4 || x > 48 || y < nameTop || y > nameBottom) return;
+
+    this.startTrackNameEdit(trackIdx, e);
+  }
+
+  private startTrackNameEdit(trackIdx: number, e: MouseEvent): void {
+    const track = this.timeline!.tracks[trackIdx];
+    const rect = this.canvas.getBoundingClientRect();
+    const topY = RULER_HEIGHT + this.trackTops[trackIdx] - this.scrollOffsetY;
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = track.name;
+    input.style.position = 'fixed';
+    input.style.left = `${rect.left + 4}px`;
+    input.style.top = `${rect.top + topY + 4}px`;
+    input.style.width = `${TRACK_HEADER_WIDTH - 12}px`;
+    input.style.height = '18px';
+    input.style.fontSize = '11px';
+    input.style.fontWeight = 'bold';
+    input.style.fontFamily = '-apple-system, BlinkMacSystemFont, sans-serif';
+    input.style.background = 'var(--bg-secondary, #2d2d2d)';
+    input.style.color = 'var(--text-primary, #fff)';
+    input.style.border = '1px solid var(--accent-blue, #3b82f6)';
+    input.style.borderRadius = '3px';
+    input.style.padding = '0 4px';
+    input.style.outline = 'none';
+    input.style.zIndex = '1000';
+    input.style.boxSizing = 'border-box';
+
+    document.body.appendChild(input);
+    input.focus();
+    input.select();
+
+    // Prevent the mousedown from bubbling back to canvas (which would blur immediately)
+    e.stopPropagation();
+
+    let finished = false;
+    const finish = (save: boolean) => {
+      if (finished) return;
+      finished = true;
+      if (save && input.value.trim()) {
+        track.name = input.value.trim();
+        this.onTrackNameChange?.(track.id, track.name);
+      }
+      input.remove();
+      this.render();
+    };
+
+    input.addEventListener('keydown', (ke) => {
+      if (ke.key === 'Enter') { ke.preventDefault(); finish(true); }
+      if (ke.key === 'Escape') { ke.preventDefault(); finish(false); }
+    });
+    input.addEventListener('blur', () => finish(true));
   }
 
   /** Update drag overlay position during custom mouse drag from file browser. */

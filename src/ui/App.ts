@@ -105,6 +105,8 @@ export class App {
   private fileStatuses: Map<string, 'pending' | 'done' | 'skip'> = new Map();
   private searchFilter = '';
   private selectedBrowserFile: AudioFileMeta | null = null;
+  /** True after the first file import has pre-filled the inline metadata fields. */
+  private metadataPreFilled = false;
   /** Custom mouse drag state for file browser → timeline drag (replaces HTML5 drag/drop for WKWebView). */
   private fileDragState: {
     file: AudioFileMeta;
@@ -704,6 +706,16 @@ export class App {
         this.importFileAtPosition(filePath, trackIndex, sampleOffset);
       }
     };
+
+    this.timelineRenderer.onTrackNameChange = (trackId, newName) => {
+      const track = this.timelineModel.timeline.tracks.find(t => t.id === trackId);
+      if (track) {
+        track.name = newName;
+        // Also update mixer channel strip label
+        this.mixer.setupTracks(this.timelineModel.timeline.tracks);
+      }
+      this.timelineRenderer?.render();
+    };
   }
 
   setupEventListeners(): void {
@@ -803,7 +815,7 @@ export class App {
         document.body.style.cursor = '';
         if (this.timelineRenderer?.isPointInCanvas(e.clientX, e.clientY)) {
           const pos = this.timelineRenderer.getDropPosition(e.clientX, e.clientY);
-          this.importFileAtPosition(this.fileDragState.file.path, pos.trackIndex, pos.sampleOffset);
+          this.importFileAtPosition(this.fileDragState.file.path, pos.trackIndex, pos.sampleOffset, this.fileDragState.file);
         }
         this.timelineRenderer?.clearExternalDrag();
       }
@@ -1603,6 +1615,17 @@ export class App {
       console.log('[IMPORT] Step 3: Audio loaded. Loading UI...');
       this.onAudioLoaded(audioBuffer, fileId, parsedData);
       console.log('[IMPORT] Step 4: Done.');
+
+      // Pre-fill inline metadata from the first imported file
+      if (!this.metadataPreFilled) {
+        this.metadataPreFilled = true;
+        try {
+          const meta = await window.appAPI!.readFileMetadata(filePath);
+          this.prefillInlineMetadata(meta);
+        } catch (metaErr) {
+          console.warn('[Metadata] Could not pre-fill from first import:', metaErr);
+        }
+      }
     } catch (err: any) {
       console.error('Import error:', err);
       this.hideLoadingIndicator();
@@ -1659,6 +1682,7 @@ export class App {
         this.bufferPool.clear();
         this.timelineModel.createTimeline(audioBuffer.sampleRate);
         this.timelineUndoManager.clear();
+        this.metadataPreFilled = false;
 
         // Import into buffer pool (splits into mono PooledBuffers)
         // When raw IPC data is available, use importFromRawChannels to skip the
@@ -2626,7 +2650,7 @@ export class App {
    * Import a file at a specific track + time position (drag-and-drop from file browser).
    * Unlike loadFileFromPath(), this does NOT clear existing tracks.
    */
-  private async importFileAtPosition(filePath: string, targetTrackIndex: number, sampleOffset: number): Promise<void> {
+  private async importFileAtPosition(filePath: string, targetTrackIndex: number, sampleOffset: number, fileMeta?: AudioFileMeta): Promise<void> {
     try {
       const name = filePath.split('/').pop() || 'Untitled';
       this.showLoadingIndicator(name);
@@ -2688,12 +2712,74 @@ export class App {
       }
 
       this.updateUI();
+
+      // Pre-fill inline metadata from the first imported file
+      if (!this.metadataPreFilled) {
+        this.metadataPreFilled = true;
+        try {
+          const meta = fileMeta ?? await window.appAPI!.readFileMetadata(filePath);
+          this.prefillInlineMetadata(meta);
+        } catch (metaErr) {
+          console.warn('[Metadata] Could not pre-fill from first import:', metaErr);
+        }
+      }
+
       this.hideLoadingIndicator();
     } catch (err: unknown) {
       console.error('Import at position error:', err);
       this.hideLoadingIndicator();
       const msg = err instanceof Error ? err.message : String(err);
       alert('Error importing file: ' + msg);
+    }
+  }
+
+  /**
+   * Pre-fill inline metadata fields from the first imported file's BEXT/iXML data.
+   * Only fills empty fields -- never overwrites user-entered values.
+   */
+  private prefillInlineMetadata(file: AudioFileMeta): void {
+    const setIfEmpty = (id: string, value: string | null | undefined) => {
+      if (!value) return;
+      const el = document.getElementById(id) as HTMLInputElement | null;
+      if (el && !el.value) el.value = value;
+    };
+
+    // Helper to extract iXML tags
+    const getTag = (tag: string): string => {
+      if (!file.ixml) return '';
+      const match = file.ixml.match(new RegExp(`<${tag}>([^<]*)</${tag}>`, 'i'));
+      return match ? match[1].trim() : '';
+    };
+
+    // BWF fields: BEXT first, iXML as fallback
+    setIfEmpty('inlineDescription', file.bext_description || getTag('NOTE'));
+    setIfEmpty('inlineOriginator', file.bext_originator);
+    setIfEmpty('inlineDate', file.bext_date);
+    setIfEmpty('inlineTime', file.bext_time);
+    setIfEmpty('inlineScene', getTag('SCENE'));
+    setIfEmpty('inlineTake', getTag('TAKE'));
+    setIfEmpty('inlineTape', getTag('TAPE'));
+    setIfEmpty('inlineNote', getTag('NOTE'));
+
+    // UCS fields from filename parsing
+    const ucs = parseUCSFilename(file.name);
+    if (ucs) {
+      const catSelect = document.getElementById('inlineUcsCategory') as HTMLSelectElement | null;
+      const subCatSelect = document.getElementById('inlineUcsSubCategory') as HTMLSelectElement | null;
+      if (catSelect && !catSelect.value && ucs.category) {
+        for (const opt of Array.from(catSelect.options)) {
+          if (opt.value === ucs.category) { catSelect.value = ucs.category; break; }
+        }
+      }
+      if (subCatSelect && !subCatSelect.value && ucs.subCategory) {
+        for (const opt of Array.from(subCatSelect.options)) {
+          if (opt.value === ucs.subCategory) { subCatSelect.value = ucs.subCategory; break; }
+        }
+      }
+      setIfEmpty('inlineCatId', ucs.catId);
+      setIfEmpty('inlineFxName', ucs.fxName);
+      setIfEmpty('inlineCreatorId', ucs.creatorId);
+      setIfEmpty('inlineSourceId', ucs.sourceId);
     }
   }
 
@@ -3050,7 +3136,7 @@ export class App {
       note: val('inlineNote'),
       circled: false,
       wildTrack: false,
-      trackNames: [],
+      trackNames: this.timelineModel.timeline.tracks.map(t => t.name),
       ucsCategory: val('inlineUcsCategory'),
       ucsSubCategory: val('inlineUcsSubCategory'),
       ucsCatId: val('inlineCatId'),
@@ -3098,6 +3184,7 @@ export class App {
     this.bufferPool.clear();
     this.timelineModel.createTimeline(48000);
     this.timelineUndoManager.clear();
+    this.metadataPreFilled = false;
     this.waveformRenderer.disabled = true;
     this.waveformRenderer.detachListeners();
     if (this.timelineRenderer) {
