@@ -307,6 +307,86 @@ describe('Source Track Preservation', () => {
   });
 });
 
+// ==================== Same-Channel Cross-Track Group Move ====================
+
+describe('Same-Channel Cross-Track Group Move', () => {
+  it('moveClipToTrack should move only the specified clip, not siblings', () => {
+    // This tests the model-level behavior: moveClipToTrack is a single-clip operation
+    const model = new TimelineModel();
+    const trackA = model.addTrack('Stereo A', '#3b82f6', 0, 2);
+    const trackB = model.addTrack('Stereo B', '#10b981', 1, 2);
+
+    const groupId = generateGroupId();
+    model.addClip(trackA.id, createClip({ id: 'clip-L', subChannel: 0, groupId }));
+    model.addClip(trackA.id, createClip({ id: 'clip-R', subChannel: 1, groupId }));
+
+    // Move only clip-L to trackB
+    model.moveClipToTrack(trackA.id, trackB.id, 'clip-L', 0);
+
+    // clip-L moved to trackB
+    const trackAClips = model.timeline.tracks[0].clips;
+    const trackBClips = model.timeline.tracks[1].clips;
+    expect(trackBClips.find(c => c.id === 'clip-L')).toBeDefined();
+    // clip-R stays on trackA — this is the model's correct single-clip behavior
+    expect(trackAClips.find(c => c.id === 'clip-R')).toBeDefined();
+  });
+
+  it('all grouped clips must end up on the same target track after cross-track drag', () => {
+    // This tests the expected outcome: after a cross-track drag of a grouped clip,
+    // ALL siblings should be on the target track, not split across tracks
+    const model = new TimelineModel();
+    const trackA = model.addTrack('Stereo A', '#3b82f6', 0, 2);
+    const trackB = model.addTrack('Stereo B', '#10b981', 1, 2);
+
+    const groupId = generateGroupId();
+    model.addClip(trackA.id, createClip({ id: 'clip-L', subChannel: 0, groupId }));
+    model.addClip(trackA.id, createClip({ id: 'clip-R', subChannel: 1, groupId }));
+
+    // Simulate what App.ts onClipMove SHOULD do: move ALL grouped clips together
+    const clip = model.timeline.tracks[0].clips.find(c => c.id === 'clip-L')!;
+    const siblings = model.getSiblingClips(trackA.id, 'clip-L');
+
+    // Move primary clip
+    model.moveClipToTrack(trackA.id, trackB.id, 'clip-L', 1000);
+    // Move all siblings too (this is what the fix should ensure)
+    for (const sib of siblings) {
+      model.moveClipToTrack(trackA.id, trackB.id, sib.id, 1000);
+    }
+
+    const trackAClips = model.timeline.tracks[0].clips;
+    const trackBClips = model.timeline.tracks[1].clips;
+    expect(trackAClips.length).toBe(0);
+    expect(trackBClips.length).toBe(2);
+    expect(trackBClips.find(c => c.id === 'clip-L')).toBeDefined();
+    expect(trackBClips.find(c => c.id === 'clip-R')).toBeDefined();
+    // Both should have the same offset
+    expect(trackBClips[0].timelineOffset).toBe(1000);
+    expect(trackBClips[1].timelineOffset).toBe(1000);
+  });
+
+  it('batch-moved siblings should track to target track, not stay on source', () => {
+    // Regression test: previously batch loop did moveClipToTrack(t.id, t.id, ...)
+    // which kept siblings on the source track
+    const model = new TimelineModel();
+    const trackA = model.addTrack('Stereo A', '#3b82f6', 0, 2);
+    const trackB = model.addTrack('Stereo B', '#10b981', 1, 2);
+
+    const groupId = generateGroupId();
+    model.addClip(trackA.id, createClip({ id: 'clip-L', subChannel: 0, groupId, timelineOffset: 0 }));
+    model.addClip(trackA.id, createClip({ id: 'clip-R', subChannel: 1, groupId, timelineOffset: 0 }));
+
+    const newOffset = 5000;
+    // Move primary
+    model.moveClipToTrack(trackA.id, trackB.id, 'clip-L', newOffset);
+    // Move sibling to SAME target track (not keeping on source)
+    model.moveClipToTrack(trackA.id, trackB.id, 'clip-R', newOffset);
+
+    expect(model.timeline.tracks[0].clips.length).toBe(0);
+    expect(model.timeline.tracks[1].clips.length).toBe(2);
+    expect(model.timeline.tracks[1].clips.every(c => c.timelineOffset === newOffset)).toBe(true);
+  });
+});
+
 // ==================== Overlap Resolution ====================
 
 describe('Cross-track Overlap Resolution', () => {

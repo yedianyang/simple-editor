@@ -268,13 +268,18 @@ export class App {
       // Batch-move other selected clips by the same delta
       if (this._dragBatchSnapshots && this._dragBatchSnapshots.length > 0 && this._dragStartSnapshot) {
         const delta = newOffset - this._dragStartSnapshot.clip.timelineOffset;
+        const originalPrimaryTrackId = this._dragStartSnapshot.trackId;
         for (const snap of this._dragBatchSnapshots) {
           const otherOffset = Math.max(0, snap.clip.timelineOffset + delta);
           // Find current track of this clip (may differ if previously cross-track moved)
           for (const t of this.timelineModel.timeline.tracks) {
             const c = t.clips.find(cl => cl.id === snap.clipId);
             if (c) {
-              this.timelineModel.moveClipToTrack(t.id, t.id, snap.clipId, otherOffset);
+              // If this sibling was originally on the same track as the primary clip,
+              // move it to the same target track (cross-track group move)
+              const siblingTarget = snap.trackId === originalPrimaryTrackId
+                ? effectiveTargetTrackId : t.id;
+              this.timelineModel.moveClipToTrack(t.id, siblingTarget, snap.clipId, otherOffset);
               break;
             }
           }
@@ -470,15 +475,21 @@ export class App {
           // Batch clips (other selected clips moved together)
           if (this._dragBatchSnapshots) {
             for (const snap of this._dragBatchSnapshots) {
-              const t = this.timelineModel.timeline.tracks.find(tr => tr.id === snap.trackId);
-              const c = t?.clips.find(cl => cl.id === snap.clipId);
+              // Find the clip on its current track (may have moved cross-track with group)
+              let currentTrackId = snap.trackId;
+              let c: Clip | undefined;
+              for (const tr of this.timelineModel.timeline.tracks) {
+                c = tr.clips.find(cl => cl.id === snap.clipId);
+                if (c) { currentTrackId = tr.id; break; }
+              }
               if (c && (snap.clip.timelineOffset !== c.timelineOffset
                 || snap.clip.sourceStart !== c.sourceStart
-                || snap.clip.sourceEnd !== c.sourceEnd)) {
-                const overlapResult = this.timelineModel.resolveOverlaps(snap.trackId, snap.clipId);
+                || snap.clip.sourceEnd !== c.sourceEnd
+                || snap.trackId !== currentTrackId)) {
+                const overlapResult = this.timelineModel.resolveOverlaps(currentTrackId, snap.clipId);
                 const hasOverlaps = overlapResult.removed.length > 0 || overlapResult.trimmed.length > 0;
                 commands.push(new ClipDragCommand(
-                  this.timelineModel, snap.clipId, snap.trackId, snap.trackId,
+                  this.timelineModel, snap.clipId, snap.trackId, currentTrackId,
                   snap.clip, { ...c }, hasOverlaps ? overlapResult : null,
                 ));
               }
