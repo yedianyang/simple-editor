@@ -1518,7 +1518,7 @@ export class TimelineRenderer {
       return;
     }
 
-    if (this.timeline.tracks.length === 0) {
+    if (this.timeline.tracks.length === 0 && !this.externalDropTarget) {
       this.renderPlaceholder();
       return;
     }
