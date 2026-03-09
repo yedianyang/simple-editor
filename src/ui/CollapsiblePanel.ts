@@ -40,7 +40,7 @@ export class CollapsiblePanel {
   onStateChange: ((collapsed: boolean) => void) | null = null;
 
   /** Bound references for cleanup */
-  private readonly onHeaderClick: () => void;
+  private readonly onHeaderClick: (e: Event) => void;
   private readonly onHandleMouseDown: (e: MouseEvent) => void;
   private readonly onHandleDblClick: () => void;
 
@@ -64,7 +64,13 @@ export class CollapsiblePanel {
     this.headerEl = this.container.querySelector(config.headerSelector);
 
     // Bind event handlers
-    this.onHeaderClick = () => this.toggle();
+    this.onHeaderClick = (e: Event) => {
+      // Don't toggle when clicking interactive elements inside the header
+      // (e.g. buttons, inputs). Only toggle on the header/title itself.
+      const target = e.target as HTMLElement;
+      if (target.closest('button, input, select, a')) return;
+      this.toggle();
+    };
     this.onHandleMouseDown = (e: MouseEvent) => this.startDrag(e);
     this.onHandleDblClick = () => this.toggle();
 
