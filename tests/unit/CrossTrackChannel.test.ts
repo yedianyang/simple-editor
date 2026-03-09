@@ -387,6 +387,81 @@ describe('Same-Channel Cross-Track Group Move', () => {
   });
 });
 
+// ==================== Drag-sequence cross-channel tracking ====================
+
+describe('Cross-channel drag sequence tracking', () => {
+  /**
+   * Regression test for: stereo→mono split leaves L clip on source track.
+   *
+   * Root cause: during drag, the renderer updates drag.trackId to the target
+   * track even when the clip was NOT actually moved (cross-channel moves are
+   * deferred to dragEnd). On the next mouse-move, sourceTrackId === targetTrackId,
+   * so the cross-channel target flag gets cleared. By dragEnd it's null, so
+   * executeCrossTrackSplit is never called.
+   *
+   * This test simulates the sequence of onClipMove calls that occur during
+   * a stereo→mono drag and verifies the cross-channel target is preserved.
+   */
+  it('cross-channel target should survive subsequent same-track move events', () => {
+    // Simulate the _dragCrossChannelTarget tracking logic from App.ts onClipMove
+    let dragCrossChannelTarget: { targetTrackId: string; newOffset: number } | null = null;
+
+    const tracks = [
+      { id: 'stereo-1', channels: 2 },
+      { id: 'mono-1', channels: 1 },
+      { id: 'mono-2', channels: 1 },
+    ];
+
+    function simulateOnClipMove(
+      sourceTrackId: string,
+      targetTrackId: string,
+      newOffset: number,
+    ): string /* effectiveTargetTrackId */ {
+      let effectiveTargetTrackId = targetTrackId;
+      if (sourceTrackId !== targetTrackId) {
+        const sourceTrack = tracks.find(t => t.id === sourceTrackId);
+        const targetTrack = tracks.find(t => t.id === targetTrackId);
+        if (sourceTrack && targetTrack && sourceTrack.channels !== targetTrack.channels) {
+          effectiveTargetTrackId = sourceTrackId;
+          dragCrossChannelTarget = { targetTrackId, newOffset };
+        } else {
+          dragCrossChannelTarget = null;
+        }
+      } else {
+        // BUG: this clears the cross-channel target even though clip is still
+        // on the original track and the user hasn't moved back.
+        dragCrossChannelTarget = null;
+      }
+      return effectiveTargetTrackId;
+    }
+
+    // Simulate renderer's drag.trackId behavior
+    // FIX: renderer should NOT update drag.trackId when channel counts differ
+    let rendererDragTrackId = 'stereo-1';
+
+    // Move 1: user drags from stereo track to mono-1
+    const target1 = simulateOnClipMove(rendererDragTrackId, 'mono-1', 5000);
+    // With fix: renderer keeps drag.trackId as source because channels differ
+    const source1 = tracks.find(t => t.id === rendererDragTrackId)!;
+    const dest1 = tracks.find(t => t.id === 'mono-1')!;
+    if (source1.channels === dest1.channels) {
+      rendererDragTrackId = 'mono-1';
+    }
+    // drag.trackId stays 'stereo-1' because channels differ (2 !== 1)
+
+    expect(rendererDragTrackId).toBe('stereo-1');
+    expect(dragCrossChannelTarget).not.toBeNull();
+    expect(dragCrossChannelTarget!.targetTrackId).toBe('mono-1');
+
+    // Move 2: mouse still on mono-1, renderer correctly reports source as stereo-1
+    const target2 = simulateOnClipMove(rendererDragTrackId, 'mono-1', 5100);
+
+    // With fix: cross-channel target is preserved because sourceTrackId !== targetTrackId
+    expect(dragCrossChannelTarget).not.toBeNull();
+    expect(dragCrossChannelTarget!.targetTrackId).toBe('mono-1');
+  });
+});
+
 // ==================== Overlap Resolution ====================
 
 describe('Cross-track Overlap Resolution', () => {

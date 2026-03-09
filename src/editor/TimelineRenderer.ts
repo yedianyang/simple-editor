@@ -1154,8 +1154,16 @@ export class TimelineRenderer {
       if (this.onClipMove) {
         this.onClipMove(this.drag.clipId, this.drag.trackId, targetTrackId, newOffset);
       }
-      // After cross-track move, the clip now lives in the target track
-      this.drag.trackId = targetTrackId;
+      // After cross-track move, update drag.trackId — but only if the clip
+      // actually moved. Cross-channel moves (different channel counts) are
+      // deferred to dragEnd, so the clip stays on the source track.
+      const sourceTrackForUpdate = tracks.find(t => t.id === this.drag.trackId);
+      const targetTrackForUpdate = validTarget ? tracks[targetIdx] : null;
+      const channelMismatch = sourceTrackForUpdate && targetTrackForUpdate
+        && sourceTrackForUpdate.channels !== targetTrackForUpdate.channels;
+      if (!channelMismatch) {
+        this.drag.trackId = targetTrackId;
+      }
       this.render();
       return;
     }
