@@ -17,7 +17,7 @@ import { FileQueue } from './FileQueue';
 import { ProjectManager } from './ProjectManager';
 import { FileHandler } from '../utils/FileHandler';
 import { BufferPool } from '../core/BufferPool';
-import { encodeWavAsync } from '../core/WavEncoder';
+import { encodeWavAsync, WavMetadata } from '../core/WavEncoder';
 import { encodeMp3Async, Mp3Metadata } from '../core/Mp3Encoder';
 import { TimelineModel, generateGroupId } from '../core/TimelineModel';
 import {
@@ -3030,35 +3030,9 @@ export class App {
       for (let c = 0; c < buffer.numberOfChannels; c++) {
         chans.push(buffer.getChannelData(c));
       }
-      const wavMeta = {
-        description: exportMeta.bpiDescription,
-        originator: exportMeta.originator,
-        originatorRef: exportMeta.originatorRef,
-        project: exportMeta.project,
-        scene: exportMeta.scene,
-        take: exportMeta.take,
-        tape: exportMeta.tape,
-        note: exportMeta.note,
-        circled: exportMeta.circled,
-        wildTrack: exportMeta.wildTrack,
-        trackNames: exportMeta.trackNames,
-        ucsCategory: exportMeta.ucsCategory,
-        ucsSubCategory: exportMeta.ucsSubCategory,
-        ucsCatId: exportMeta.ucsCatId,
-        ucsFxName: exportMeta.ucsFxName,
-        ucsCreatorId: exportMeta.ucsCreatorId,
-        ucsSourceId: exportMeta.ucsSourceId,
-        recordist: exportMeta.recordist,
-        microphone: exportMeta.microphone,
-        micPerspective: exportMeta.micPerspective,
-        location: exportMeta.location,
-        library: exportMeta.library,
-        keywords: exportMeta.keywords,
-      };
-
       // Async encoding — yields to main thread to keep UI responsive
       const wavBytes = await encodeWavAsync(
-        { sampleRate: buffer.sampleRate, bitDepth: 24, channels: chans, dither: 'none', metadata: wavMeta },
+        { sampleRate: buffer.sampleRate, bitDepth: 24, channels: chans, dither: 'none', metadata: this.toWavMeta(exportMeta) },
         (progress) => { if (btn) btn.textContent = `Exporting ${Math.round(progress * 100)}%...`; },
       );
       const arrayBuf = wavBytes.buffer as ArrayBuffer;
@@ -3150,6 +3124,12 @@ export class App {
       library: '',
       keywords: '',
     };
+  }
+
+  /** Convert ExportMetadata to WavMetadata (renames bpiDescription -> description). */
+  private toWavMeta(meta: ExportMetadata): WavMetadata {
+    const { bpiDescription, ...rest } = meta;
+    return { description: bpiDescription, ...rest };
   }
 
   async confirmNewProject(): Promise<void> {
@@ -3491,40 +3471,17 @@ export class App {
 
       const exportMeta = this.pendingExportMetadata || undefined;
 
+      // Extract Float32 channels from AudioBuffer (shared by WAV/MP3 encoders)
+      const chans: Float32Array[] = [];
+      for (let c = 0; c < bufferToExport.numberOfChannels; c++) {
+        chans.push(bufferToExport.getChannelData(c));
+      }
+
       let blob: Blob;
       let extension: string;
 
       if (format === 'wav') {
-        // Extract Float32 channels from AudioBuffer for standalone encoder
-        const chans: Float32Array[] = [];
-        for (let c = 0; c < bufferToExport.numberOfChannels; c++) {
-          chans.push(bufferToExport.getChannelData(c));
-        }
-        const wavMeta = exportMeta ? {
-          description: exportMeta.bpiDescription,
-          originator: exportMeta.originator,
-          originatorRef: exportMeta.originatorRef,
-          project: exportMeta.project,
-          scene: exportMeta.scene,
-          take: exportMeta.take,
-          tape: exportMeta.tape,
-          note: exportMeta.note,
-          circled: exportMeta.circled,
-          wildTrack: exportMeta.wildTrack,
-          trackNames: exportMeta.trackNames,
-          ucsCategory: exportMeta.ucsCategory,
-          ucsSubCategory: exportMeta.ucsSubCategory,
-          ucsCatId: exportMeta.ucsCatId,
-          ucsFxName: exportMeta.ucsFxName,
-          ucsCreatorId: exportMeta.ucsCreatorId,
-          ucsSourceId: exportMeta.ucsSourceId,
-          recordist: exportMeta.recordist,
-          microphone: exportMeta.microphone,
-          micPerspective: exportMeta.micPerspective,
-          location: exportMeta.location,
-          library: exportMeta.library,
-          keywords: exportMeta.keywords,
-        } : undefined;
+        const wavMeta = exportMeta ? this.toWavMeta(exportMeta) : undefined;
         const wavBytes = await encodeWavAsync(
           { sampleRate: bufferToExport.sampleRate, bitDepth: bitDepth as 16 | 24 | 32, channels: chans, dither: dither as 'none' | 'tpdf' | 'shaped', metadata: wavMeta },
           (progress) => { if (confirmBtn) confirmBtn.textContent = `Exporting ${Math.round(progress * 100)}%...`; },
@@ -3532,11 +3489,6 @@ export class App {
         blob = new Blob([wavBytes.buffer as ArrayBuffer], { type: 'audio/wav' });
         extension = '.wav';
       } else if (format === 'mp3') {
-        // MP3 export
-        const chans: Float32Array[] = [];
-        for (let c = 0; c < bufferToExport.numberOfChannels; c++) {
-          chans.push(bufferToExport.getChannelData(c));
-        }
         const mp3Meta: Mp3Metadata | undefined = exportMeta ? {
           title: exportMeta.bpiDescription || undefined,
           artist: exportMeta.originator || undefined,

@@ -314,11 +314,7 @@ function buildID3v2Tag(metadata: Mp3Metadata): Uint8Array | null {
 
   if (frames.length === 0) return null;
 
-  // Calculate total frames size
-  let framesSize = 0;
-  for (const f of frames) {
-    framesSize += f.length;
-  }
+  const framesSize = frames.reduce((sum, f) => sum + f.length, 0);
 
   // ID3v2.3 header = 10 bytes
   const tag = new Uint8Array(10 + framesSize);

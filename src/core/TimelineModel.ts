@@ -231,7 +231,7 @@ export class TimelineModel {
           fadeOutSamples: 0,
           muted: false,
           subChannel: i,
-          ...(groupId ? { groupId } : {}),
+          groupId,
         };
         track.clips.push(clip);
       }

@@ -841,10 +841,6 @@ export class ImportFileAtPositionCommand implements TimelineCommand {
 }
 
 /**
- * Undo/redo for deleting an entire track.
- * Deep-copies the track data (including clips) so undo can restore it at the original index.
- */
-/**
  * Snapshot-based undo for cross-track channel split/merge operations.
  * Saves the full state of all affected tracks before and after the operation.
  */

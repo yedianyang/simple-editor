@@ -80,6 +80,9 @@ npm test -- --run
 # Rust — 编译 + 测试 + lint
 cd src-tauri && cargo check && cargo test && cargo clippy -- -D warnings
 
+# E2E 测试（Playwright）
+npm run test:e2e
+
 # 完整构建（重大变更时）
 npm run build:frontend
 ```
@@ -90,25 +93,36 @@ npm run build:frontend
 - `cargo check` — 零编译错误
 - `cargo test` — 全绿
 - `cargo clippy -- -D warnings` — 零警告
+- `npm run test:e2e` — 全绿（E2E 通过）
 
 **不通过不准 commit。没有例外。**
 
-### TDD 规则（Red/Green）
+### 开发流程（Red/Green + E2E + Simplify）
 
-所有新功能和 bug 修复使用 **red/green TDD**：
+所有新功能和 bug 修复使用以下流程：
 
-1. **Red** — 先写测试，跑一遍，**必须失败**（证明测试有效）
-2. **Green** — 再写/修改实现，跑测试，**必须通过**
+1. **Red（单元测试）** — 先写 vitest 单元测试（core 逻辑），跑一遍，**必须失败**
+2. **Red（E2E 测试）** — 写 Playwright E2E 测试（UI 行为），跑一遍，**必须失败**
+3. **Green** — 实现功能，跑测试，**必须通过**
+4. **全量验证** — `npm test -- --run && npm run test:e2e` 全绿
+5. **Simplify** — 用 code-simplifier 精简实现代码
+6. **回归验证** — 再跑一次全量测试确认不回归
+7. **Commit**
 
 ```
-quality: 写测试 → cargo test / npx tsc → 确认红 ❌
+quality: 写单元测试 → npm test → 确认红 ❌
+quality: 写 E2E 测试 → npm run test:e2e → 确认红 ❌
 generator/frontend: 实现功能 → 跑测试 → 确认绿 ✅
+code-simplifier: 精简代码
+quality: 全量测试 → 确认绿 ✅
 commit
 ```
 
 **为什么：**
 - 防止写了不工作的代码
 - 防止写了从不被调用的代码
+- E2E 确保端到端用户流程正确
+- code-simplifier 保持代码精简可维护
 - 防止以后改动悄悄破坏现有功能（regression）
 
 **跳过 red 阶段是禁止的。** 如果测试一开始就通过 → 测试写错了，重写。
