@@ -260,9 +260,11 @@ export class App {
           // Same channel count or same track: clear cross-channel target
           this._dragCrossChannelTarget = null;
         }
-      } else {
-        this._dragCrossChannelTarget = null;
       }
+      // When sourceTrackId === targetTrackId: do NOT clear _dragCrossChannelTarget.
+      // The renderer keeps drag.trackId as the source when channels differ (cross-channel
+      // moves are deferred to dragEnd), so the next mouse-move reports source === target.
+      // Clearing here would lose the cross-channel target before dragEnd fires.
 
       // Apply move directly (single undo entry created on drag end)
       this.timelineModel.moveClipToTrack(sourceTrackId, effectiveTargetTrackId, clipId, newOffset);
@@ -3463,22 +3465,36 @@ export class App {
     }
 
     try {
-      let bufferToExport = this.audioEngine.audioBuffer!;
       let fileNameSuffix = '';
+
+      // Render timeline edits (clips, gain, fades, mute/solo) into raw channels
+      const rendered = renderTimelineOffline(this.timelineModel.timeline, this.bufferPool);
+      const exportSampleRate = rendered.channels.length > 0
+        ? rendered.sampleRate
+        : (this.audioEngine.audioBuffer?.sampleRate ?? this.timelineModel.timeline.sampleRate);
+
+      let chans: Float32Array[];
+
+      if (rendered.channels.length > 0) {
+        chans = rendered.channels;
+      } else if (this.audioEngine.audioBuffer) {
+        // Fallback: no timeline clips — export the raw loaded buffer
+        chans = [];
+        for (let c = 0; c < this.audioEngine.audioBuffer.numberOfChannels; c++) {
+          chans.push(this.audioEngine.audioBuffer.getChannelData(c));
+        }
+      } else {
+        throw new Error('No audio to export');
+      }
 
       if (exportSelection && this.waveformRenderer.hasSelection()) {
         const selection = this.waveformRenderer.getSelection()!;
-        bufferToExport = this.audioEditor!.trim(this.audioEngine.audioBuffer!, selection.start, selection.end);
+        // Trim rendered channels to selection range
+        chans = chans.map(ch => ch.slice(selection.start, selection.end));
         fileNameSuffix = '_selection';
       }
 
       const exportMeta = this.pendingExportMetadata || undefined;
-
-      // Extract Float32 channels from AudioBuffer (shared by WAV/MP3 encoders)
-      const chans: Float32Array[] = [];
-      for (let c = 0; c < bufferToExport.numberOfChannels; c++) {
-        chans.push(bufferToExport.getChannelData(c));
-      }
 
       let blob: Blob;
       let extension: string;
@@ -3486,7 +3502,7 @@ export class App {
       if (format === 'wav') {
         const wavMeta = exportMeta ? this.toWavMeta(exportMeta) : undefined;
         const wavBytes = await encodeWavAsync(
-          { sampleRate: bufferToExport.sampleRate, bitDepth: bitDepth as 16 | 24 | 32, channels: chans, dither: dither as 'none' | 'tpdf' | 'shaped', metadata: wavMeta },
+          { sampleRate: exportSampleRate, bitDepth: bitDepth as 16 | 24 | 32, channels: chans, dither: dither as 'none' | 'tpdf' | 'shaped', metadata: wavMeta },
           (progress) => { if (confirmBtn) confirmBtn.textContent = `Exporting ${Math.round(progress * 100)}%...`; },
         );
         blob = new Blob([wavBytes.buffer as ArrayBuffer], { type: 'audio/wav' });
@@ -3499,7 +3515,7 @@ export class App {
           date: undefined,
         } : undefined;
         const mp3Bytes = await encodeMp3Async(
-          { sampleRate: bufferToExport.sampleRate, channels: chans, bitrate, metadata: mp3Meta },
+          { sampleRate: exportSampleRate, channels: chans, bitrate, metadata: mp3Meta },
           (progress) => { if (confirmBtn) confirmBtn.textContent = `Exporting ${Math.round(progress * 100)}%...`; },
         );
         blob = new Blob([mp3Bytes.buffer as ArrayBuffer], { type: 'audio/mpeg' });
@@ -3509,7 +3525,14 @@ export class App {
         if (confirmBtn) confirmBtn.textContent = 'Exporting...';
         await new Promise<void>(resolve => setTimeout(resolve, 0));
         const aifBitDepth = bitDepth === 32 ? 24 : bitDepth;
-        blob = FileHandler.exportAIF(bufferToExport, aifBitDepth, dither);
+        // FileHandler.exportAIF expects an AudioBuffer, so build one from rendered channels
+        const aifBuffer = this.audioEngine.audioContext!.createBuffer(
+          chans.length, chans[0].length, exportSampleRate,
+        );
+        for (let c = 0; c < chans.length; c++) {
+          aifBuffer.copyToChannel(chans[c] as Float32Array<ArrayBuffer>, c);
+        }
+        blob = FileHandler.exportAIF(aifBuffer, aifBitDepth, dither);
         extension = '.aif';
       }
 
