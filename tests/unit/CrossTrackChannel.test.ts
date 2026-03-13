@@ -522,3 +522,639 @@ describe('Cross-track Overlap Resolution', () => {
     expect(trackClips.find(c => c.id === 'clip-R')).toBeDefined();
   });
 });
+
+// ==================== 4ch+ Split/Merge Algorithm Tests ====================
+
+/**
+ * Reusable split algorithm that mirrors App.ts executeCrossTrackSplit.
+ * Takes a model, source track, target track start index, clip ID, and new offset.
+ * Returns before/after snapshots or null on failure.
+ */
+function executeSplitAlgorithm(
+  model: TimelineModel,
+  sourceTrackId: string,
+  targetTrackStartIndex: number,
+  clipId: string,
+  newOffset: number,
+): { before: Array<{ trackId: string; clips: Clip[] }>; after: Array<{ trackId: string; clips: Clip[] }> } | null {
+  const tracks = model.timeline.tracks;
+  const sourceTrack = tracks.find(t => t.id === sourceTrackId);
+  if (!sourceTrack) return null;
+
+  const clip = sourceTrack.clips.find(c => c.id === clipId);
+  if (!clip) return null;
+
+  const groupClips = clip.groupId
+    ? sourceTrack.clips.filter(c => c.groupId === clip.groupId).sort((a, b) => (a.subChannel ?? 0) - (b.subChannel ?? 0))
+    : [clip];
+
+  const sourceChannels = sourceTrack.channels;
+  const targetTrack = tracks[targetTrackStartIndex];
+  if (!targetTrack) return null;
+  const targetChannels = targetTrack.channels;
+
+  const clipsPerTarget = targetChannels;
+  const numTargetTracks = sourceChannels / targetChannels;
+
+  // Verify consecutive target tracks
+  for (let i = 0; i < numTargetTracks; i++) {
+    const idx = targetTrackStartIndex + i;
+    if (idx >= tracks.length || tracks[idx].channels !== targetChannels) return null;
+  }
+
+  const offsetDelta = newOffset - clip.timelineOffset;
+
+  // Snapshot before
+  const affectedTrackIds = [sourceTrackId];
+  for (let i = 0; i < numTargetTracks; i++) {
+    const tId = tracks[targetTrackStartIndex + i].id;
+    if (!affectedTrackIds.includes(tId)) affectedTrackIds.push(tId);
+  }
+  const before = affectedTrackIds.map(tId => {
+    const t = tracks.find(tr => tr.id === tId)!;
+    return { trackId: tId, clips: t.clips.map(c => ({ ...c })) };
+  });
+
+  // Execute split
+  sourceTrack.clips = sourceTrack.clips.filter(c => !groupClips.some(gc => gc.id === c.id));
+
+  for (let targetOffset = 0; targetOffset < numTargetTracks; targetOffset++) {
+    const tTrack = tracks[targetTrackStartIndex + targetOffset];
+    const startSubCh = targetOffset * clipsPerTarget;
+    const endSubCh = startSubCh + clipsPerTarget;
+    const clipsForThisTrack = groupClips.filter(c => {
+      const sub = c.subChannel ?? 0;
+      return sub >= startSubCh && sub < endSubCh;
+    });
+
+    const newGroupId = clipsForThisTrack.length > 1 ? generateGroupId() : undefined;
+
+    for (const gc of clipsForThisTrack) {
+      const newClip: Clip = {
+        ...gc,
+        timelineOffset: Math.max(0, gc.timelineOffset + offsetDelta),
+        subChannel: clipsPerTarget > 1 ? (gc.subChannel ?? 0) - startSubCh : undefined,
+        groupId: newGroupId,
+      };
+      tTrack.clips.push(newClip);
+      model.resolveOverlaps(tTrack.id, newClip.id);
+    }
+  }
+
+  // Snapshot after
+  const after = affectedTrackIds.map(tId => {
+    const t = tracks.find(tr => tr.id === tId)!;
+    return { trackId: tId, clips: t.clips.map(c => ({ ...c })) };
+  });
+
+  return { before, after };
+}
+
+/**
+ * Reusable merge algorithm that mirrors App.ts executeCrossTrackMerge.
+ * Takes a model, ordered list of source clip/track pairs, target track ID, and new offset.
+ */
+function executeMergeAlgorithm(
+  model: TimelineModel,
+  sourceClips: Array<{ clipId: string; trackId: string }>,
+  targetTrackId: string,
+  newOffset: number,
+): { before: Array<{ trackId: string; clips: Clip[] }>; after: Array<{ trackId: string; clips: Clip[] }> } | null {
+  const tracks = model.timeline.tracks;
+  const targetTrack = tracks.find(t => t.id === targetTrackId);
+  if (!targetTrack) return null;
+
+  const targetChannels = targetTrack.channels;
+
+  // Build merge set from source clips sorted by track index
+  const mergeSet: Array<{ clip: Clip; trackId: string; trackIndex: number; siblings: Clip[] }> = [];
+  for (const sc of sourceClips) {
+    for (let ti = 0; ti < tracks.length; ti++) {
+      const c = tracks[ti].clips.find(cl => cl.id === sc.clipId);
+      if (c) {
+        // Collect siblings (other clips in same group on same track)
+        const siblings = c.groupId
+          ? tracks[ti].clips.filter(cl => cl.groupId === c.groupId && cl.id !== c.id)
+          : [];
+        mergeSet.push({ clip: c, trackId: tracks[ti].id, trackIndex: ti, siblings });
+        break;
+      }
+    }
+  }
+  mergeSet.sort((a, b) => a.trackIndex - b.trackIndex);
+
+  const firstSourceTrack = tracks.find(t => t.id === mergeSet[0]?.trackId);
+  if (!firstSourceTrack) return null;
+  const sourceChannels = firstSourceTrack.channels;
+  const clipsNeeded = targetChannels / sourceChannels;
+  if (mergeSet.length < clipsNeeded) return null;
+
+  const finalMergeSet = mergeSet.slice(0, clipsNeeded);
+  const offsetDelta = newOffset - finalMergeSet[0].clip.timelineOffset;
+
+  // Snapshot before
+  const affectedTrackIds = new Set<string>([targetTrackId]);
+  for (const mc of finalMergeSet) {
+    affectedTrackIds.add(mc.trackId);
+  }
+  const affectedIds = Array.from(affectedTrackIds);
+  const before = affectedIds.map(tId => {
+    const t = tracks.find(tr => tr.id === tId)!;
+    return { trackId: tId, clips: t.clips.map(c => ({ ...c })) };
+  });
+
+  // Execute merge
+  const newGroupId = generateGroupId();
+  for (let i = 0; i < finalMergeSet.length; i++) {
+    const mc = finalMergeSet[i];
+    const srcTrack = tracks.find(t => t.id === mc.trackId)!;
+
+    // Collect all clips to move from this source track (primary + siblings)
+    const allClipsFromTrack = [mc.clip, ...mc.siblings];
+    // Remove all from source
+    for (const cl of allClipsFromTrack) {
+      srcTrack.clips = srcTrack.clips.filter(c => c.id !== cl.id);
+    }
+
+    const baseSubChannel = i * sourceChannels;
+    // Place each sub-channel clip on the target
+    for (let ch = 0; ch < sourceChannels; ch++) {
+      // Find the clip for this sub-channel
+      const subClip = allClipsFromTrack.find(c => (c.subChannel ?? 0) === ch) ?? allClipsFromTrack[0];
+      if (!subClip) continue;
+      const newClip: Clip = {
+        ...subClip,
+        id: subClip.id, // keep original ID for overlap resolution
+        timelineOffset: Math.max(0, subClip.timelineOffset + offsetDelta),
+        subChannel: baseSubChannel + ch,
+        groupId: newGroupId,
+      };
+      targetTrack.clips.push(newClip);
+      model.resolveOverlaps(targetTrackId, newClip.id);
+    }
+  }
+
+  // Snapshot after
+  const after = affectedIds.map(tId => {
+    const t = tracks.find(tr => tr.id === tId)!;
+    return { trackId: tId, clips: t.clips.map(c => ({ ...c })) };
+  });
+
+  return { before, after };
+}
+
+// ==================== Quad → 4x Mono Split ====================
+
+describe('Quad to Mono Split (4ch → 1ch)', () => {
+  it('should distribute 4 sub-channel clips to 4 consecutive mono tracks', () => {
+    const { model, quadTrackId, monoTrackIds } = createQuadModel();
+    const quadTrack = model.timeline.tracks.find(t => t.id === quadTrackId)!;
+
+    expect(quadTrack.clips.length).toBe(4);
+
+    const targetIdx = model.timeline.tracks.findIndex(t => t.id === monoTrackIds[0]);
+    const result = executeSplitAlgorithm(model, quadTrackId, targetIdx, 'clip-ch0', 1000);
+
+    expect(result).not.toBeNull();
+    // Source track should be empty
+    expect(quadTrack.clips.length).toBe(0);
+
+    // Each mono track should have exactly 1 clip
+    for (let i = 0; i < 4; i++) {
+      const monoTrack = model.timeline.tracks.find(t => t.id === monoTrackIds[i])!;
+      expect(monoTrack.clips.length).toBe(1);
+      // Mono clips should have no subChannel or groupId
+      expect(monoTrack.clips[0].subChannel).toBeUndefined();
+      expect(monoTrack.clips[0].groupId).toBeUndefined();
+      // Offset should be applied
+      expect(monoTrack.clips[0].timelineOffset).toBe(1000);
+    }
+  });
+
+  it('should work with 6ch → mono (6 clips to 6 mono tracks)', () => {
+    const model = new TimelineModel();
+    const sixChTrack = model.addTrack('6ch', '#3b82f6', 0, 6);
+
+    // Create 6 mono tracks
+    const monoTrackIds: string[] = [];
+    for (let i = 0; i < 6; i++) {
+      const t = model.addTrack(`Mono ${i}`, '#10b981', i + 1, 1);
+      monoTrackIds.push(t.id);
+    }
+
+    // Add 6 grouped clips
+    const groupId = generateGroupId();
+    for (let i = 0; i < 6; i++) {
+      model.addClip(sixChTrack.id, createClip({
+        id: `clip-ch${i}`, name: `Ch ${i}`, subChannel: i, groupId, bufferId: `buf-ch${i}`,
+      }));
+    }
+
+    const targetIdx = model.timeline.tracks.findIndex(t => t.id === monoTrackIds[0]);
+    const result = executeSplitAlgorithm(model, sixChTrack.id, targetIdx, 'clip-ch0', 0);
+
+    expect(result).not.toBeNull();
+    expect(sixChTrack.clips.length).toBe(0);
+
+    for (let i = 0; i < 6; i++) {
+      const monoTrack = model.timeline.tracks.find(t => t.id === monoTrackIds[i])!;
+      expect(monoTrack.clips.length).toBe(1);
+      expect(monoTrack.clips[0].subChannel).toBeUndefined();
+      expect(monoTrack.clips[0].groupId).toBeUndefined();
+    }
+  });
+});
+
+// ==================== 6ch → Stereo Split ====================
+
+describe('6ch to Stereo Split (6ch → 2ch)', () => {
+  it('should distribute 6 clips to 3 consecutive stereo tracks', () => {
+    const model = new TimelineModel();
+    const sixChTrack = model.addTrack('6ch', '#3b82f6', 0, 6);
+
+    const stereoTrackIds: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const t = model.addTrack(`Stereo ${i}`, '#10b981', i + 1, 2);
+      stereoTrackIds.push(t.id);
+    }
+
+    const groupId = generateGroupId();
+    for (let i = 0; i < 6; i++) {
+      model.addClip(sixChTrack.id, createClip({
+        id: `clip-ch${i}`, name: `Ch ${i}`, subChannel: i, groupId, bufferId: `buf-ch${i}`,
+      }));
+    }
+
+    const targetIdx = model.timeline.tracks.findIndex(t => t.id === stereoTrackIds[0]);
+    const result = executeSplitAlgorithm(model, sixChTrack.id, targetIdx, 'clip-ch0', 500);
+
+    expect(result).not.toBeNull();
+    expect(sixChTrack.clips.length).toBe(0);
+
+    // 3 stereo tracks, each with 2 clips
+    for (let i = 0; i < 3; i++) {
+      const stereoTrack = model.timeline.tracks.find(t => t.id === stereoTrackIds[i])!;
+      expect(stereoTrack.clips.length).toBe(2);
+      // Each pair should share a groupId
+      expect(stereoTrack.clips[0].groupId).toBe(stereoTrack.clips[1].groupId);
+      // SubChannels should be remapped to 0,1
+      expect(stereoTrack.clips[0].subChannel).toBe(0);
+      expect(stereoTrack.clips[1].subChannel).toBe(1);
+      expect(stereoTrack.clips[0].timelineOffset).toBe(500);
+    }
+
+    // Groups across different stereo tracks should be different
+    const groups = stereoTrackIds.map(id => {
+      const t = model.timeline.tracks.find(tr => tr.id === id)!;
+      return t.clips[0].groupId;
+    });
+    expect(new Set(groups).size).toBe(3);
+  });
+});
+
+// ==================== Mono → Quad Merge ====================
+
+describe('Mono to Quad Merge (4x 1ch → 4ch)', () => {
+  it('should merge 4 mono clips into 1 quad track with correct subChannels', () => {
+    const model = new TimelineModel();
+    const monoTrackIds: string[] = [];
+    for (let i = 0; i < 4; i++) {
+      const t = model.addTrack(`Mono ${i}`, '#10b981', i, 1);
+      monoTrackIds.push(t.id);
+    }
+    const quadTrack = model.addTrack('Quad', '#3b82f6', 4, 4);
+
+    // Add a clip to each mono track
+    const clipIds: string[] = [];
+    for (let i = 0; i < 4; i++) {
+      const id = `clip-m${i}`;
+      clipIds.push(id);
+      model.addClip(monoTrackIds[i], createClip({ id, bufferId: `buf-m${i}` }));
+    }
+
+    const result = executeMergeAlgorithm(
+      model,
+      clipIds.map((id, i) => ({ clipId: id, trackId: monoTrackIds[i] })),
+      quadTrack.id,
+      2000,
+    );
+
+    expect(result).not.toBeNull();
+
+    // All mono tracks should be empty
+    for (let i = 0; i < 4; i++) {
+      const mt = model.timeline.tracks.find(t => t.id === monoTrackIds[i])!;
+      expect(mt.clips.length).toBe(0);
+    }
+
+    // Quad track should have 4 clips with subChannels 0-3
+    const qt = model.timeline.tracks.find(t => t.id === quadTrack.id)!;
+    expect(qt.clips.length).toBe(4);
+    for (let i = 0; i < 4; i++) {
+      expect(qt.clips.find(c => c.subChannel === i)).toBeDefined();
+    }
+    // All should share the same groupId
+    const groupIds = new Set(qt.clips.map(c => c.groupId));
+    expect(groupIds.size).toBe(1);
+    expect(qt.clips[0].timelineOffset).toBe(2000);
+  });
+});
+
+// ==================== Stereo → Quad Merge ====================
+
+describe('Stereo to Quad Merge (2x 2ch → 4ch)', () => {
+  it('should merge 2 stereo tracks into 1 quad track with correct subChannels', () => {
+    const model = new TimelineModel();
+    const stereoTrack1 = model.addTrack('Stereo 1', '#10b981', 0, 2);
+    const stereoTrack2 = model.addTrack('Stereo 2', '#f59e0b', 1, 2);
+    const quadTrack = model.addTrack('Quad', '#3b82f6', 2, 4);
+
+    // Add grouped stereo clips to each stereo track
+    const groupId1 = generateGroupId();
+    model.addClip(stereoTrack1.id, createClip({
+      id: 'clip-s1-L', subChannel: 0, groupId: groupId1, bufferId: 'buf-s1-L',
+    }));
+    model.addClip(stereoTrack1.id, createClip({
+      id: 'clip-s1-R', subChannel: 1, groupId: groupId1, bufferId: 'buf-s1-R',
+    }));
+
+    const groupId2 = generateGroupId();
+    model.addClip(stereoTrack2.id, createClip({
+      id: 'clip-s2-L', subChannel: 0, groupId: groupId2, bufferId: 'buf-s2-L',
+    }));
+    model.addClip(stereoTrack2.id, createClip({
+      id: 'clip-s2-R', subChannel: 1, groupId: groupId2, bufferId: 'buf-s2-R',
+    }));
+
+    // Merge using one clip from each stereo track as the representative
+    const result = executeMergeAlgorithm(
+      model,
+      [
+        { clipId: 'clip-s1-L', trackId: stereoTrack1.id },
+        { clipId: 'clip-s2-L', trackId: stereoTrack2.id },
+      ],
+      quadTrack.id,
+      0,
+    );
+
+    expect(result).not.toBeNull();
+
+    // Stereo tracks should be empty
+    const st1 = model.timeline.tracks.find(t => t.id === stereoTrack1.id)!;
+    const st2 = model.timeline.tracks.find(t => t.id === stereoTrack2.id)!;
+    expect(st1.clips.length).toBe(0);
+    expect(st2.clips.length).toBe(0);
+
+    // Quad track should have 4 clips with subChannels 0,1,2,3
+    const qt = model.timeline.tracks.find(t => t.id === quadTrack.id)!;
+    expect(qt.clips.length).toBe(4);
+    for (let i = 0; i < 4; i++) {
+      expect(qt.clips.find(c => c.subChannel === i)).toBeDefined();
+    }
+    // All should share the same groupId
+    const groupIds = new Set(qt.clips.map(c => c.groupId));
+    expect(groupIds.size).toBe(1);
+  });
+});
+
+// ==================== Mono → 6ch Merge ====================
+
+describe('Mono to 6ch Merge (6x 1ch → 6ch)', () => {
+  it('should merge 6 mono clips into 1 6ch track', () => {
+    const model = new TimelineModel();
+    const monoTrackIds: string[] = [];
+    for (let i = 0; i < 6; i++) {
+      const t = model.addTrack(`Mono ${i}`, '#10b981', i, 1);
+      monoTrackIds.push(t.id);
+    }
+    const sixChTrack = model.addTrack('6ch', '#3b82f6', 6, 6);
+
+    const clipIds: string[] = [];
+    for (let i = 0; i < 6; i++) {
+      const id = `clip-m${i}`;
+      clipIds.push(id);
+      model.addClip(monoTrackIds[i], createClip({ id, bufferId: `buf-m${i}` }));
+    }
+
+    const result = executeMergeAlgorithm(
+      model,
+      clipIds.map((id, i) => ({ clipId: id, trackId: monoTrackIds[i] })),
+      sixChTrack.id,
+      0,
+    );
+
+    expect(result).not.toBeNull();
+
+    // All mono tracks empty
+    for (let i = 0; i < 6; i++) {
+      const mt = model.timeline.tracks.find(t => t.id === monoTrackIds[i])!;
+      expect(mt.clips.length).toBe(0);
+    }
+
+    // 6ch track has 6 clips with subChannels 0-5
+    const st = model.timeline.tracks.find(t => t.id === sixChTrack.id)!;
+    expect(st.clips.length).toBe(6);
+    for (let i = 0; i < 6; i++) {
+      expect(st.clips.find(c => c.subChannel === i)).toBeDefined();
+    }
+    const groupIds = new Set(st.clips.map(c => c.groupId));
+    expect(groupIds.size).toBe(1);
+  });
+});
+
+// ==================== Stereo → 6ch Merge ====================
+
+describe('Stereo to 6ch Merge (3x 2ch → 6ch)', () => {
+  it('should merge 3 stereo tracks into 1 6ch track with correct subChannels', () => {
+    const model = new TimelineModel();
+    const stereoTrackIds: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const t = model.addTrack(`Stereo ${i}`, '#10b981', i, 2);
+      stereoTrackIds.push(t.id);
+    }
+    const sixChTrack = model.addTrack('6ch', '#3b82f6', 3, 6);
+
+    // Add grouped stereo clips to each stereo track
+    for (let i = 0; i < 3; i++) {
+      const gid = generateGroupId();
+      model.addClip(stereoTrackIds[i], createClip({
+        id: `clip-s${i}-L`, subChannel: 0, groupId: gid, bufferId: `buf-s${i}-L`,
+      }));
+      model.addClip(stereoTrackIds[i], createClip({
+        id: `clip-s${i}-R`, subChannel: 1, groupId: gid, bufferId: `buf-s${i}-R`,
+      }));
+    }
+
+    const result = executeMergeAlgorithm(
+      model,
+      stereoTrackIds.map((tId, i) => ({ clipId: `clip-s${i}-L`, trackId: tId })),
+      sixChTrack.id,
+      0,
+    );
+
+    expect(result).not.toBeNull();
+
+    // All stereo tracks empty
+    for (let i = 0; i < 3; i++) {
+      const st = model.timeline.tracks.find(t => t.id === stereoTrackIds[i])!;
+      expect(st.clips.length).toBe(0);
+    }
+
+    // 6ch track has 6 clips with subChannels 0-5
+    const qt = model.timeline.tracks.find(t => t.id === sixChTrack.id)!;
+    expect(qt.clips.length).toBe(6);
+    for (let i = 0; i < 6; i++) {
+      expect(qt.clips.find(c => c.subChannel === i)).toBeDefined();
+    }
+    const groupIds = new Set(qt.clips.map(c => c.groupId));
+    expect(groupIds.size).toBe(1);
+  });
+});
+
+// ==================== Cross-channel target persistence (Bug 1) ====================
+
+describe('Cross-channel drag target persistence', () => {
+  /**
+   * Bug 1: When _dragCrossChannelTarget is set and the renderer keeps drag.trackId
+   * as source (because channels differ), the next onClipMove call has
+   * sourceTrackId === targetTrackId (both source), which clears the target.
+   *
+   * Fix: once _dragCrossChannelTarget is set, don't clear it when
+   * sourceTrackId === targetTrackId (the clip hasn't actually moved back).
+   */
+  it('should NOT clear cross-channel target when source === target due to deferred move', () => {
+    // Simulate the fixed _dragCrossChannelTarget tracking logic
+    let dragCrossChannelTarget: { targetTrackId: string; newOffset: number } | null = null;
+
+    const tracks = [
+      { id: 'quad-1', channels: 4 },
+      { id: 'mono-1', channels: 1 },
+      { id: 'mono-2', channels: 1 },
+      { id: 'mono-3', channels: 1 },
+      { id: 'mono-4', channels: 1 },
+    ];
+
+    // Simulated renderer drag.trackId (stays on source when channels differ)
+    let rendererDragTrackId = 'quad-1';
+
+    function simulateOnClipMove(
+      sourceTrackId: string,
+      targetTrackId: string,
+      newOffset: number,
+    ): void {
+      if (sourceTrackId !== targetTrackId) {
+        const sourceTrack = tracks.find(t => t.id === sourceTrackId);
+        const targetTrack = tracks.find(t => t.id === targetTrackId);
+        if (sourceTrack && targetTrack && sourceTrack.channels !== targetTrack.channels) {
+          // Compatible cross-channel: set target
+          dragCrossChannelTarget = { targetTrackId, newOffset };
+        } else {
+          dragCrossChannelTarget = null;
+        }
+      }
+      // FIX: when sourceTrackId === targetTrackId, do NOT clear the target.
+      // The clip is still on the source track because cross-channel moves are deferred.
+    }
+
+    // Move 1: quad→mono-1
+    simulateOnClipMove(rendererDragTrackId, 'mono-1', 5000);
+    expect(dragCrossChannelTarget).not.toBeNull();
+    expect(dragCrossChannelTarget!.targetTrackId).toBe('mono-1');
+
+    // Move 2: renderer reports source=quad-1 (unchanged), target=mono-1
+    // But App sees source === target = quad-1 because renderer didn't update drag.trackId
+    // With the fix, cross-channel target should persist
+    simulateOnClipMove(rendererDragTrackId, 'mono-1', 5100);
+    expect(dragCrossChannelTarget).not.toBeNull();
+    expect(dragCrossChannelTarget!.targetTrackId).toBe('mono-1');
+
+    // Move 3: user moves to a different mono track
+    simulateOnClipMove(rendererDragTrackId, 'mono-3', 5200);
+    expect(dragCrossChannelTarget).not.toBeNull();
+    expect(dragCrossChannelTarget!.targetTrackId).toBe('mono-3');
+  });
+
+  it('should clear cross-channel target when user moves back to same channel count track', () => {
+    let dragCrossChannelTarget: { targetTrackId: string; newOffset: number } | null = null;
+
+    const tracks = [
+      { id: 'stereo-1', channels: 2 },
+      { id: 'mono-1', channels: 1 },
+      { id: 'stereo-2', channels: 2 },
+    ];
+
+    let rendererDragTrackId = 'stereo-1';
+
+    function simulateOnClipMove(
+      sourceTrackId: string,
+      targetTrackId: string,
+      newOffset: number,
+    ): void {
+      if (sourceTrackId !== targetTrackId) {
+        const sourceTrack = tracks.find(t => t.id === sourceTrackId);
+        const targetTrack = tracks.find(t => t.id === targetTrackId);
+        if (sourceTrack && targetTrack && sourceTrack.channels !== targetTrack.channels) {
+          dragCrossChannelTarget = { targetTrackId, newOffset };
+        } else {
+          // Same channel count cross-track: clear
+          dragCrossChannelTarget = null;
+        }
+      }
+    }
+
+    // Move to mono: cross-channel target set
+    simulateOnClipMove(rendererDragTrackId, 'mono-1', 5000);
+    expect(dragCrossChannelTarget).not.toBeNull();
+
+    // Move to stereo-2: same channel count, should clear cross-channel target
+    // Renderer updates drag.trackId because channels match
+    rendererDragTrackId = 'stereo-2';
+    simulateOnClipMove('stereo-1', 'stereo-2', 5100);
+    expect(dragCrossChannelTarget).toBeNull();
+  });
+});
+
+// ==================== Undo/Redo for 4ch+ operations ====================
+
+describe('CrossTrackChannelCommand for 4ch+ operations', () => {
+  it('should undo/redo quad→mono split correctly', () => {
+    const { model, quadTrackId, monoTrackIds } = createQuadModel();
+
+    const quadTrack = model.timeline.tracks.find(t => t.id === quadTrackId)!;
+    const originalClips = quadTrack.clips.map(c => ({ ...c }));
+
+    // Snapshot before
+    const before = [
+      { trackId: quadTrackId, clips: [...originalClips] },
+      ...monoTrackIds.map(id => ({ trackId: id, clips: [] as Clip[] })),
+    ];
+
+    // Execute split
+    const targetIdx = model.timeline.tracks.findIndex(t => t.id === monoTrackIds[0]);
+    executeSplitAlgorithm(model, quadTrackId, targetIdx, 'clip-ch0', 0);
+
+    // Snapshot after
+    const after = [quadTrackId, ...monoTrackIds].map(tId => {
+      const t = model.timeline.tracks.find(tr => tr.id === tId)!;
+      return { trackId: tId, clips: t.clips.map(c => ({ ...c })) };
+    });
+
+    const cmd = new CrossTrackChannelCommand(model, before, after, 'Split quad to mono');
+
+    // Undo should restore original state
+    cmd.undo();
+    expect(quadTrack.clips.length).toBe(4);
+    for (const id of monoTrackIds) {
+      const mt = model.timeline.tracks.find(t => t.id === id)!;
+      expect(mt.clips.length).toBe(0);
+    }
+
+    // Redo should re-apply split
+    cmd.execute();
+    expect(quadTrack.clips.length).toBe(0);
+    for (const id of monoTrackIds) {
+      const mt = model.timeline.tracks.find(t => t.id === id)!;
+      expect(mt.clips.length).toBe(1);
+    }
+  });
+});

@@ -1375,28 +1375,31 @@ export class App {
     for (let i = 0; i < mergeSet.length; i++) {
       const mc = mergeSet[i];
       const srcTrack = tracks.find(t => t.id === mc.trackId)!;
-      srcTrack.clips = srcTrack.clips.filter(c => c.id !== mc.clip.id);
+
+      // Collect all clips to move from this source track (primary + grouped siblings)
+      const allClipsFromTrack: Clip[] = mc.clip.groupId
+        ? srcTrack.clips.filter(c => c.groupId === mc.clip.groupId)
+            .sort((a, b) => (a.subChannel ?? 0) - (b.subChannel ?? 0))
+        : [mc.clip];
+
+      // Remove all of them from the source track
+      const idsToRemove = new Set(allClipsFromTrack.map(c => c.id));
+      srcTrack.clips = srcTrack.clips.filter(c => !idsToRemove.has(c.id));
 
       const baseSubChannel = i * sourceChannels;
-      // For each source channel in the clip
+
+      // Place each sub-channel clip on the target with remapped subChannel
       for (let ch = 0; ch < sourceChannels; ch++) {
+        const subClip = allClipsFromTrack.find(c => (c.subChannel ?? 0) === ch) ?? allClipsFromTrack[0];
+        if (!subClip) continue;
         const newClip: Clip = {
-          ...mc.clip,
-          timelineOffset: Math.max(0, mc.clip.timelineOffset + offsetDelta),
+          ...subClip,
+          timelineOffset: Math.max(0, subClip.timelineOffset + offsetDelta),
           subChannel: baseSubChannel + ch,
           groupId: newGroupId,
         };
-        // If source clip already has subChannel, it only represents one channel
-        if (mc.clip.subChannel != null) {
-          newClip.subChannel = baseSubChannel;
-          targetTrack.clips.push(newClip);
-          this.timelineModel.resolveOverlaps(targetTrackId, newClip.id);
-          break; // Only one clip per source
-        }
-        if (ch === 0) {
-          targetTrack.clips.push(newClip);
-          this.timelineModel.resolveOverlaps(targetTrackId, newClip.id);
-        }
+        targetTrack.clips.push(newClip);
+        this.timelineModel.resolveOverlaps(targetTrackId, newClip.id);
       }
     }
 
