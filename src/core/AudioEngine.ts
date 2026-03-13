@@ -33,7 +33,6 @@ export class AudioEngine {
   trackInsertInputs: Map<string, GainNode> = new Map();
   trackInsertOutputs: Map<string, GainNode> = new Map();
   scheduledSources: AudioBufferSourceNode[] = [];
-  private activeSourceCount = 0;
   faderLaw: FaderLaw = 'equalPower';
 
   // Crossfader
@@ -551,25 +550,15 @@ export class AudioEngine {
       }
     }
 
-    // Track active source count for end-of-playback detection (M7)
-    this.activeSourceCount = this.scheduledSources.length;
-
-    if (this.activeSourceCount === 0) {
+    if (this.scheduledSources.length === 0) {
       // Nothing to play
       this.isPlaying = false;
       return;
     }
 
-    for (const source of this.scheduledSources) {
-      source.onended = () => {
-        this.activeSourceCount--;
-        if (this.activeSourceCount <= 0 && this.isPlaying && !this.isPaused) {
-          this.isPlaying = false;
-          cancelAnimationFrame(this.animationFrame);
-          if (this.onPlaybackEnd) this.onPlaybackEnd();
-        }
-      };
-    }
+    // Transport keeps rolling after all clips finish playing.
+    // Only stop() or stopTimeline() should stop the transport.
+    // No onended auto-stop — the playhead animation loop runs independently.
 
     this.startTime = now - startTimeSec;
     this.isPlaying = true;

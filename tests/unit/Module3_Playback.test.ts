@@ -98,7 +98,7 @@ describe('AudioEngine — Playback & Transport', () => {
       bufferId = bufferPool.addBuffer(mockBuffer as any, 'test.wav', 0);
     });
 
-    it('3.1.1 - fires onPlaybackEnd when all sources finish', () => {
+    it('3.1.1 - transport keeps rolling after all sources finish (isPlaying stays true)', () => {
       const onEnd = vi.fn();
       engine.onPlaybackEnd = onEnd;
 
@@ -112,30 +112,36 @@ describe('AudioEngine — Playback & Transport', () => {
 
       // Simulate all sources ending by calling onended on each scheduled source
       for (const source of engine.scheduledSources) {
-        (source.onended as unknown as () => void)();
+        if (source.onended) {
+          (source.onended as unknown as () => void)();
+        }
       }
 
-      expect(engine.isPlaying).toBe(false);
-      expect(onEnd).toHaveBeenCalledOnce();
+      // Transport should keep rolling — isPlaying stays true
+      expect(engine.isPlaying).toBe(true);
+      // onPlaybackEnd should NOT be called when sources end
+      expect(onEnd).not.toHaveBeenCalled();
     });
 
-    it('3.1.2 - can play short file twice without errors', () => {
+    it('3.1.2 - only stop() or stopTimeline() stops transport', () => {
       const clip = makeClip(bufferId, { duration: 4410 }); // ~100ms
       const track = makeTrack('t1', [clip]);
       const timeline = makeTimeline({ tracks: [track] });
       engine.setupTrackRouting([track]);
 
-      // First play
+      // Play — sources end but transport keeps rolling
       engine.playTimeline(timeline, bufferPool);
       expect(engine.isPlaying).toBe(true);
       for (const source of engine.scheduledSources) {
-        (source.onended as unknown as () => void)();
+        if (source.onended) {
+          (source.onended as unknown as () => void)();
+        }
       }
-      expect(engine.isPlaying).toBe(false);
-
-      // Second play — should not throw
-      engine.playTimeline(timeline, bufferPool);
       expect(engine.isPlaying).toBe(true);
+
+      // Only explicit stop stops the transport
+      engine.stopTimeline();
+      expect(engine.isPlaying).toBe(false);
     });
 
     it('3.1.3 - stop during playback then play restarts cleanly', () => {
