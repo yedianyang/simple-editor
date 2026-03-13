@@ -46,6 +46,8 @@ export interface WavMetadata {
   description?: string;
   originator?: string;
   originatorRef?: string;
+  date?: string;          // Origination date (yyyy-mm-dd) — falls back to current date if empty
+  time?: string;          // Origination time (hh:mm:ss) — falls back to current time if empty
 
   // iXML fields
   project?: string;
@@ -122,17 +124,29 @@ function buildBextData(opts: WavEncodeOptions, meta: WavMetadata): Uint8Array {
   const numCh = channels.length;
   const enc = new TextEncoder();
 
-  const now = new Date();
-  const date = [
-    now.getFullYear(),
-    String(now.getMonth() + 1).padStart(2, '0'),
-    String(now.getDate()).padStart(2, '0'),
-  ].join('-');
-  const time = [
-    String(now.getHours()).padStart(2, '0'),
-    String(now.getMinutes()).padStart(2, '0'),
-    String(now.getSeconds()).padStart(2, '0'),
-  ].join(':');
+  // Use user-provided date/time if available, otherwise fall back to current
+  let date: string;
+  let time: string;
+  if (meta.date && meta.date.length > 0) {
+    date = meta.date;
+  } else {
+    const now = new Date();
+    date = [
+      now.getFullYear(),
+      String(now.getMonth() + 1).padStart(2, '0'),
+      String(now.getDate()).padStart(2, '0'),
+    ].join('-');
+  }
+  if (meta.time && meta.time.length > 0) {
+    time = meta.time;
+  } else {
+    const now = new Date();
+    time = [
+      String(now.getHours()).padStart(2, '0'),
+      String(now.getMinutes()).padStart(2, '0'),
+      String(now.getSeconds()).padStart(2, '0'),
+    ].join(':');
+  }
 
   // Description
   let desc = meta.description || '';

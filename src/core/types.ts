@@ -191,6 +191,8 @@ export interface ExportMetadata {
   bpiDescription: string;
   originator: string;
   originatorRef: string;
+  date: string;           // Origination date (yyyy-mm-dd) — empty string = auto-generate
+  time: string;           // Origination time (hh:mm:ss) — empty string = auto-generate
 
   // iXML fields
   project: string;
@@ -226,6 +228,8 @@ export function createDefaultExportMetadata(): ExportMetadata {
     bpiDescription: '',
     originator: 'FieldCorder',
     originatorRef: '',
+    date: '',
+    time: '',
     project: '',
     scene: '',
     take: '',

@@ -457,6 +457,38 @@ describe('WavEncoder — BEXT chunk', () => {
     const orig = readString(wav, bextOff + 256, 11);
     expect(orig).toBe('FieldCorder');
   });
+
+  it('uses user-provided date in BEXT originationDate field', () => {
+    const wav = encodeWav(makeOpts({ metadata: { date: '2025-06-15' } }));
+    const bextOff = parseChunks(wav).get('bext')!.offset;
+    const dateStr = readString(wav, bextOff + 320, 10);
+    expect(dateStr).toBe('2025-06-15');
+  });
+
+  it('uses user-provided time in BEXT originationTime field', () => {
+    const wav = encodeWav(makeOpts({ metadata: { time: '14:30:00' } }));
+    const bextOff = parseChunks(wav).get('bext')!.offset;
+    const timeStr = readString(wav, bextOff + 330, 8);
+    expect(timeStr).toBe('14:30:00');
+  });
+
+  it('uses user-provided date and time together', () => {
+    const wav = encodeWav(makeOpts({ metadata: { date: '2024-12-25', time: '09:00:00' } }));
+    const bextOff = parseChunks(wav).get('bext')!.offset;
+    expect(readString(wav, bextOff + 320, 10)).toBe('2024-12-25');
+    expect(readString(wav, bextOff + 330, 8)).toBe('09:00:00');
+  });
+
+  it('falls back to current date/time when date and time not provided', () => {
+    const wav = encodeWav(makeOpts({ metadata: { description: 'test' } }));
+    const bextOff = parseChunks(wav).get('bext')!.offset;
+    const dateStr = readString(wav, bextOff + 320, 10);
+    // Should be a valid date in yyyy-mm-dd format (auto-generated)
+    expect(dateStr).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    const timeStr = readString(wav, bextOff + 330, 8);
+    // Should be a valid time in hh:mm:ss format (auto-generated)
+    expect(timeStr).toMatch(/^\d{2}:\d{2}:\d{2}$/);
+  });
 });
 
 // ── iXML chunk ───────────────────────────────────────────────────────────

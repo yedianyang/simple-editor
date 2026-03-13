@@ -20,6 +20,7 @@ import { BufferPool } from '../core/BufferPool';
 import { encodeWavAsync, WavMetadata } from '../core/WavEncoder';
 import { encodeMp3Async, Mp3Metadata } from '../core/Mp3Encoder';
 import { TimelineModel, generateGroupId } from '../core/TimelineModel';
+import { renderTimelineOffline } from '../core/OfflineRender';
 import {
   TimelineUndoManager,
   CompoundCommand,
@@ -3101,8 +3102,10 @@ export class App {
     const val = (id: string) => (document.getElementById(id) as HTMLInputElement)?.value || '';
     return {
       bpiDescription: val('inlineDescription'),
-      originator: 'FieldCorder',
+      originator: val('inlineOriginator') || 'FieldCorder',
       originatorRef: '',
+      date: val('inlineDate'),
+      time: val('inlineTime'),
       project: '',
       scene: val('inlineScene'),
       take: val('inlineTake'),
