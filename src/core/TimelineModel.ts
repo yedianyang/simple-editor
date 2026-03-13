@@ -356,6 +356,117 @@ export class TimelineModel {
     return { clipIds, newTrackIds };
   }
 
+  /**
+   * Import audio to a NEW track (Cmd+O / import-to-timeline workflow).
+   * ALWAYS creates new tracks — never reuses existing ones.
+   * For supported multi-ch counts (1,2,4,5,6): creates 1 multi-ch track.
+   * For unsupported counts (3,7+): creates N mono tracks.
+   * Inserts the new track(s) AFTER insertAfterIndex (-1 = append at end).
+   * Returns the IDs of created clips and newly created tracks (for undo).
+   */
+  importAudioToNewTrack(
+    bufferIds: string[],
+    fileName: string,
+    sampleRate: number,
+    numSamples: number,
+    insertAfterIndex: number,
+    sampleOffset: number,
+  ): { clipIds: string[]; newTrackIds: string[] } {
+    const numChannels = bufferIds.length;
+    const names = CHANNEL_NAMES[numChannels] ??
+      Array.from({ length: numChannels }, (_, i) => `Ch ${i + 1}`);
+    const clipIds: string[] = [];
+    const newTrackIds: string[] = [];
+
+    // Determine insertion index: after insertAfterIndex, or at end
+    const insertAt = insertAfterIndex >= 0 && insertAfterIndex < this.timeline.tracks.length
+      ? insertAfterIndex + 1
+      : this.timeline.tracks.length;
+
+    // Supported multi-channel counts -> single multi-ch track
+    if (numChannels === 1 || numChannels === 2 || numChannels === 4 || numChannels === 5 || numChannels === 6) {
+      const chCount = numChannels as TrackChannelCount;
+      const track: Track = {
+        id: genTrackId(),
+        name: fileName,
+        color: CHANNEL_COLORS[insertAt % CHANNEL_COLORS.length],
+        channels: chCount,
+        clips: [],
+        volume: 0,
+        pan: 0,
+        mute: false,
+        solo: false,
+        channelIndex: insertAt,
+        inserts: [],
+        height: 80,
+      };
+
+      // Multi-channel files share a groupId so sub-channel clips stay linked
+      const groupId = numChannels > 1 ? generateGroupId() : undefined;
+
+      for (let i = 0; i < numChannels; i++) {
+        const clip: Clip = {
+          id: genClipId(),
+          bufferId: bufferIds[i],
+          name: `${fileName} — ${names[i]}`,
+          timelineOffset: sampleOffset,
+          sourceStart: 0,
+          sourceEnd: numSamples,
+          duration: numSamples,
+          gainDb: 0,
+          fadeInSamples: 0,
+          fadeOutSamples: 0,
+          muted: false,
+          subChannel: numChannels > 1 ? i : undefined,
+          groupId,
+        };
+        track.clips.push(clip);
+        clipIds.push(clip.id);
+      }
+
+      this.insertTrackAt(track, insertAt);
+      newTrackIds.push(track.id);
+    } else {
+      // Unsupported channel count -- fall back to N mono tracks
+      for (let i = 0; i < numChannels; i++) {
+        const track: Track = {
+          id: genTrackId(),
+          name: names[i],
+          color: CHANNEL_COLORS[(insertAt + i) % CHANNEL_COLORS.length],
+          channels: 1,
+          clips: [],
+          volume: 0,
+          pan: 0,
+          mute: false,
+          solo: false,
+          channelIndex: insertAt + i,
+          inserts: [],
+          height: 80,
+        };
+        const clip: Clip = {
+          id: genClipId(),
+          bufferId: bufferIds[i],
+          name: `${fileName} — ${names[i]}`,
+          timelineOffset: sampleOffset,
+          sourceStart: 0,
+          sourceEnd: numSamples,
+          duration: numSamples,
+          gainDb: 0,
+          fadeInSamples: 0,
+          fadeOutSamples: 0,
+          muted: false,
+        };
+        track.clips.push(clip);
+        clipIds.push(clip.id);
+        this.insertTrackAt(track, insertAt + i);
+        newTrackIds.push(track.id);
+      }
+    }
+
+    this.recalcTotalLength();
+    return { clipIds, newTrackIds };
+  }
+
   addEmptyTrack(channels: TrackChannelCount = 1): Track {
     const idx = this.timeline.tracks.length;
     const color = CHANNEL_COLORS[idx % CHANNEL_COLORS.length];

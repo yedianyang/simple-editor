@@ -841,6 +841,47 @@ export class ImportFileAtPositionCommand implements TimelineCommand {
 }
 
 /**
+ * Undo-able command for Cmd+O "import audio to new track" workflow.
+ * Always creates new tracks (never reuses existing) using importAudioToNewTrack().
+ * Removes created clips and newly added tracks on undo.
+ */
+export class ImportAudioToNewTrackCommand implements TimelineCommand {
+  description = 'Import audio to new track';
+  private clipIds: string[] = [];
+  private newTrackIds: string[] = [];
+
+  constructor(
+    private model: TimelineModel,
+    private bufferIds: string[],
+    private fileName: string,
+    private sampleRate: number,
+    private numSamples: number,
+    private insertAfterIndex: number,
+    private sampleOffset: number,
+  ) {}
+
+  execute(): void {
+    const result = this.model.importAudioToNewTrack(
+      this.bufferIds, this.fileName, this.sampleRate, this.numSamples,
+      this.insertAfterIndex, this.sampleOffset,
+    );
+    this.clipIds = result.clipIds;
+    this.newTrackIds = result.newTrackIds;
+  }
+
+  undo(): void {
+    // Remove clips by ID from their tracks
+    for (const track of this.model.timeline.tracks) {
+      track.clips = track.clips.filter(c => !this.clipIds.includes(c.id));
+    }
+    // Remove newly created tracks (reverse order to preserve indices)
+    for (const trackId of [...this.newTrackIds].reverse()) {
+      this.model.removeTrack(trackId);
+    }
+  }
+}
+
+/**
  * Snapshot-based undo for cross-track channel split/merge operations.
  * Saves the full state of all affected tracks before and after the operation.
  */

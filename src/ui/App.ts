@@ -38,6 +38,7 @@ import {
   DenoiseClipCommand,
   DeleteTrackCommand,
   ImportFileAtPositionCommand,
+  ImportAudioToNewTrackCommand,
   CrossTrackChannelCommand,
 } from '../utils/TimelineUndoManager';
 import type { AudioFileInfo, AudioFileMeta, ParsedAudioData } from '../utils/TauriAPI';
@@ -724,12 +725,20 @@ export class App {
   setupEventListeners(): void {
     // File operations
     document.getElementById('importBtn')!.addEventListener('click', () => {
-      document.getElementById('fileInput')!.click();
+      this.openImportDialog();
     });
     document.getElementById('fileInput')!.addEventListener('change', (e) => {
       const input = e.target as HTMLInputElement;
       if (input.files && input.files.length > 0) {
-        this.addFilesToQueue(Array.from(input.files));
+        // File objects from the HTML input: check if they have a native path (Tauri)
+        const files = Array.from(input.files);
+        const paths = files.map(f => (f as unknown as { path?: string }).path).filter((p): p is string => !!p);
+        if (paths.length > 0) {
+          this.importAudioToTimeline(paths);
+        } else {
+          // Pure browser fallback — use old queue-based import for File objects
+          this.addFilesToQueue(files);
+        }
       }
       input.value = '';
     });
@@ -1050,13 +1059,7 @@ export class App {
     };
 
     collect(window.appAPI.onImportFiles(async (filePaths) => {
-      for (const filePath of filePaths) {
-        const name = filePath.split('/').pop() || filePath;
-        const fileObj = { name, path: filePath };
-        const id = this.fileQueue.addFile(fileObj);
-        this.renderFileList();
-        await this.loadFileFromPath(filePath, id);
-      }
+      await this.importAudioToTimeline(filePaths);
     }));
 
     collect(window.appAPI.onProjectLoad((data) => {
@@ -1125,16 +1128,8 @@ export class App {
           multiple: true,
           filters: [{ name: 'Audio Files', extensions: ['wav', 'aif', 'aiff', 'flac', 'mp3', 'ogg'] }],
         });
-        if (paths) {
-          for (const filePath of paths) {
-            const name = filePath.split('/').pop() || filePath;
-            const fileObj = { name, path: filePath };
-            const id = this.fileQueue.addFile(fileObj);
-            this.renderFileList();
-            if (!this.audioEngine.audioBuffer) {
-              await this.loadFileFromPath(filePath, id);
-            }
-          }
+        if (paths && paths.length > 0) {
+          await this.importAudioToTimeline(paths);
         }
       },
       'import-folder': async () => {
@@ -1163,13 +1158,7 @@ export class App {
   }
 
   private async handleDroppedPaths(paths: string[]): Promise<void> {
-    for (const filePath of paths) {
-      const name = filePath.split('/').pop() || filePath;
-      const fileObj = { name, path: filePath };
-      const id = this.fileQueue.addFile(fileObj);
-      this.renderFileList();
-      await this.loadFileFromPath(filePath, id);
-    }
+    await this.importAudioToTimeline(paths);
   }
 
   /**
@@ -1445,6 +1434,10 @@ export class App {
           e.preventDefault();
           if (e.shiftKey) this.showCreateTrackDialog();
           else this.confirmNewProject();
+          return;
+        case 'o':
+          e.preventDefault();
+          this.openImportDialog();
           return;
         case 'b':
           e.preventDefault();
@@ -2736,6 +2729,129 @@ export class App {
       this.hideLoadingIndicator();
       const msg = err instanceof Error ? err.message : String(err);
       alert('Error importing file: ' + msg);
+    }
+  }
+
+  /**
+   * Import audio file(s) to NEW tracks at playhead position (Cmd+O / Pro Tools Cmd+Shift+I workflow).
+   * For EACH file: decode audio, create a new track matching channel count,
+   * insert after the currently selected track (or at end), place clip at playhead.
+   * Does NOT use the file queue or clear existing tracks.
+   */
+  async importAudioToTimeline(filePaths: string[]): Promise<void> {
+    for (const filePath of filePaths) {
+      try {
+        const name = filePath.split('/').pop() || 'Untitled';
+        this.showLoadingIndicator(name);
+        await new Promise<void>(r => requestAnimationFrame(() => r()));
+
+        const result = await FileHandler.importFilePath(filePath);
+
+        let audioBuffer: AudioBuffer;
+        let parsedData: ParsedAudioData | null = null;
+        if (result instanceof ArrayBuffer) {
+          audioBuffer = await this.audioEngine.loadAudio(result);
+        } else {
+          parsedData = result;
+          audioBuffer = await this.audioEngine.loadFromParsedData(result);
+        }
+
+        // Ensure audioContext and helpers are initialized
+        if (!this.audioEditor) {
+          this.audioEditor = new AudioEditor(this.audioEngine.audioContext!);
+        }
+        if (!this.pluginHost) {
+          this.pluginHost = new PluginHost(this.audioEngine.audioContext!);
+          this.mixer.pluginHost = this.pluginHost;
+          this.pluginParameterPanel.setPluginHost(this.pluginHost);
+        }
+
+        // Ensure timeline sampleRate is set for empty timelines
+        if (this.timelineModel.timeline.tracks.length === 0) {
+          this.timelineModel.timeline.sampleRate = audioBuffer.sampleRate;
+        }
+
+        // Sample rate mismatch warning
+        if (this.timelineModel.timeline.tracks.length > 0 &&
+            audioBuffer.sampleRate !== this.timelineModel.timeline.sampleRate) {
+          alert(`Warning: Sample rate mismatch.\nTimeline: ${this.timelineModel.timeline.sampleRate} Hz\nFile: ${audioBuffer.sampleRate} Hz`);
+        }
+
+        // Import into buffer pool
+        const bufferIds = parsedData
+          ? this.bufferPool.importFromRawChannels(
+              parsedData.samples, parsedData.channels,
+              parsedData.num_samples, parsedData.sample_rate, name)
+          : this.bufferPool.importMultiChannel(audioBuffer, name);
+
+        // Determine insert position: after selected track, or at end
+        const selectedTrackIds = this.timelineModel.timeline.selectedTrackIds;
+        let insertAfterIndex = -1; // -1 = append at end
+        if (selectedTrackIds.length > 0) {
+          // Find the index of the last selected track
+          const lastSelectedId = selectedTrackIds[selectedTrackIds.length - 1];
+          insertAfterIndex = this.timelineModel.timeline.tracks.findIndex(t => t.id === lastSelectedId);
+        }
+
+        // Use the playhead position as clip offset
+        const sampleOffset = this.timelineModel.timeline.playheadSample;
+
+        // Execute via undo-able command
+        const cmd = new ImportAudioToNewTrackCommand(
+          this.timelineModel, bufferIds, name,
+          audioBuffer.sampleRate, audioBuffer.length,
+          insertAfterIndex, sampleOffset,
+        );
+        this.timelineUndoManager.push(cmd);
+
+        // Update routing and UI
+        this.audioEngine.setupTrackRouting(this.timelineModel.timeline.tracks);
+        this.mixer.setupTracks(this.timelineModel.timeline.tracks);
+        if (this.timelineRenderer) {
+          this.timelineRenderer.setTimeline(this.timelineModel.timeline, this.bufferPool);
+          this.timelineRenderer.render();
+        }
+
+        this.updateUI();
+
+        // Pre-fill inline metadata from the first imported file
+        if (!this.metadataPreFilled) {
+          this.metadataPreFilled = true;
+          try {
+            const meta = await window.appAPI!.readFileMetadata(filePath);
+            this.prefillInlineMetadata(meta);
+          } catch (metaErr) {
+            console.warn('[Metadata] Could not pre-fill from first import:', metaErr);
+          }
+        }
+
+        this.hideLoadingIndicator();
+      } catch (err: unknown) {
+        console.error('Import to timeline error:', err);
+        this.hideLoadingIndicator();
+        const msg = err instanceof Error ? err.message : String(err);
+        alert('Error importing file: ' + msg);
+      }
+    }
+  }
+
+  /**
+   * Open the import dialog (Cmd+O). Uses native Tauri dialog if available,
+   * otherwise falls back to the HTML file input element.
+   */
+  private async openImportDialog(): Promise<void> {
+    if (window.appAPI) {
+      const paths = await window.appAPI.showOpenDialog({
+        title: 'Import Audio',
+        multiple: true,
+        filters: [{ name: 'Audio Files', extensions: ['wav', 'aif', 'aiff', 'flac', 'mp3', 'ogg'] }],
+      });
+      if (paths && paths.length > 0) {
+        await this.importAudioToTimeline(paths);
+      }
+    } else {
+      // Browser fallback: trigger the existing file input
+      document.getElementById('fileInput')!.click();
     }
   }
 
