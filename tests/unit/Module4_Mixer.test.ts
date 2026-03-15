@@ -138,20 +138,20 @@ describe('Mixer', () => {
       const tracks = [makeTrack('t1')];
       mixer.setupTracks(tracks);
 
-      const spy = vi.spyOn(engine, 'setTrackMute');
+      const spy = vi.spyOn(engine, 'updateMuteSoloState');
       mixer.setTrackMute('t1', true);
 
-      expect(spy).toHaveBeenCalledWith('t1', true);
+      expect(spy).toHaveBeenCalledWith([{ id: 't1', solo: false, mute: true }]);
     });
 
     it('setTrackSolo updates strip + audioEngine', () => {
       const tracks = [makeTrack('t1')];
       mixer.setupTracks(tracks);
 
-      const spy = vi.spyOn(engine, 'setTrackSolo');
+      const spy = vi.spyOn(engine, 'updateMuteSoloState');
       mixer.setTrackSolo('t1', true);
 
-      expect(spy).toHaveBeenCalledWith('t1', true);
+      expect(spy).toHaveBeenCalledWith([{ id: 't1', solo: true, mute: false }]);
     });
   });
 

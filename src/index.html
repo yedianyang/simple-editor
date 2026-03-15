@@ -341,6 +341,78 @@
             border-radius: 3px;
         }
 
+        /* Source Metadata Panel (file browser) */
+        .source-meta-panel {
+            flex-shrink: 0;
+            border-top: 1px solid var(--border-color);
+            background-color: var(--bg-primary);
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .source-meta-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 5px 8px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .source-meta-title {
+            font-size: 10px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .source-meta-copy-btn {
+            font-size: 9px;
+            padding: 2px 6px;
+        }
+
+        .source-meta-rows {
+            padding: 4px 8px 6px;
+        }
+
+        .source-meta-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            gap: 6px;
+            padding: 1px 0;
+            font-size: 10px;
+        }
+
+        .source-meta-label {
+            color: var(--text-muted);
+            flex-shrink: 0;
+            min-width: 60px;
+        }
+
+        .source-meta-value {
+            color: var(--text-primary);
+            text-align: right;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        /* Inline channel names section */
+        .metadata-inline-divider {
+            border-top: 1px solid var(--border-color);
+            margin: 6px 0 4px;
+        }
+
+        .metadata-inline-sublabel {
+            font-size: 9px;
+            font-weight: 600;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            padding: 0 0 3px;
+        }
+
         /* ============================
            Editor Area
            ============================ */
@@ -1678,6 +1750,15 @@
                 <button id="markAllDoneBtn" class="btn-sm" title="Mark all files as done">Mark All Done</button>
                 <button id="resetAllBtn" class="btn-sm" title="Reset all file statuses">Reset All</button>
             </div>
+
+            <!-- Source Metadata Panel: read-only, shown when a file is selected -->
+            <div id="sourceMetaPanel" class="source-meta-panel" style="display:none;">
+                <div class="source-meta-header">
+                    <span class="source-meta-title">Source Metadata</span>
+                    <button id="copyMetaToSessionBtn" class="btn-sm source-meta-copy-btn" title="Copy to session metadata">Copy to Session</button>
+                </div>
+                <div id="sourceMetaRows" class="source-meta-rows"></div>
+            </div>
         </div>
 
         <!-- Center: Editor Area -->
@@ -1813,6 +1894,10 @@
                         <label>Note</label>
                         <input type="text" id="inlineNote" placeholder="Notes...">
                     </div>
+                    <!-- Channel Names -->
+                    <div class="metadata-inline-divider"></div>
+                    <div class="metadata-inline-sublabel">Channel Names</div>
+                    <div id="inlineTrackNamesContainer"></div>
                 </div>
 
                 <!-- UCS Inline Tab -->

@@ -20,6 +20,9 @@ const METER_X = 130;      // vertical meter strip X position
 const METER_WIDTH = 6;    // meter strip width
 const INSERT_ADD_HEIGHT = 12;
 const MAX_INSERT_PILLS = 5;
+// Right-edge button zones within each pill (measured from pill right edge, left-to-right)
+const INSERT_BTN_REMOVE_WIDTH = 12; // "x" remove button — rightmost zone
+const INSERT_BTN_BYPASS_WIDTH = 13; // "B" bypass button — second from right
 
 // ---- Color constants ----
 const COLOR_BG = '#1a1a1a';
@@ -745,8 +748,12 @@ export class TimelineRenderer {
       const pillY = rackStartY + i * (INSERT_PILL_HEIGHT + INSERT_PILL_GAP);
       if (y >= pillY && y <= pillY + INSERT_PILL_HEIGHT) {
         const insert = track.inserts[i];
-        // Bypass zone: last 14px of pill
-        if (x >= INSERT_PILL_X + INSERT_PILL_WIDTH - 14) {
+        // Remove zone: last INSERT_BTN_REMOVE_WIDTH px of pill
+        if (x >= INSERT_PILL_X + INSERT_PILL_WIDTH - INSERT_BTN_REMOVE_WIDTH) {
+          return { trackId: track.id, action: 'remove', instanceId: insert.instanceId };
+        }
+        // Bypass zone: next INSERT_BTN_BYPASS_WIDTH px left of remove button
+        if (x >= INSERT_PILL_X + INSERT_PILL_WIDTH - INSERT_BTN_REMOVE_WIDTH - INSERT_BTN_BYPASS_WIDTH) {
           return { trackId: track.id, action: 'bypass', instanceId: insert.instanceId };
         }
         // Rest of pill: click to open params
@@ -2008,24 +2015,32 @@ export class TimelineRenderer {
       ctx.roundRect(INSERT_PILL_X, pillY, INSERT_PILL_WIDTH, INSERT_PILL_HEIGHT, 3);
       ctx.fill();
 
-      // Plugin name (clipped to fit pill width minus bypass button)
+      // Plugin name (clipped to leave space for bypass + remove buttons)
+      const nameClipWidth = INSERT_PILL_WIDTH - INSERT_BTN_BYPASS_WIDTH - INSERT_BTN_REMOVE_WIDTH - 4;
       ctx.fillStyle = insert.bypassed ? '#555' : '#aaa';
       ctx.font = '9px -apple-system, BlinkMacSystemFont, sans-serif';
       ctx.textAlign = 'left';
       const displayName = this.getPluginShortName(insert.pluginId);
       ctx.save();
       ctx.beginPath();
-      ctx.rect(INSERT_PILL_X + 3, pillY, INSERT_PILL_WIDTH - 18, INSERT_PILL_HEIGHT);
+      ctx.rect(INSERT_PILL_X + 3, pillY, nameClipWidth, INSERT_PILL_HEIGHT);
       ctx.clip();
       ctx.fillText(displayName, INSERT_PILL_X + 4, pillY + 9);
       ctx.restore();
 
-      // Bypass button "B" (right edge of pill)
-      const bx = INSERT_PILL_X + INSERT_PILL_WIDTH - 14;
+      // Bypass button "B"
+      const bx = INSERT_PILL_X + INSERT_PILL_WIDTH - INSERT_BTN_BYPASS_WIDTH - INSERT_BTN_REMOVE_WIDTH;
       ctx.fillStyle = insert.bypassed ? '#666' : '#f59e0b';
       ctx.font = 'bold 8px -apple-system, BlinkMacSystemFont, sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText('B', bx + 7, pillY + 9);
+      ctx.fillText('B', bx + Math.floor(INSERT_BTN_BYPASS_WIDTH / 2), pillY + 9);
+
+      // Remove button "x" (rightmost zone)
+      const rx = INSERT_PILL_X + INSERT_PILL_WIDTH - INSERT_BTN_REMOVE_WIDTH;
+      ctx.fillStyle = '#888';
+      ctx.font = 'bold 8px -apple-system, BlinkMacSystemFont, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('\u00d7', rx + Math.floor(INSERT_BTN_REMOVE_WIDTH / 2), pillY + 9);
     }
 
     // [+] add button (only if under limit)
@@ -2200,15 +2215,16 @@ export class TimelineRenderer {
       ctx.lineTo(Math.min(visRight, fadeEndPx), clipY + clipH);
       ctx.closePath();
       ctx.fill();
-      // Fade curve line (sqrt)
+      // Fade curve line (configurable curve shape)
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
       ctx.lineWidth = 1.5;
       ctx.beginPath();
+      const fadeInCurve = clip.fadeInCurve ?? 0;
       const stepsIn = Math.max(2, Math.min(50, Math.round(fadeInPx)));
       let movedIn = false;
       for (let i = 0; i <= stepsIn; i++) {
         const t = i / stepsIn;
-        const gain = Math.sqrt(t);
+        const gain = Math.pow(t, Math.pow(2, -fadeInCurve));
         const px = fadeStartPx + t * fadeInPx;
         if (px < visLeft || px > visRight) continue;
         const py = clipY + clipH - gain * clipH;
@@ -2231,15 +2247,16 @@ export class TimelineRenderer {
       ctx.lineTo(Math.min(visRight, fadeEndPx), clipY);
       ctx.closePath();
       ctx.fill();
-      // Fade curve line (sqrt(1-t))
+      // Fade curve line (configurable curve shape)
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
       ctx.lineWidth = 1.5;
       ctx.beginPath();
+      const fadeOutCurve = clip.fadeOutCurve ?? 0;
       const stepsOut = Math.max(2, Math.min(50, Math.round(fadeOutPx)));
       let movedOut = false;
       for (let i = 0; i <= stepsOut; i++) {
         const t = i / stepsOut;
-        const gain = Math.sqrt(1 - t);
+        const gain = Math.pow(1 - t, Math.pow(2, -fadeOutCurve));
         const px = fadeStartPx + t * fadeOutPx;
         if (px < visLeft || px > visRight) continue;
         const py = clipY + clipH - gain * clipH;

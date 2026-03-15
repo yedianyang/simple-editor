@@ -9,6 +9,7 @@ class MockAudioParam {
   minValue: number;
   maxValue: number;
   automationRate: string = 'a-rate';
+  _events: { type: string; value: number; time: number }[] = [];
 
   constructor(defaultValue = 0, min = -3.4028235e38, max = 3.4028235e38) {
     this.value = defaultValue;
@@ -17,13 +18,15 @@ class MockAudioParam {
     this.maxValue = max;
   }
 
-  setValueAtTime(value: number, _time: number): MockAudioParam {
+  setValueAtTime(value: number, time: number): MockAudioParam {
     this.value = value;
+    this._events.push({ type: 'set', value, time });
     return this;
   }
 
-  linearRampToValueAtTime(value: number, _time: number): MockAudioParam {
+  linearRampToValueAtTime(value: number, time: number): MockAudioParam {
     this.value = value;
+    this._events.push({ type: 'ramp', value, time });
     return this;
   }
 
@@ -38,7 +41,37 @@ class MockAudioParam {
   }
 
   cancelScheduledValues(_startTime: number): MockAudioParam {
+    this._events = [];
     return this;
+  }
+
+  /** Evaluate automation value at a given time (for mock rendering). */
+  _evaluate(time: number): number {
+    if (this._events.length === 0) return this.value;
+
+    let val = this.defaultValue;
+
+    for (let i = 0; i < this._events.length; i++) {
+      const ev = this._events[i];
+
+      if (ev.time > time) {
+        // Future event — check if it's a ramp we're interpolating into
+        if (ev.type === 'ramp' && i > 0) {
+          const prev = this._events[i - 1];
+          const duration = ev.time - prev.time;
+          const elapsed = time - prev.time;
+          if (elapsed >= 0 && duration > 0) {
+            val = prev.value + (ev.value - prev.value) * (elapsed / duration);
+          }
+        }
+        break;
+      }
+
+      // Event is at or before query time
+      val = ev.value;
+    }
+
+    return val;
   }
 }
 
@@ -52,6 +85,7 @@ class MockAudioNode {
   channelCountMode = 'max';
   channelInterpretation = 'speakers';
   _connections: MockAudioNode[] = [];
+  _connectionMeta: { dest: MockAudioNode; outIdx?: number; inIdx?: number }[] = [];
 
   constructor(context: MockAudioContext) {
     this.context = context;
@@ -59,14 +93,20 @@ class MockAudioNode {
 
   connect(destination: any, outputIndex?: number, inputIndex?: number): any {
     this._connections.push(destination);
+    this._connectionMeta.push({ dest: destination, outIdx: outputIndex, inIdx: inputIndex });
     return destination;
   }
 
   disconnect(destination?: any): void {
     if (destination) {
-      this._connections = this._connections.filter(n => n !== destination);
+      const idx = this._connections.indexOf(destination);
+      if (idx >= 0) {
+        this._connections.splice(idx, 1);
+        this._connectionMeta.splice(idx, 1);
+      }
     } else {
       this._connections = [];
+      this._connectionMeta = [];
     }
   }
 }
@@ -179,8 +219,11 @@ class MockAudioBufferSourceNode extends MockAudioNode {
   loopStart = 0;
   loopEnd = 0;
   onended: (() => void) | null = null;
-  private _started = false;
+  _started = false;
   private _stopped = false;
+  _when = 0;
+  _offset = 0;
+  _duration = 0;
 
   constructor(context: MockAudioContext) {
     super(context);
@@ -188,9 +231,12 @@ class MockAudioBufferSourceNode extends MockAudioNode {
     this.detune = new MockAudioParam(0);
   }
 
-  start(when?: number, offset?: number, duration?: number): void {
+  start(when = 0, offset = 0, duration?: number): void {
     if (this._started) throw new Error('Cannot start an AudioBufferSourceNode more than once');
     this._started = true;
+    this._when = when;
+    this._offset = offset;
+    this._duration = duration ?? (this.buffer ? this.buffer.duration - offset : 0);
   }
 
   stop(when?: number): void {
@@ -276,15 +322,123 @@ class MockOfflineAudioContext {
   sampleRate: number;
   length: number;
   numberOfChannels: number;
+  destination: MockAudioDestinationNode;
+  currentTime = 0;
+  state: AudioContextState = 'suspended';
+  _sources: MockAudioBufferSourceNode[] = [];
 
   constructor(numberOfChannels: number, length: number, sampleRate: number) {
     this.numberOfChannels = numberOfChannels;
     this.length = length;
     this.sampleRate = sampleRate;
+    this.destination = new MockAudioDestinationNode(null as any);
+    this.destination.context = this as any;
   }
 
   createBuffer(numberOfChannels: number, length: number, sampleRate: number): MockAudioBuffer {
     return new MockAudioBuffer(numberOfChannels, length, sampleRate);
+  }
+
+  createGain(): MockGainNode { return new MockGainNode(this as any); }
+  createBiquadFilter(): MockBiquadFilterNode { return new MockBiquadFilterNode(this as any); }
+  createDelay(max = 1.0): MockDelayNode { return new MockDelayNode(this as any, max); }
+  createDynamicsCompressor(): MockDynamicsCompressorNode { return new MockDynamicsCompressorNode(this as any); }
+  createConvolver(): MockConvolverNode { return new MockConvolverNode(this as any); }
+  createAnalyser(): MockAnalyserNode { return new MockAnalyserNode(this as any); }
+  createStereoPanner(): MockStereoPannerNode { return new MockStereoPannerNode(this as any); }
+  createChannelSplitter(n = 6): MockChannelSplitterNode { return new MockChannelSplitterNode(this as any, n); }
+  createChannelMerger(n = 6): MockChannelMergerNode { return new MockChannelMergerNode(this as any, n); }
+
+  createBufferSource(): MockAudioBufferSourceNode {
+    const src = new MockAudioBufferSourceNode(this as any);
+    this._sources.push(src);
+    return src;
+  }
+
+  /** Walk connection chain from a node, collecting gain/pan/merger info. */
+  private _walkChain(start: MockAudioNode): {
+    gains: MockGainNode[];
+    panNode: MockStereoPannerNode | null;
+    mergerInputIndex: number | null;
+  } {
+    const gains: MockGainNode[] = [];
+    let panNode: MockStereoPannerNode | null = null;
+    let mergerInputIndex: number | null = null;
+    let current: MockAudioNode | null = start;
+    const visited = new Set<MockAudioNode>();
+
+    while (current && !visited.has(current)) {
+      visited.add(current);
+      if (current instanceof MockGainNode && current !== start) {
+        gains.push(current);
+      } else if (current instanceof MockStereoPannerNode) {
+        panNode = current;
+      }
+      if (current._connectionMeta.length > 0) {
+        const meta: { dest: MockAudioNode; outIdx?: number; inIdx?: number } = current._connectionMeta[0];
+        if (meta.dest instanceof MockChannelMergerNode && meta.inIdx != null) {
+          mergerInputIndex = meta.inIdx;
+        }
+        current = meta.dest;
+      } else {
+        current = null;
+      }
+    }
+    return { gains, panNode, mergerInputIndex };
+  }
+
+  /** Simulate offline rendering by processing all scheduled sources. */
+  async startRendering(): Promise<MockAudioBuffer> {
+    const output = new MockAudioBuffer(this.numberOfChannels, this.length, this.sampleRate);
+
+    for (const source of this._sources) {
+      if (!source._started || !source.buffer) continue;
+
+      const startSample = Math.round(source._when * this.sampleRate);
+      const offsetSample = Math.round(source._offset * this.sampleRate);
+      const durationSamples = Math.min(
+        Math.round(source._duration * this.sampleRate),
+        source.buffer.length - offsetSample,
+      );
+
+      const { gains, panNode, mergerInputIndex } = this._walkChain(source);
+
+      for (let i = 0; i < durationSamples; i++) {
+        const outIdx = startSample + i;
+        if (outIdx < 0 || outIdx >= this.length) continue;
+        const srcIdx = offsetSample + i;
+        if (srcIdx < 0 || srcIdx >= source.buffer.length) continue;
+
+        const time = outIdx / this.sampleRate;
+        let sample = source.buffer.getChannelData(0)[srcIdx];
+
+        // Apply all gain nodes in the chain
+        for (const gn of gains) {
+          sample *= gn.gain._evaluate(time);
+        }
+
+        // Route to output
+        if (mergerInputIndex != null) {
+          // Sub-channel via ChannelMerger — write to that channel
+          if (mergerInputIndex < this.numberOfChannels) {
+            output.getChannelData(mergerInputIndex)[outIdx] += sample;
+          }
+        } else if (panNode && this.numberOfChannels >= 2) {
+          // Apply equal-power pan law (W3C StereoPannerNode algorithm)
+          const p = panNode.pan._evaluate(time);
+          const x = (p + 1) / 2; // 0..1
+          const gainL = Math.cos(x * Math.PI / 2);
+          const gainR = Math.sin(x * Math.PI / 2);
+          output.getChannelData(0)[outIdx] += sample * gainL;
+          output.getChannelData(1)[outIdx] += sample * gainR;
+        } else {
+          // No pan, no merger — write to channel 0
+          output.getChannelData(0)[outIdx] += sample;
+        }
+      }
+    }
+
+    return output;
   }
 }
 

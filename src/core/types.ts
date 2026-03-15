@@ -283,10 +283,15 @@ export interface Clip {
   gainDb: number;
   fadeInSamples: number;
   fadeOutSamples: number;
+  fadeInCurve?: number;   // -1 to 1, default 0 (linear); pow(t, pow(2,-curve))
+  fadeOutCurve?: number;  // -1 to 1, default 0 (linear); pow(1-t, pow(2,-curve))
   muted: boolean;
   reversed?: boolean;
   subChannel?: number;
   groupId?: string;
+  crossfadeInSamples?: number;   // overlap with previous clip (incoming crossfade)
+  crossfadeOutSamples?: number;  // overlap with next clip (outgoing crossfade)
+  crossfadeType?: 'equalPower' | 'equalGain';  // default: equalPower
 }
 
 export interface TrackInsert {

@@ -99,7 +99,7 @@ export class Mixer {
     const strip = this.trackStrips.find(s => s.trackId === trackId);
     if (!strip) return;
     strip.mute = mute;
-    this.audioEngine.setTrackMute(trackId, mute);
+    this.audioEngine.updateMuteSoloState(this.getTracksForMuteSolo());
     this.updateTrackStripDisplay(trackId);
   }
 
@@ -107,9 +107,13 @@ export class Mixer {
     const strip = this.trackStrips.find(s => s.trackId === trackId);
     if (!strip) return;
     strip.solo = solo;
-    this.audioEngine.setTrackSolo(trackId, solo);
-    // Update all strips since solo affects others
+    this.audioEngine.updateMuteSoloState(this.getTracksForMuteSolo());
+    // Update all strips since solo affects others visually
     this.trackStrips.forEach(s => this.updateTrackStripDisplay(s.trackId));
+  }
+
+  private getTracksForMuteSolo(): Array<{ id: string; solo: boolean; mute: boolean }> {
+    return this.trackStrips.map(s => ({ id: s.trackId, solo: s.solo, mute: s.mute }));
   }
 
   private updateTrackStripDisplay(trackId: string): void {

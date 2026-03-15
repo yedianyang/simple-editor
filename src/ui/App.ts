@@ -1,5 +1,5 @@
 import { AudioEngine } from '../core/AudioEngine';
-import { formatTime, CHANNEL_NAMES, CHANNEL_COLORS, PluginInfo, TrackInsert, ExportMetadata, Clip, TrackChannelCount } from '../core/types';
+import { formatTime, CHANNEL_NAMES, CHANNEL_COLORS, PluginInfo, TrackInsert, ExportMetadata, Clip, TrackChannelCount, createDefaultExportMetadata } from '../core/types';
 import { formatSampleRate, hasSampleRateMismatch } from '../utils/sampleRateUtils';
 import { PluginParameterPanel } from './PluginParameterPanel';
 import { AudioEditor } from '../editor/AudioEditor';
@@ -111,6 +111,10 @@ export class App {
   private selectedBrowserFile: AudioFileMeta | null = null;
   /** True after the first file import has pre-filled the inline metadata fields. */
   private metadataPreFilled = false;
+
+  // ---- Session metadata ----
+  /** Editable metadata for the current session, pre-filled from the first imported file. */
+  private sessionMetadata: ExportMetadata = createDefaultExportMetadata();
   /** Custom mouse drag state for file browser → timeline drag (replaces HTML5 drag/drop for WKWebView). */
   private fileDragState: {
     file: AudioFileMeta;
@@ -1725,6 +1729,7 @@ export class App {
         this.renderFileList();
       }
 
+      this.buildInlineTrackNames();
       this.updateUI();
       this.updateFileInfo();
       this.updateZoomInfo();
@@ -2471,6 +2476,56 @@ export class App {
     }
   }
 
+  private showFileBrowserContextMenu(file: AudioFileMeta, clientX: number, clientY: number): void {
+    this.dismissContextMenu();
+
+    const menu = document.createElement('div');
+    menu.className = 'context-menu';
+    menu.style.left = `${clientX}px`;
+    menu.style.top = `${clientY}px`;
+
+    const copyItem = document.createElement('div');
+    copyItem.className = 'context-menu-item';
+    copyItem.textContent = 'Copy metadata to session';
+    copyItem.addEventListener('click', () => {
+      this.dismissContextMenu();
+      this.copyFileMetaToSession(file);
+    });
+    menu.appendChild(copyItem);
+
+    const importItem = document.createElement('div');
+    importItem.className = 'context-menu-item';
+    importItem.textContent = 'Import into timeline';
+    importItem.addEventListener('click', () => {
+      this.dismissContextMenu();
+      void this.importFromBrowser(file);
+    });
+    menu.appendChild(importItem);
+
+    document.body.appendChild(menu);
+    this.activeContextMenu = menu;
+
+    const onClickOutside = (e: MouseEvent) => {
+      if (!menu.contains(e.target as Node)) this.dismissContextMenu();
+    };
+    const onEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') this.dismissContextMenu();
+    };
+    const onBlur = () => this.dismissContextMenu();
+
+    requestAnimationFrame(() => {
+      document.addEventListener('mousedown', onClickOutside);
+      document.addEventListener('keydown', onEscape);
+      window.addEventListener('blur', onBlur);
+    });
+
+    this.contextMenuCleanup = () => {
+      document.removeEventListener('mousedown', onClickOutside);
+      document.removeEventListener('keydown', onEscape);
+      window.removeEventListener('blur', onBlur);
+    };
+  }
+
   private deleteTrack(trackId: string): void {
     this.timelineUndoManager.push(
       new DeleteTrackCommand(this.timelineModel, trackId),
@@ -2511,6 +2566,15 @@ export class App {
       resetAllBtn.addEventListener('click', () => {
         this.fileStatuses.clear();
         this.renderFileBrowser();
+      });
+    }
+
+    const copyMetaBtn = document.getElementById('copyMetaToSessionBtn');
+    if (copyMetaBtn) {
+      copyMetaBtn.addEventListener('click', () => {
+        if (this.selectedBrowserFile) {
+          this.copyFileMetaToSession(this.selectedBrowserFile);
+        }
       });
     }
   }
@@ -2634,6 +2698,12 @@ export class App {
       });
       // Double click → import into timeline
       item.addEventListener('dblclick', () => this.importFromBrowser(f));
+      // Right-click → context menu
+      item.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        this.selectBrowserFile(f);
+        this.showFileBrowserContextMenu(f, e.clientX, e.clientY);
+      });
       listEl.appendChild(item);
     }
 
@@ -2946,55 +3016,111 @@ export class App {
   }
 
   private updateSourceMetadataPanel(file: AudioFileMeta | null): void {
-    // Hide the standalone source metadata section (merged into Metadata panel)
-    const section = document.getElementById('sourceMetadataSection');
-    if (section) section.style.display = 'none';
+    const panel = document.getElementById('sourceMetaPanel');
+    const rowsEl = document.getElementById('sourceMetaRows');
 
-    if (!file) return;
+    if (!file) {
+      if (panel) panel.style.display = 'none';
+      return;
+    }
 
-    const setInput = (id: string, value: string | null | undefined) => {
-      const el = document.getElementById(id) as HTMLInputElement | null;
-      if (el) el.value = value || '';
-    };
-
-    // Helper to extract iXML tags
+    // ---- Build read-only source metadata rows ----
     const getTag = (tag: string): string => {
       if (!file.ixml) return '';
       const match = file.ixml.match(new RegExp(`<${tag}>([^<]*)</${tag}>`, 'i'));
       return match ? match[1].trim() : '';
     };
 
-    // Populate BWF tab: BEXT fields first, iXML as fallback
-    setInput('inlineDescription', file.bext_description || getTag('NOTE'));
+    if (rowsEl) {
+      rowsEl.innerHTML = '';
+      const addRow = (label: string, value: string) => {
+        const row = document.createElement('div');
+        row.className = 'source-meta-row';
+        const labelEl = document.createElement('span');
+        labelEl.className = 'source-meta-label';
+        labelEl.textContent = label;
+        const valueEl = document.createElement('span');
+        valueEl.className = 'source-meta-value';
+        valueEl.textContent = value;
+        valueEl.title = value;
+        row.appendChild(labelEl);
+        row.appendChild(valueEl);
+        rowsEl.appendChild(row);
+      };
+
+      if (file.channels != null) {
+        const ch = file.channels === 1 ? 'Mono' : file.channels === 2 ? 'Stereo' : `${file.channels}ch`;
+        addRow('Channels', ch);
+      }
+      if (file.sample_rate != null) {
+        const sr = (file.sample_rate / 1000).toFixed(file.sample_rate % 1000 === 0 ? 0 : 1) + ' kHz';
+        addRow('Sample Rate', sr);
+      }
+      if (file.bits_per_sample != null) {
+        addRow('Bit Depth', `${file.bits_per_sample}-bit`);
+      }
+      if (file.duration_secs != null) {
+        const d = file.duration_secs;
+        const durStr = d < 60
+          ? d.toFixed(1) + 's'
+          : `${Math.floor(d / 60)}:${Math.floor(d % 60).toString().padStart(2, '0')}`;
+        addRow('Duration', durStr);
+      }
+      if (file.bext_description) addRow('Description', file.bext_description);
+      if (file.bext_originator) addRow('Originator', file.bext_originator);
+      if (file.bext_date) addRow('Date', file.bext_date);
+      if (file.bext_time) addRow('Time', file.bext_time);
+      const scene = getTag('SCENE');
+      const take = getTag('TAKE');
+      const tape = getTag('TAPE');
+      if (scene) addRow('Scene', scene);
+      if (take) addRow('Take', take);
+      if (tape) addRow('Tape', tape);
+
+      if (rowsEl.children.length === 0) {
+        const empty = document.createElement('div');
+        empty.style.cssText = 'font-size:10px;color:var(--text-muted);padding:4px 0;font-style:italic;';
+        empty.textContent = 'No embedded metadata';
+        rowsEl.appendChild(empty);
+      }
+    }
+
+    if (panel) panel.style.display = 'block';
+  }
+
+  /**
+   * Copy embedded metadata from a browser file to the session metadata fields.
+   * Overwrites existing session field values (force mode — used by context menu).
+   */
+  private copyFileMetaToSession(file: AudioFileMeta): void {
+    const getTag = (tag: string): string => {
+      if (!file.ixml) return '';
+      const match = file.ixml.match(new RegExp(`<${tag}>([^<]*)</${tag}>`, 'i'));
+      return match ? match[1].trim() : '';
+    };
+
+    const setInput = (id: string, value: string | null | undefined) => {
+      if (!value) return;
+      const el = document.getElementById(id) as HTMLInputElement | null;
+      if (el) el.value = value;
+    };
+
+    setInput('inlineDescription', file.bext_description);
     setInput('inlineOriginator', file.bext_originator);
     setInput('inlineDate', file.bext_date);
     setInput('inlineTime', file.bext_time);
-    setInput('inlineScene', getTag('SCENE'));
-    setInput('inlineTake', getTag('TAKE'));
-    setInput('inlineTape', getTag('TAPE'));
-    setInput('inlineNote', getTag('NOTE'));
 
-    // Populate existing UCS tab fields from filename parsing
-    const ucs = parseUCSFilename(file.name);
-    if (ucs) {
-      // Set category/subcategory dropdowns
-      const catSelect = document.getElementById('inlineUcsCategory') as HTMLSelectElement | null;
-      const subCatSelect = document.getElementById('inlineUcsSubCategory') as HTMLSelectElement | null;
-      if (catSelect && ucs.category) {
-        for (const opt of Array.from(catSelect.options)) {
-          if (opt.value === ucs.category) { catSelect.value = ucs.category; break; }
-        }
-      }
-      if (subCatSelect && ucs.subCategory) {
-        for (const opt of Array.from(subCatSelect.options)) {
-          if (opt.value === ucs.subCategory) { subCatSelect.value = ucs.subCategory; break; }
-        }
-      }
-      setInput('inlineCatId', ucs.catId);
-      setInput('inlineFxName', ucs.fxName);
-      setInput('inlineCreatorId', ucs.creatorId);
-      setInput('inlineSourceId', ucs.sourceId);
-    }
+    const scene = getTag('SCENE');
+    const take = getTag('TAKE');
+    const tape = getTag('TAPE');
+    const note = getTag('NOTE');
+    if (scene) setInput('inlineScene', scene);
+    if (take) setInput('inlineTake', take);
+    if (tape) setInput('inlineTape', tape);
+    if (note) setInput('inlineNote', note);
+
+    // Update sessionMetadata to stay in sync
+    this.sessionMetadata = this.gatherInlineMetadata();
   }
 
   private escapeHtml(text: string): string {
@@ -3103,6 +3229,54 @@ export class App {
           }
         });
       });
+    });
+  }
+
+  /**
+   * Build per-channel name text inputs in the BWF inline tab.
+   * Called when tracks are loaded or track count changes.
+   */
+  private buildInlineTrackNames(): void {
+    const container = document.getElementById('inlineTrackNamesContainer');
+    if (!container) return;
+
+    const tracks = this.timelineModel.timeline.tracks;
+    if (tracks.length === 0) {
+      container.innerHTML = '';
+      return;
+    }
+
+    // Preserve existing values before rebuilding
+    const existing: string[] = Array.from(
+      container.querySelectorAll('input[data-track-idx]'),
+    ).map(el => (el as HTMLInputElement).value);
+
+    container.innerHTML = '';
+    const channelNames = CHANNEL_NAMES[tracks.length] ||
+      tracks.map((_, i) => `Ch ${i + 1}`);
+
+    tracks.forEach((track, i) => {
+      const row = document.createElement('div');
+      row.className = 'metadata-inline-field';
+
+      const label = document.createElement('label');
+      label.textContent = channelNames[i] ?? `Ch ${i + 1}`;
+
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.placeholder = channelNames[i] ?? `Ch ${i + 1}`;
+      input.dataset.trackIdx = String(i);
+      // Use preserved value, then track name, then empty
+      input.value = existing[i] ?? track.name ?? '';
+      input.addEventListener('input', () => {
+        // Keep sessionMetadata.trackNames in sync
+        if (!this.sessionMetadata.trackNames) this.sessionMetadata.trackNames = [];
+        this.sessionMetadata.trackNames[i] = input.value;
+      });
+
+      row.appendChild(label);
+      row.appendChild(input);
+      container.appendChild(row);
     });
   }
 
@@ -3261,6 +3435,17 @@ export class App {
   /** Gather metadata from the inline sidebar fields. */
   private gatherInlineMetadata(): ExportMetadata {
     const val = (id: string) => (document.getElementById(id) as HTMLInputElement)?.value || '';
+
+    // Gather per-channel names from inline track name inputs (if present),
+    // falling back to timeline model track names.
+    const container = document.getElementById('inlineTrackNamesContainer');
+    const trackNameInputs = container
+      ? Array.from(container.querySelectorAll('input[data-track-idx]'))
+      : [];
+    const trackNames: string[] = trackNameInputs.length > 0
+      ? trackNameInputs.map(el => (el as HTMLInputElement).value)
+      : this.timelineModel.timeline.tracks.map(t => t.name);
+
     return {
       bpiDescription: val('inlineDescription'),
       originator: val('inlineOriginator') || 'FieldCorder',
@@ -3274,7 +3459,7 @@ export class App {
       note: val('inlineNote'),
       circled: false,
       wildTrack: false,
-      trackNames: this.timelineModel.timeline.tracks.map(t => t.name),
+      trackNames,
       ucsCategory: val('inlineUcsCategory'),
       ucsSubCategory: val('inlineUcsSubCategory'),
       ucsCatId: val('inlineCatId'),
@@ -3329,6 +3514,7 @@ export class App {
     this.timelineModel.createTimeline(48000);
     this.timelineUndoManager.clear();
     this.metadataPreFilled = false;
+    this.sessionMetadata = createDefaultExportMetadata();
     this.waveformRenderer.disabled = true;
     this.waveformRenderer.detachListeners();
     if (this.timelineRenderer) {
@@ -3339,6 +3525,7 @@ export class App {
     this.audioEngine.cleanupTrackNodes();
     this.fileName = null;
     this.originalBitDepth = null;
+    this.buildInlineTrackNames();
     this.updateUI();
     this.updateFileInfo();
     this.updatePositionInfo(0);

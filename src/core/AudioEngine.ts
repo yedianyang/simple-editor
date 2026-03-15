@@ -1,6 +1,7 @@
 import { Track, TrackInsert, FaderLaw, Timeline } from './types';
 import type { PluginHost } from '../plugins/PluginHost';
 import { BufferPool } from './BufferPool';
+import { scheduleCrossfadeEnvelope } from './CrossfadeUtils';
 
 /**
  * Audio Engine for FieldCorder DAW.
@@ -312,6 +313,17 @@ export class AudioEngine {
     return this.audioContext.currentTime - this.startTime;
   }
 
+  /**
+   * Returns the current playback position in integer samples.
+   * Used by invalidatePlayback() to restart from the same position
+   * after buffer swaps (e.g. denoise, undo/redo).
+   */
+  getPlaybackPositionSamples(sampleRate: number): number {
+    if (this.isPaused) return Math.floor(this.pauseTime * sampleRate);
+    if (!this.isPlaying || !this.audioContext) return 0;
+    return Math.floor(this.getCurrentTime() * sampleRate);
+  }
+
   getDuration(): number {
     return this.audioBuffer ? this.audioBuffer.duration : 0;
   }
@@ -455,13 +467,15 @@ export class AudioEngine {
         const baseGain = clip.gainDb !== 0 ? Math.pow(10, clip.gainDb / 20) : 1;
         const hasFadeIn = clip.fadeInSamples > 0;
         const hasFadeOut = clip.fadeOutSamples > 0;
+        const hasCrossfade = (clip.crossfadeInSamples ?? 0) > 0 || (clip.crossfadeOutSamples ?? 0) > 0;
 
         // Create a clip gain node when any envelope processing is needed
-        if (baseGain !== 1 || hasFadeIn || hasFadeOut) {
+        if (baseGain !== 1 || hasFadeIn || hasFadeOut || hasCrossfade) {
           const clipGain = this.audioContext.createGain();
 
-          // Schedule fade-in: sqrt(t) curve approximated with 8 ramp points
+          // Schedule fade-in: configurable curve approximated with 8 ramp points
           if (hasFadeIn) {
+            const fadeInCurve = clip.fadeInCurve ?? 0;
             const fadeInEnd = clip.fadeInSamples;
             const fadeInStartInPlayback = -skipSamples; // relative to playback start (can be negative)
 
@@ -476,13 +490,13 @@ export class AudioEngine {
                 if (sampleInPlayback < 0) continue;
                 if (sampleInPlayback > playDuration) break;
 
-                const gainAtPoint = Math.sqrt(t) * baseGain;
+                const gainAtPoint = Math.pow(t, Math.pow(2, -fadeInCurve)) * baseGain;
                 const timeAtPoint = scheduledTime + sampleInPlayback / sr;
 
                 if (p === 0 || (sampleInPlayback === 0 && skipSamples > 0)) {
                   // Starting mid-fade: set initial value
                   const progressAtStart = skipSamples / fadeInEnd;
-                  const startGain = Math.sqrt(Math.min(1, progressAtStart)) * baseGain;
+                  const startGain = Math.pow(Math.min(1, progressAtStart), Math.pow(2, -fadeInCurve)) * baseGain;
                   clipGain.gain.setValueAtTime(startGain, scheduledTime);
                 } else {
                   clipGain.gain.linearRampToValueAtTime(gainAtPoint, timeAtPoint);
@@ -501,8 +515,9 @@ export class AudioEngine {
             clipGain.gain.setValueAtTime(baseGain, scheduledTime);
           }
 
-          // Schedule fade-out: sqrt(1-t) curve approximated with 8 ramp points
+          // Schedule fade-out: configurable curve approximated with 8 ramp points
           if (hasFadeOut) {
+            const fadeOutCurve = clip.fadeOutCurve ?? 0;
             const fadeOutStart = clip.duration - clip.fadeOutSamples;
             const fadeOutStartInPlayback = fadeOutStart - skipSamples;
 
@@ -522,11 +537,24 @@ export class AudioEngine {
                 if (sampleInPlayback < 0) continue;
                 if (sampleInPlayback > playDuration) break;
 
-                const gainAtPoint = Math.sqrt(1 - t) * baseGain;
+                const gainAtPoint = Math.pow(1 - t, Math.pow(2, -fadeOutCurve)) * baseGain;
                 const timeAtPoint = scheduledTime + sampleInPlayback / sr;
                 clipGain.gain.linearRampToValueAtTime(gainAtPoint, timeAtPoint);
               }
             }
+          }
+
+          // Schedule crossfade envelope (overrides regular fades in the overlap region)
+          if (hasCrossfade) {
+            scheduleCrossfadeEnvelope(
+              clipGain,
+              scheduledTime,
+              clip,
+              skipSamples,
+              playDuration,
+              sr,
+              baseGain,
+            );
           }
 
           source.connect(clipGain);
@@ -587,31 +615,21 @@ export class AudioEngine {
     if (node) node.pan.value = Math.max(-1, Math.min(1, pan));
   }
 
-  setTrackMute(trackId: string, mute: boolean): void {
-    const insertOut = this.trackInsertOutputs.get(trackId);
-    if (insertOut) insertOut.gain.value = mute ? 0 : 1;
-  }
-
-  setTrackSolo(trackId: string, solo: boolean): void {
-    // Solo is handled at playback scheduling time; for live update,
-    // mute all non-solo tracks' insert outputs.
-    const soloIds = new Set<string>();
-    // We don't have direct access to the timeline here,
-    // so we toggle the specific track and let the caller manage group state.
-    // For immediate feedback, toggle the insert output.
-    const insertOut = this.trackInsertOutputs.get(trackId);
-    if (!insertOut) return;
-
-    if (solo) {
-      // Mute all other tracks, unmute this one
-      for (const [id, out] of this.trackInsertOutputs) {
-        out.gain.value = id === trackId ? 1 : 0;
-      }
-    } else {
-      // Unmute all tracks (caller should re-apply proper solo state)
-      for (const [, out] of this.trackInsertOutputs) {
-        out.gain.value = 1;
-      }
+  /**
+   * Apply mute/solo state for all tracks atomically.
+   * Correct precedence: if any track is solo'd, only solo'd+unmuted tracks play.
+   * If no track is solo'd, only unmuted tracks play.
+   * Mute always overrides solo.
+   */
+  updateMuteSoloState(tracks: ReadonlyArray<Pick<Track, 'id' | 'solo' | 'mute'>>): void {
+    const hasSolo = tracks.some(t => t.solo);
+    for (const track of tracks) {
+      const insertOut = this.trackInsertOutputs.get(track.id);
+      if (!insertOut) continue;
+      const shouldPlay = hasSolo
+        ? (track.solo && !track.mute)
+        : !track.mute;
+      insertOut.gain.value = shouldPlay ? 1 : 0;
     }
   }
 

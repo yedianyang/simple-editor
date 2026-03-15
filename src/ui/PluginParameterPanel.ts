@@ -10,8 +10,6 @@ export class PluginParameterPanel {
   private container: HTMLElement;
   private currentInstanceId: string | null = null;
   private pluginHost: PluginHost | null = null;
-  /** Guards against the click-outside listener closing the panel in the same event that opened it. */
-  private openedThisFrame = false;
   private panelDragging = false;
   private dragOffsetX = 0;
   private dragOffsetY = 0;
@@ -23,18 +21,9 @@ export class PluginParameterPanel {
     this.container.style.display = 'none';
     document.body.appendChild(this.container);
 
-    // Close when clicking outside (skip if panel was just opened this frame)
-    document.addEventListener('mousedown', (e) => {
-      if (this.openedThisFrame) return;
-      const target = e.target as Node;
-      // Check if EQ7 panel is open and click is inside it
-      if (this.eq7Panel?.isVisible() && this.eq7Panel.containsElement(target)) return;
-      if (this.eq7Panel?.isVisible()) {
-        this.hide();
-        return;
-      }
-      if (this.container.style.display !== 'none' &&
-          !this.container.contains(target)) {
+    // Close on Escape key
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && this.container.style.display !== 'none') {
         this.hide();
       }
     });
@@ -90,8 +79,6 @@ export class PluginParameterPanel {
       }
 
       this.eq7Panel.show(instance, instanceId, left, top);
-      this.openedThisFrame = true;
-      requestAnimationFrame(() => { this.openedThisFrame = false; });
       return;
     }
 
@@ -136,10 +123,6 @@ export class PluginParameterPanel {
 
     this.container.style.pointerEvents = 'auto';
     this.container.style.display = 'block';
-
-    // Prevent the click-outside listener from immediately closing us
-    this.openedThisFrame = true;
-    requestAnimationFrame(() => { this.openedThisFrame = false; });
   }
 
   hide(): void {

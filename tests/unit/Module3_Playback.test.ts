@@ -321,12 +321,12 @@ describe('AudioEngine — Playback & Transport', () => {
       expect(engine.trackPanNodes.get('t1')!.pan.value).toBe(-1);
     });
 
-    it('setTrackMute sets insertOutput gain to 0', () => {
+    it('updateMuteSoloState sets insertOutput gain to 0 for muted tracks', () => {
       const tracks = [makeTrack('t1')];
       engine.setupTrackRouting(tracks);
-      engine.setTrackMute('t1', true);
+      engine.updateMuteSoloState([{ id: 't1', mute: true, solo: false }]);
       expect(engine.trackInsertOutputs.get('t1')!.gain.value).toBe(0);
-      engine.setTrackMute('t1', false);
+      engine.updateMuteSoloState([{ id: 't1', mute: false, solo: false }]);
       expect(engine.trackInsertOutputs.get('t1')!.gain.value).toBe(1);
     });
   });

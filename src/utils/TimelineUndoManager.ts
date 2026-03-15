@@ -486,7 +486,7 @@ export class EditClipGainCommand implements TimelineCommand {
 }
 
 /**
- * Undo/redo for per-clip fade in/out changes.
+ * Undo/redo for per-clip fade in/out changes (samples and curve shape).
  * Use pushExecuted() — fades are already applied via UI interaction.
  */
 export class EditClipFadeCommand implements TimelineCommand {
@@ -500,6 +500,10 @@ export class EditClipFadeCommand implements TimelineCommand {
     private prevFadeOut: number,
     private newFadeIn: number,
     private newFadeOut: number,
+    private prevFadeInCurve?: number,
+    private prevFadeOutCurve?: number,
+    private newFadeInCurve?: number,
+    private newFadeOutCurve?: number,
   ) {
     this.description = 'Edit clip fade';
   }
@@ -509,6 +513,8 @@ export class EditClipFadeCommand implements TimelineCommand {
     if (clip) {
       clip.fadeInSamples = this.newFadeIn;
       clip.fadeOutSamples = this.newFadeOut;
+      if (this.newFadeInCurve !== undefined) clip.fadeInCurve = this.newFadeInCurve;
+      if (this.newFadeOutCurve !== undefined) clip.fadeOutCurve = this.newFadeOutCurve;
     }
   }
 
@@ -517,6 +523,8 @@ export class EditClipFadeCommand implements TimelineCommand {
     if (clip) {
       clip.fadeInSamples = this.prevFadeIn;
       clip.fadeOutSamples = this.prevFadeOut;
+      clip.fadeInCurve = this.prevFadeInCurve;
+      clip.fadeOutCurve = this.prevFadeOutCurve;
     }
   }
 
@@ -800,6 +808,17 @@ export class DenoiseClipCommand implements TimelineCommand {
   }
 }
 
+/** Shared undo logic for import commands: remove clips by ID and delete newly created tracks. */
+function undoImport(model: TimelineModel, clipIds: string[], newTrackIds: string[]): void {
+  const idSet = new Set(clipIds);
+  for (const track of model.timeline.tracks) {
+    track.clips = track.clips.filter(c => !idSet.has(c.id));
+  }
+  for (const trackId of [...newTrackIds].reverse()) {
+    model.removeTrack(trackId);
+  }
+}
+
 /**
  * Undo/redo for importing a file at a specific track + time position.
  * Removes created clips and newly added tracks on undo.
@@ -829,14 +848,7 @@ export class ImportFileAtPositionCommand implements TimelineCommand {
   }
 
   undo(): void {
-    // Remove clips by ID from their tracks
-    for (const track of this.model.timeline.tracks) {
-      track.clips = track.clips.filter(c => !this.clipIds.includes(c.id));
-    }
-    // Remove newly created tracks (reverse order to preserve indices)
-    for (const trackId of [...this.newTrackIds].reverse()) {
-      this.model.removeTrack(trackId);
-    }
+    undoImport(this.model, this.clipIds, this.newTrackIds);
   }
 }
 
@@ -870,14 +882,7 @@ export class ImportAudioToNewTrackCommand implements TimelineCommand {
   }
 
   undo(): void {
-    // Remove clips by ID from their tracks
-    for (const track of this.model.timeline.tracks) {
-      track.clips = track.clips.filter(c => !this.clipIds.includes(c.id));
-    }
-    // Remove newly created tracks (reverse order to preserve indices)
-    for (const trackId of [...this.newTrackIds].reverse()) {
-      this.model.removeTrack(trackId);
-    }
+    undoImport(this.model, this.clipIds, this.newTrackIds);
   }
 }
 
@@ -914,6 +919,50 @@ export class CrossTrackChannelCommand implements TimelineCommand {
         track.clips = clips.map(c => ({ ...c }));
       }
     }
+  }
+}
+
+/**
+ * Undo/redo for crossfade edits between two adjacent clips.
+ * Use pushExecuted() — crossfade is already applied via UI interaction.
+ */
+export class CrossfadeCommand implements TimelineCommand {
+  description = 'Edit crossfade';
+
+  constructor(
+    private model: TimelineModel,
+    private trackId: string,
+    private clipAId: string,
+    private clipBId: string,
+    private prevCrossfadeOutA: number,
+    private prevCrossfadeInB: number,
+    private newCrossfadeOutA: number,
+    private newCrossfadeInB: number,
+    private crossfadeType: 'equalPower' | 'equalGain',
+  ) {}
+
+  execute(): void {
+    const track = this.model.timeline.tracks.find(t => t.id === this.trackId);
+    if (!track) return;
+    const clipA = track.clips.find(c => c.id === this.clipAId);
+    const clipB = track.clips.find(c => c.id === this.clipBId);
+    if (clipA) {
+      clipA.crossfadeOutSamples = this.newCrossfadeOutA;
+      clipA.crossfadeType = this.crossfadeType;
+    }
+    if (clipB) {
+      clipB.crossfadeInSamples = this.newCrossfadeInB;
+      clipB.crossfadeType = this.crossfadeType;
+    }
+  }
+
+  undo(): void {
+    const track = this.model.timeline.tracks.find(t => t.id === this.trackId);
+    if (!track) return;
+    const clipA = track.clips.find(c => c.id === this.clipAId);
+    const clipB = track.clips.find(c => c.id === this.clipBId);
+    if (clipA) clipA.crossfadeOutSamples = this.prevCrossfadeOutA;
+    if (clipB) clipB.crossfadeInSamples = this.prevCrossfadeInB;
   }
 }
 
