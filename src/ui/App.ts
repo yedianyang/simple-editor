@@ -1,5 +1,6 @@
 import { AudioEngine } from '../core/AudioEngine';
 import { formatTime, CHANNEL_NAMES, CHANNEL_COLORS, PluginInfo, TrackInsert, ExportMetadata, Clip, TrackChannelCount } from '../core/types';
+import { formatSampleRate, hasSampleRateMismatch } from '../utils/sampleRateUtils';
 import { PluginParameterPanel } from './PluginParameterPanel';
 import { AudioEditor } from '../editor/AudioEditor';
 import { WaveformRenderer } from '../editor/WaveformRenderer';
@@ -40,6 +41,7 @@ import {
   ImportFileAtPositionCommand,
   ImportAudioToNewTrackCommand,
   CrossTrackChannelCommand,
+  CrossfadeCommand,
 } from '../utils/TimelineUndoManager';
 import type { AudioFileInfo, AudioFileMeta, ParsedAudioData } from '../utils/TauriAPI';
 import { generateUCSFilename, parseUCSFilename } from '../core/ucs-data';
@@ -1122,16 +1124,7 @@ export class App {
       'zoom-fit': () => this.zoomFit(),
       'toggle-mixer': () => this.mixer.toggle(),
       'toggle-plugin-browser': () => this.togglePluginBrowser(),
-      'import': async () => {
-        const paths = await window.appAPI!.showOpenDialog({
-          title: 'Import Audio',
-          multiple: true,
-          filters: [{ name: 'Audio Files', extensions: ['wav', 'aif', 'aiff', 'flac', 'mp3', 'ogg'] }],
-        });
-        if (paths && paths.length > 0) {
-          await this.importAudioToTimeline(paths);
-        }
-      },
+      'import': () => this.openImportDialog(),
       'import-folder': async () => {
         const folderPath = await window.appAPI!.openFolderDialog();
         if (folderPath) {
@@ -1938,6 +1931,26 @@ export class App {
 
   // ==================== Edit Operations ====================
 
+  /**
+   * Re-schedule playback from the current position.
+   * Called after buffer swaps (denoise, undo/redo) so scheduled
+   * AudioBufferSourceNode instances are replaced with ones referencing
+   * the updated buffers.
+   * - Playing  → stop + restart from current sample
+   * - Paused   → stop only (no restart; user must press play)
+   * - Stopped  → no-op
+   */
+  private invalidatePlayback(): void {
+    if (!this.audioEngine.isPlaying && !this.audioEngine.isPaused) return;
+    const sr = this.timelineModel.timeline.sampleRate;
+    const currentSample = this.audioEngine.getPlaybackPositionSamples(sr);
+    const wasPlaying = this.audioEngine.isPlaying;
+    this.audioEngine.stopTimeline();
+    if (wasPlaying) {
+      this.audioEngine.playTimeline(this.timelineModel.timeline, this.bufferPool, currentSample);
+    }
+  }
+
   applyBuffer(buffer: AudioBuffer): void {
     this.audioEngine.setBuffer(buffer);
     this.waveformRenderer.setAudioBuffer(buffer);
@@ -1951,6 +1964,7 @@ export class App {
   undo(): void {
     if (this.timelineUndoManager.canUndo()) {
       this.timelineUndoManager.undo();
+      this.invalidatePlayback();
       this.mixer.updateStripsUI(this.timelineModel.timeline.tracks);
       this.timelineRenderer?.render();
       this.updateUI();
@@ -1960,6 +1974,7 @@ export class App {
   redo(): void {
     if (this.timelineUndoManager.canRedo()) {
       this.timelineUndoManager.redo();
+      this.invalidatePlayback();
       this.mixer.updateStripsUI(this.timelineModel.timeline.tracks);
       this.timelineRenderer?.render();
       this.updateUI();
@@ -2328,6 +2343,7 @@ export class App {
       };
       track.inserts.push(insert);
       this.audioEngine.rebuildInsertChain(trackId, track.inserts, this.pluginHost);
+      this.invalidatePlayback();
       this.mixer.updateStripsUI(this.timelineModel.timeline.tracks);
       this.timelineRenderer?.render();
     } catch (err) {
@@ -2348,6 +2364,7 @@ export class App {
     track.inserts.splice(idx, 1);
     this.pluginHost.removeInstance(instanceId);
     this.audioEngine.rebuildInsertChain(trackId, track.inserts, this.pluginHost);
+    this.invalidatePlayback();
     this.mixer.updateStripsUI(this.timelineModel.timeline.tracks);
     this.timelineRenderer?.render();
 
@@ -2366,6 +2383,7 @@ export class App {
 
     insert.bypassed = !insert.bypassed;
     this.audioEngine.rebuildInsertChain(trackId, track.inserts, this.pluginHost);
+    this.invalidatePlayback();
     this.mixer.updateStripsUI(this.timelineModel.timeline.tracks);
     this.timelineRenderer?.render();
   }
@@ -2380,6 +2398,7 @@ export class App {
     const [moved] = inserts.splice(fromIndex, 1);
     inserts.splice(toIndex, 0, moved);
     this.audioEngine.rebuildInsertChain(trackId, inserts, this.pluginHost);
+    this.invalidatePlayback();
     this.mixer.updateStripsUI(this.timelineModel.timeline.tracks);
     this.timelineRenderer?.render();
   }
@@ -2681,10 +2700,21 @@ export class App {
         }
       }
 
-      // Sample rate mismatch warning
-      if (this.timelineModel.timeline.tracks.length > 0 &&
-          audioBuffer.sampleRate !== this.timelineModel.timeline.sampleRate) {
-        alert(`Warning: Sample rate mismatch.\nTimeline: ${this.timelineModel.timeline.sampleRate} Hz\nFile: ${audioBuffer.sampleRate} Hz`);
+      // Sample rate mismatch warning — let user cancel before importing
+      if (hasSampleRateMismatch(
+            this.timelineModel.timeline.sampleRate,
+            audioBuffer.sampleRate,
+            this.timelineModel.timeline.tracks.length)) {
+        const filekHz = formatSampleRate(audioBuffer.sampleRate);
+        const sessionkHz = formatSampleRate(this.timelineModel.timeline.sampleRate);
+        const ok = window.confirm(
+          `Sample rate mismatch: file is ${filekHz}, session is ${sessionkHz}. ` +
+          `Audio will play at session rate (${sessionkHz}).`
+        );
+        if (!ok) {
+          this.hideLoadingIndicator();
+          return;
+        }
       }
 
       // Import into buffer pool
@@ -2739,11 +2769,14 @@ export class App {
    * Does NOT use the file queue or clear existing tracks.
    */
   async importAudioToTimeline(filePaths: string[]): Promise<void> {
+    this.showLoadingIndicator(`Importing ${filePaths.length} file(s)…`);
+    await new Promise<void>(r => requestAnimationFrame(() => r()));
+
+    let firstFilePath: string | null = null;
+
     for (const filePath of filePaths) {
       try {
         const name = filePath.split('/').pop() || 'Untitled';
-        this.showLoadingIndicator(name);
-        await new Promise<void>(r => requestAnimationFrame(() => r()));
 
         const result = await FileHandler.importFilePath(filePath);
 
@@ -2771,10 +2804,18 @@ export class App {
           this.timelineModel.timeline.sampleRate = audioBuffer.sampleRate;
         }
 
-        // Sample rate mismatch warning
-        if (this.timelineModel.timeline.tracks.length > 0 &&
-            audioBuffer.sampleRate !== this.timelineModel.timeline.sampleRate) {
-          alert(`Warning: Sample rate mismatch.\nTimeline: ${this.timelineModel.timeline.sampleRate} Hz\nFile: ${audioBuffer.sampleRate} Hz`);
+        // Sample rate mismatch warning — let user cancel before importing
+        if (hasSampleRateMismatch(
+              this.timelineModel.timeline.sampleRate,
+              audioBuffer.sampleRate,
+              this.timelineModel.timeline.tracks.length)) {
+          const filekHz = formatSampleRate(audioBuffer.sampleRate);
+          const sessionkHz = formatSampleRate(this.timelineModel.timeline.sampleRate);
+          const ok = window.confirm(
+            `Sample rate mismatch: file is ${filekHz}, session is ${sessionkHz}. ` +
+            `Audio will play at session rate (${sessionkHz}).`
+          );
+          if (!ok) continue;
         }
 
         // Import into buffer pool
@@ -2788,7 +2829,6 @@ export class App {
         const selectedTrackIds = this.timelineModel.timeline.selectedTrackIds;
         let insertAfterIndex = -1; // -1 = append at end
         if (selectedTrackIds.length > 0) {
-          // Find the index of the last selected track
           const lastSelectedId = selectedTrackIds[selectedTrackIds.length - 1];
           insertAfterIndex = this.timelineModel.timeline.tracks.findIndex(t => t.id === lastSelectedId);
         }
@@ -2804,35 +2844,35 @@ export class App {
         );
         this.timelineUndoManager.push(cmd);
 
-        // Update routing and UI
-        this.audioEngine.setupTrackRouting(this.timelineModel.timeline.tracks);
-        this.mixer.setupTracks(this.timelineModel.timeline.tracks);
-        if (this.timelineRenderer) {
-          this.timelineRenderer.setTimeline(this.timelineModel.timeline, this.bufferPool);
-          this.timelineRenderer.render();
-        }
-
-        this.updateUI();
-
-        // Pre-fill inline metadata from the first imported file
-        if (!this.metadataPreFilled) {
-          this.metadataPreFilled = true;
-          try {
-            const meta = await window.appAPI!.readFileMetadata(filePath);
-            this.prefillInlineMetadata(meta);
-          } catch (metaErr) {
-            console.warn('[Metadata] Could not pre-fill from first import:', metaErr);
-          }
-        }
-
-        this.hideLoadingIndicator();
+        if (!firstFilePath) firstFilePath = filePath;
       } catch (err: unknown) {
         console.error('Import to timeline error:', err);
-        this.hideLoadingIndicator();
         const msg = err instanceof Error ? err.message : String(err);
         alert('Error importing file: ' + msg);
       }
     }
+
+    // Rebuild routing and UI once after all files are imported
+    this.audioEngine.setupTrackRouting(this.timelineModel.timeline.tracks);
+    this.mixer.setupTracks(this.timelineModel.timeline.tracks);
+    if (this.timelineRenderer) {
+      this.timelineRenderer.setTimeline(this.timelineModel.timeline, this.bufferPool);
+      this.timelineRenderer.render();
+    }
+    this.updateUI();
+
+    // Pre-fill inline metadata from the first imported file
+    if (firstFilePath && !this.metadataPreFilled) {
+      this.metadataPreFilled = true;
+      try {
+        const meta = await window.appAPI!.readFileMetadata(firstFilePath);
+        this.prefillInlineMetadata(meta);
+      } catch (metaErr) {
+        console.warn('[Metadata] Could not pre-fill from first import:', metaErr);
+      }
+    }
+
+    this.hideLoadingIndicator();
   }
 
   /**
@@ -3474,6 +3514,7 @@ export class App {
     const denoise = parseInt((document.getElementById('denoiseAmount') as HTMLInputElement).value) / 100;
     const dereverb = parseInt((document.getElementById('dereverbAmount') as HTMLInputElement).value) / 100;
     const dry = parseInt((document.getElementById('drySoundAmount') as HTMLInputElement).value) / 100;
+    const useGpu = (document.getElementById('denoiseUseGpu') as HTMLInputElement).checked;
 
     if (this.timelineModel.timeline.tracks.length === 0) {
       this.hideModal('denoiseModal');
@@ -3491,12 +3532,24 @@ export class App {
     progressRow.style.display = 'block';
     applyBtn.disabled = true;
 
+    // Count total clips for unified progress
+    let totalClips = 0;
+    for (const track of this.timelineModel.timeline.tracks) {
+      for (const clip of track.clips) {
+        if (selected.includes(clip.id) && this.bufferPool.getBuffer(clip.bufferId)) {
+          totalClips++;
+        }
+      }
+    }
+    let completedClips = 0;
+
     // Listen for progress events from Rust
     const { listen } = await import('@tauri-apps/api/event');
     const unlisten = await listen<number>('denoise:progress', (e) => {
-      const pct = Math.round(e.payload);
-      progressFill.style.width = `${pct}%`;
-      progressLabel.textContent = `${pct}%`;
+      const clipPct = Math.round(e.payload);
+      const overallPct = Math.round(((completedClips + clipPct / 100) / totalClips) * 100);
+      progressFill.style.width = `${overallPct}%`;
+      progressLabel.textContent = `${overallPct}% (${completedClips + 1}/${totalClips})`;
     });
 
     try {
@@ -3513,7 +3566,7 @@ export class App {
           // Call Rust backend
           const resultBuf = await window.appAPI!.denoiseDeepFilter(
             srcData,
-            { denoise, dereverb, dry, sample_rate: sampleRate, num_samples: numSamples },
+            { denoise, dereverb, dry, sample_rate: sampleRate, num_samples: numSamples, use_gpu: useGpu },
           );
 
           // Parse response (same format as readLargeAudioFile)
@@ -3536,8 +3589,10 @@ export class App {
           this.timelineUndoManager.pushExecuted(
             new DenoiseClipCommand(this.timelineModel, track.id, clip.id, originalBufferId, newBufferId),
           );
+          completedClips++;
         }
       }
+      this.invalidatePlayback();
       this.timelineRenderer?.clearPeakCaches();
       this.timelineRenderer?.render();
       this.hideModal('denoiseModal');
@@ -3587,7 +3642,7 @@ export class App {
       let fileNameSuffix = '';
 
       // Render timeline edits (clips, gain, fades, mute/solo) into raw channels
-      const rendered = renderTimelineOffline(this.timelineModel.timeline, this.bufferPool);
+      const rendered = await renderTimelineOffline(this.timelineModel.timeline, this.bufferPool, this.pluginHost ?? undefined);
       const exportSampleRate = rendered.channels.length > 0
         ? rendered.sampleRate
         : (this.audioEngine.audioBuffer?.sampleRate ?? this.timelineModel.timeline.sampleRate);
@@ -3763,6 +3818,13 @@ export class App {
   updateFileInfo(): void {
     const buffer = this.audioEngine.audioBuffer;
 
+    // Session sample rate in status bar
+    const sessionSrEl = document.getElementById('sessionSampleRate');
+    if (sessionSrEl) {
+      const sessionRate = this.timelineModel.timeline.sampleRate;
+      sessionSrEl.textContent = sessionRate > 0 ? formatSampleRate(sessionRate) : '';
+    }
+
     // Status bar (bottom)
     const el = document.getElementById('fileInfo');
     if (el) {
@@ -3770,7 +3832,7 @@ export class App {
         el.textContent = 'No file loaded';
       } else {
         const duration = formatTime(buffer.duration);
-        const sampleRate = (buffer.sampleRate / 1000).toFixed(1) + ' kHz';
+        const sampleRate = formatSampleRate(buffer.sampleRate);
         const channels = buffer.numberOfChannels;
         const channelLabel = channels === 1 ? 'Mono' : channels === 2 ? 'Stereo' :
           channels === 4 ? 'Quad' : channels === 6 ? '5.1' : `${channels}ch`;
@@ -3798,7 +3860,7 @@ export class App {
     if (nameEl) nameEl.textContent = this.fileName || 'Untitled';
     if (chEl) chEl.textContent = ch === 1 ? 'Mono' : ch === 2 ? 'Stereo' :
       ch === 4 ? 'Quad' : ch === 6 ? '5.1' : `${ch}ch`;
-    if (srEl) srEl.textContent = (buffer.sampleRate / 1000).toFixed(1) + ' kHz';
+    if (srEl) srEl.textContent = formatSampleRate(buffer.sampleRate);
     if (bdEl) {
       const bps = this.originalBitDepth;
       if (bps === 32 || bps === null) {
