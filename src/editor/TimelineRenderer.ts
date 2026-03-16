@@ -46,7 +46,8 @@ const CUE_FLAG_HEIGHT = 14;
 const CUE_FLAG_WIDTH = 8;
 
 type DragMode = 'none' | 'selection' | 'clipMove' | 'trimStart' | 'trimEnd' | 'marquee'
-  | 'clipGain' | 'fadeIn' | 'fadeOut' | 'cuePoint' | 'trackResize' | 'crossfade';
+  | 'clipGain' | 'fadeIn' | 'fadeOut' | 'fadeCurveIn' | 'fadeCurveOut'
+  | 'cuePoint' | 'trackResize' | 'crossfade';
 
 interface DragState {
   mode: DragMode;
@@ -68,6 +69,10 @@ interface DragState {
   originalFadeIn?: number;
   /** Original fade-out samples at drag start (for fadeIn/fadeOut modes). */
   originalFadeOut?: number;
+  /** Original fade-in curve value at drag start (for fadeCurveIn mode). */
+  originalFadeInCurve?: number;
+  /** Original fade-out curve value at drag start (for fadeCurveOut mode). */
+  originalFadeOutCurve?: number;
   /** Cue point ID being dragged (for cuePoint mode). */
   dragCuePointId?: number;
   /** Original cue point sample position at drag start. */
@@ -197,6 +202,7 @@ export class TimelineRenderer {
   // Clip gain / fade callbacks
   onClipGainChange: ((clipId: string, trackId: string, gainDb: number) => void) | null = null;
   onClipFadeChange: ((clipId: string, trackId: string, edge: 'in' | 'out', samples: number) => void) | null = null;
+  onClipFadeCurveChange: ((clipId: string, trackId: string, edge: 'in' | 'out', curve: number) => void) | null = null;
 
   // Cue point callbacks
   onCuePointAdd: ((sample: number) => void) | null = null;
@@ -603,7 +609,7 @@ export class TimelineRenderer {
    *   - Lower half of track → move (clip drag)
    */
   private hitTestClip(x: number, y: number): {
-    clip: Clip; track: Track; zone: 'trimStart' | 'trimEnd' | 'select' | 'move' | 'clipGain' | 'fadeIn' | 'fadeOut';
+    clip: Clip; track: Track; zone: 'trimStart' | 'trimEnd' | 'select' | 'move' | 'clipGain' | 'fadeIn' | 'fadeOut' | 'fadeCurveIn' | 'fadeCurveOut';
   } | null {
     if (!this.timeline || x < TRACK_HEADER_WIDTH) return null;
     const trackIndex = this.yToTrackIndex(y);
@@ -642,6 +648,11 @@ export class TimelineRenderer {
           if (Math.abs(x - fadeEndPx) <= FADE_ZONE_WIDTH) {
             return { clip, track, zone: 'fadeIn' };
           }
+          // Inside the fade-in overlay (between left clip edge and handle):
+          // dragging vertically here adjusts the curve shape.
+          if (x > clipStartPx + TRIM_HANDLE_WIDTH && x < fadeEndPx - FADE_ZONE_WIDTH) {
+            return { clip, track, zone: 'fadeCurveIn' };
+          }
         } else {
           // No fade yet: activation zone just inside left edge
           if (x - clipStartPx > TRIM_HANDLE_WIDTH && x - clipStartPx <= TRIM_HANDLE_WIDTH + FADE_ZONE_WIDTH) {
@@ -654,6 +665,11 @@ export class TimelineRenderer {
           const fadeStartPx = clipEndPx - fadeOutPx;
           if (Math.abs(x - fadeStartPx) <= FADE_ZONE_WIDTH) {
             return { clip, track, zone: 'fadeOut' };
+          }
+          // Inside the fade-out overlay (between handle and right clip edge):
+          // dragging vertically here adjusts the curve shape.
+          if (x > fadeStartPx + FADE_ZONE_WIDTH && x < clipEndPx - TRIM_HANDLE_WIDTH) {
+            return { clip, track, zone: 'fadeCurveOut' };
           }
         } else {
           // No fade yet: activation zone just inside right edge
@@ -1038,6 +1054,32 @@ export class TimelineRenderer {
         return;
       }
 
+      if (zone === 'fadeCurveIn') {
+        this.timeline.selectedClipIds = [clip.id];
+        if (this.onClipSelect) this.onClipSelect(clip.id, track.id);
+        this.drag = {
+          mode: 'fadeCurveIn', clipId: clip.id, trackId: track.id,
+          grabOffsetSamples: 0, originalValue: 0,
+          startMouseX: x, startMouseY: y, hasDragged: false, shiftHeld: false,
+          originalFadeInCurve: clip.fadeInCurve ?? 0,
+        };
+        this.render();
+        return;
+      }
+
+      if (zone === 'fadeCurveOut') {
+        this.timeline.selectedClipIds = [clip.id];
+        if (this.onClipSelect) this.onClipSelect(clip.id, track.id);
+        this.drag = {
+          mode: 'fadeCurveOut', clipId: clip.id, trackId: track.id,
+          grabOffsetSamples: 0, originalValue: 0,
+          startMouseX: x, startMouseY: y, hasDragged: false, shiftHeld: false,
+          originalFadeOutCurve: clip.fadeOutCurve ?? 0,
+        };
+        this.render();
+        return;
+      }
+
       if (zone === 'move') {
         // Move clip — single entity selection
         if (e.shiftKey) {
@@ -1152,6 +1194,8 @@ export class TimelineRenderer {
           const hit = this.hitTestClip(x, y);
           if (hit) {
             if (hit.zone === 'clipGain') {
+              this.canvas.style.cursor = 'ns-resize';
+            } else if (hit.zone === 'fadeCurveIn' || hit.zone === 'fadeCurveOut') {
               this.canvas.style.cursor = 'ns-resize';
             } else if (hit.zone === 'fadeIn' || hit.zone === 'fadeOut') {
               this.canvas.style.cursor = 'col-resize';
@@ -1309,6 +1353,40 @@ export class TimelineRenderer {
       return;
     }
 
+    if (this.drag.mode === 'fadeCurveIn') {
+      this.canvas.style.cursor = 'ns-resize';
+      const track = this.timeline!.tracks.find(t => t.id === this.drag.trackId);
+      const clip = track?.clips.find(c => c.id === this.drag.clipId);
+      if (clip) {
+        const deltaY = y - this.drag.startMouseY;
+        // Moving up (negative deltaY) → more convex curve (+1 = fast attack)
+        // Moving down (positive deltaY) → more concave curve (-1 = slow attack)
+        // 150px of drag covers the full −1 to +1 range.
+        const newCurve = Math.max(-1, Math.min(1, (this.drag.originalFadeInCurve ?? 0) - deltaY / 75));
+        if (this.onClipFadeCurveChange) {
+          this.onClipFadeCurveChange(this.drag.clipId, this.drag.trackId, 'in', newCurve);
+        }
+      }
+      this.render();
+      return;
+    }
+
+    if (this.drag.mode === 'fadeCurveOut') {
+      this.canvas.style.cursor = 'ns-resize';
+      const track = this.timeline!.tracks.find(t => t.id === this.drag.trackId);
+      const clip = track?.clips.find(c => c.id === this.drag.clipId);
+      if (clip) {
+        const deltaY = y - this.drag.startMouseY;
+        // Same mapping as fadeCurveIn.
+        const newCurve = Math.max(-1, Math.min(1, (this.drag.originalFadeOutCurve ?? 0) - deltaY / 75));
+        if (this.onClipFadeCurveChange) {
+          this.onClipFadeCurveChange(this.drag.clipId, this.drag.trackId, 'out', newCurve);
+        }
+      }
+      this.render();
+      return;
+    }
+
     if (this.drag.mode === 'crossfade') {
       this.canvas.style.cursor = 'col-resize';
       this.drag.hasDragged = true;
@@ -1444,6 +1522,13 @@ export class TimelineRenderer {
 
     // Clip gain / fade drags → fire onDragEnd for App.ts to create undo command
     if (this.drag.mode === 'clipGain' || this.drag.mode === 'fadeIn' || this.drag.mode === 'fadeOut') {
+      this.drag.mode = 'none';
+      if (this.onDragEnd) this.onDragEnd();
+      return;
+    }
+
+    // Fade curve shape drags → fire onDragEnd so App.ts can create undo command
+    if (this.drag.mode === 'fadeCurveIn' || this.drag.mode === 'fadeCurveOut') {
       this.drag.mode = 'none';
       if (this.onDragEnd) this.onDragEnd();
       return;

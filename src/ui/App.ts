@@ -89,6 +89,7 @@ export class App {
   private _dragCurrentTrackId: string | null = null;
   private _dragGainOriginal: number | null = null;
   private _dragFadeOriginal: { fadeIn: number; fadeOut: number } | null = null;
+  private _dragFadeCurveOriginal: { clipId: string; trackId: string; edge: 'in' | 'out'; curve: number } | null = null;
   /** When dragging over a compatible cross-channel track, stores target track ID for split/merge on drag end. */
   private _dragCrossChannelTarget: { targetTrackId: string; newOffset: number } | null = null;
 
@@ -573,6 +574,20 @@ export class App {
       }
     };
 
+    // ---- Clip fade curve callback ----
+    this.timelineRenderer.onClipFadeCurveChange = (clipId, trackId, edge, curve) => {
+      const track = this.timelineModel.timeline.tracks.find(t => t.id === trackId);
+      const clip = track?.clips.find(c => c.id === clipId);
+      if (clip) {
+        if (this._dragFadeCurveOriginal == null) {
+          const originalCurve = edge === 'in' ? (clip.fadeInCurve ?? 0) : (clip.fadeOutCurve ?? 0);
+          this._dragFadeCurveOriginal = { clipId, trackId, edge, curve: originalCurve };
+        }
+        if (edge === 'in') clip.fadeInCurve = curve;
+        else clip.fadeOutCurve = curve;
+      }
+    };
+
     // ---- Extend onDragEnd for gain/fade ----
     const existingDragEnd = this.timelineRenderer.onDragEnd!;
     this.timelineRenderer.onDragEnd = () => {
@@ -591,6 +606,32 @@ export class App {
           }
         }
         this._dragGainOriginal = null;
+        return;
+      }
+
+      // Check for fade curve drag undo
+      if (this._dragFadeCurveOriginal != null) {
+        const { clipId, trackId, edge, curve: prevCurve } = this._dragFadeCurveOriginal;
+        for (const track of this.timelineModel.timeline.tracks) {
+          const clip = track.clips.find(c => c.id === clipId);
+          if (clip) {
+            const newCurve = edge === 'in' ? (clip.fadeInCurve ?? 0) : (clip.fadeOutCurve ?? 0);
+            if (newCurve !== prevCurve) {
+              const cmd = new EditClipFadeCommand(
+                this.timelineModel, track.id, clip.id,
+                clip.fadeInSamples, clip.fadeOutSamples,
+                clip.fadeInSamples, clip.fadeOutSamples,
+                edge === 'in' ? prevCurve : clip.fadeInCurve,
+                edge === 'out' ? prevCurve : clip.fadeOutCurve,
+                edge === 'in' ? newCurve : clip.fadeInCurve,
+                edge === 'out' ? newCurve : clip.fadeOutCurve,
+              );
+              this.timelineUndoManager.pushExecuted(cmd);
+            }
+            break;
+          }
+        }
+        this._dragFadeCurveOriginal = null;
         return;
       }
 
