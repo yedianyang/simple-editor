@@ -408,23 +408,15 @@ export class AudioEngine {
     const startTimeSec = startSample / timeline.sampleRate;
     const now = this.audioContext.currentTime;
 
-    // Determine solo state
-    const soloTrackIds = new Set<string>();
-    for (const track of timeline.tracks) {
-      if (track.solo) soloTrackIds.add(track.id);
-    }
-    const hasSolo = soloTrackIds.size > 0;
+    // Apply current mute/solo state so gain nodes reflect the initial routing.
+    // All clips are scheduled regardless of mute/solo — audibility is controlled
+    // exclusively via insertOut.gain so that live mute/solo changes take effect
+    // without needing to restart playback.
+    this.updateMuteSoloState(timeline.tracks);
 
     for (const track of timeline.tracks) {
       const gainNode = this.trackGainNodes.get(track.id);
       if (!gainNode) continue;
-
-      // Mute/solo logic
-      const shouldPlay = hasSolo
-        ? soloTrackIds.has(track.id) && !track.mute
-        : !track.mute;
-
-      if (!shouldPlay) continue;
 
       for (const clip of track.clips) {
         if (clip.muted) continue;
