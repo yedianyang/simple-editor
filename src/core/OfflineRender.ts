@@ -119,22 +119,35 @@ export async function renderTimelineOffline(
       insertOut.connect(master);
     }
 
-    // Channel merger for multi-channel tracks
-    let merger: ChannelMergerNode | null = null;
-    if (chCount > 1) {
-      merger = offlineCtx.createChannelMerger(chCount);
-      merger.connect(trackGain);
-    }
-
     for (const clip of track.clips) {
       if (clip.muted) continue;
 
-      const pooled = bufferPool.getBuffer(clip.bufferId);
-      if (!pooled) continue;
+      // Build the AudioBuffer for this clip from its bufferIds array
+      const numCh = clip.bufferIds.length;
+      let clipBuffer: AudioBuffer | null = null;
+
+      if (numCh > 1) {
+        // Multi-channel clip: combine per-channel mono buffers into one buffer
+        const firstPooled = bufferPool.getBuffer(clip.bufferIds[0]);
+        if (!firstPooled) continue;
+        const durationSamples = firstPooled.buffer.length;
+        const sr2 = firstPooled.buffer.sampleRate;
+        const combinedBuffer = offlineCtx.createBuffer(numCh, durationSamples, sr2);
+        for (let ch = 0; ch < numCh; ch++) {
+          const mono = bufferPool.getBuffer(clip.bufferIds[ch]);
+          if (mono) combinedBuffer.copyToChannel(mono.buffer.getChannelData(0), ch);
+        }
+        clipBuffer = combinedBuffer;
+      } else {
+        const pooled = bufferPool.getBuffer(clip.bufferIds[0]);
+        if (!pooled) continue;
+        clipBuffer = pooled.buffer;
+      }
+
       hasAudibleContent = true;
 
       const source = offlineCtx.createBufferSource();
-      source.buffer = pooled.buffer;
+      source.buffer = clipBuffer;
 
       const sr = sampleRate;
       const sourceOffset = clip.sourceStart;
@@ -203,17 +216,9 @@ export async function renderTimelineOffline(
         }
 
         source.connect(clipGain);
-        if (merger && clip.subChannel != null) {
-          clipGain.connect(merger, 0, clip.subChannel);
-        } else {
-          clipGain.connect(trackGain);
-        }
+        clipGain.connect(trackGain);
       } else {
-        if (merger && clip.subChannel != null) {
-          source.connect(merger, 0, clip.subChannel);
-        } else {
-          source.connect(trackGain);
-        }
+        source.connect(trackGain);
       }
 
       source.start(scheduledTime, sourceOffset / sr, playDuration / sr);

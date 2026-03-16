@@ -426,19 +426,30 @@ export class AudioEngine {
 
       if (!shouldPlay) continue;
 
-      // For multi-channel tracks, create a ChannelMergerNode so sub-channel
-      // mono clips route to the correct stereo channel instead of collapsing.
-      let merger: ChannelMergerNode | null = null;
-      if (track.channels > 1) {
-        merger = this.audioContext.createChannelMerger(track.channels);
-        merger.connect(gainNode);
-      }
-
       for (const clip of track.clips) {
         if (clip.muted) continue;
 
-        const pooled = bufferPool.getBuffer(clip.bufferId);
-        if (!pooled) continue;
+        // Build the AudioBuffer for this clip from its bufferIds array
+        const numCh = clip.bufferIds.length;
+        let clipBuffer: AudioBuffer | null = null;
+
+        if (numCh > 1) {
+          // Multi-channel clip: combine per-channel mono buffers into one buffer
+          const firstPooled = bufferPool.getBuffer(clip.bufferIds[0]);
+          if (!firstPooled) continue;
+          const durationSamples = firstPooled.buffer.length;
+          const sampleRate = firstPooled.buffer.sampleRate;
+          const combinedBuffer = this.audioContext.createBuffer(numCh, durationSamples, sampleRate);
+          for (let ch = 0; ch < numCh; ch++) {
+            const mono = bufferPool.getBuffer(clip.bufferIds[ch]);
+            if (mono) combinedBuffer.copyToChannel(mono.buffer.getChannelData(0), ch);
+          }
+          clipBuffer = combinedBuffer;
+        } else {
+          const pooled = bufferPool.getBuffer(clip.bufferIds[0]);
+          if (!pooled) continue;
+          clipBuffer = pooled.buffer;
+        }
 
         const clipStartSample = clip.timelineOffset;
         const clipEndSample = clip.timelineOffset + clip.duration;
@@ -447,7 +458,7 @@ export class AudioEngine {
         if (clipEndSample <= startSample) continue;
 
         const source = this.audioContext.createBufferSource();
-        source.buffer = pooled.buffer;
+        source.buffer = clipBuffer;
 
         // Calculate start offset within the source buffer and schedule time
         let sourceOffset = clip.sourceStart;
@@ -558,17 +569,9 @@ export class AudioEngine {
           }
 
           source.connect(clipGain);
-          if (merger && clip.subChannel != null) {
-            clipGain.connect(merger, 0, clip.subChannel);
-          } else {
-            clipGain.connect(gainNode);
-          }
+          clipGain.connect(gainNode);
         } else {
-          if (merger && clip.subChannel != null) {
-            source.connect(merger, 0, clip.subChannel);
-          } else {
-            source.connect(gainNode);
-          }
+          source.connect(gainNode);
         }
 
         const sourceOffsetSec = sourceOffset / sr;
