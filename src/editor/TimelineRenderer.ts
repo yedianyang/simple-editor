@@ -2457,6 +2457,56 @@ export class TimelineRenderer {
 
     ctx.restore(); // pop clip region
 
+    // -- Crossfade overlap waveforms (Pro Tools style: both clip waveforms visible in crossfade zone) --
+    if (clip.crossfadeOutSamples && clip.crossfadeOutSamples > 0) {
+      // Clip A: draw extended waveform BEYOND clip's visual end (into clip B's zone)
+      const xfOutSamples = clip.crossfadeOutSamples;
+      const xfOutPx = xfOutSamples / this.samplesPerPixel;
+      const overlapStartPx = clipEndPx;
+      const overlapEndPx = clipEndPx + xfOutPx;
+      const numChannels = clip.bufferIds.length;
+      if (numChannels > 1) {
+        const laneH = clipH / numChannels;
+        for (let ch = 0; ch < numChannels; ch++) {
+          const laneY = clipY + ch * laneH;
+          this.renderCrossfadeOverlapWaveform(
+            track, clip.bufferIds[ch], laneY, laneH,
+            overlapStartPx, overlapEndPx, clip.sourceEnd, ch,
+          );
+        }
+      } else {
+        this.renderCrossfadeOverlapWaveform(
+          track, clip.bufferIds[0], clipY, clipH,
+          overlapStartPx, overlapEndPx, clip.sourceEnd, 0,
+        );
+      }
+    }
+    if (clip.crossfadeInSamples && clip.crossfadeInSamples > 0) {
+      // Clip B: draw extended waveform BEFORE clip's visual start (into clip A's zone)
+      const xfInSamples = clip.crossfadeInSamples;
+      const xfInPx = xfInSamples / this.samplesPerPixel;
+      const overlapStartPx = clipStartPx - xfInPx;
+      const overlapEndPx = clipStartPx;
+      // Source offset: buffer data from (sourceStart - crossfadeInSamples) to sourceStart
+      const bufferReadStart = clip.sourceStart - xfInSamples;
+      const numChannels = clip.bufferIds.length;
+      if (numChannels > 1) {
+        const laneH = clipH / numChannels;
+        for (let ch = 0; ch < numChannels; ch++) {
+          const laneY = clipY + ch * laneH;
+          this.renderCrossfadeOverlapWaveform(
+            track, clip.bufferIds[ch], laneY, laneH,
+            overlapStartPx, overlapEndPx, bufferReadStart, ch,
+          );
+        }
+      } else {
+        this.renderCrossfadeOverlapWaveform(
+          track, clip.bufferIds[0], clipY, clipH,
+          overlapStartPx, overlapEndPx, bufferReadStart, 0,
+        );
+      }
+    }
+
     // -- Clip border (rounded rect) --
     ctx.strokeStyle = isSelected ? COLOR_SELECTED_BORDER : track.color;
     ctx.lineWidth = isSelected ? 2 : 1;
@@ -2618,6 +2668,81 @@ export class TimelineRenderer {
       const min = peaks[i * 2];
       const max = peaks[i * 2 + 1];
       const drawX = fullClipStartPx + i;
+      const y1 = centerY - max * amplitude;
+      const y2 = centerY - min * amplitude;
+      ctx.fillRect(drawX, y1, 1, Math.max(1, y2 - y1));
+    }
+
+    ctx.globalAlpha = 1;
+  }
+
+  /**
+   * Render the "extended" waveform data for a clip in the crossfade overlap zone.
+   * For the outgoing clip: draws buffer data starting at sourceEnd, extending rightward.
+   * For the incoming clip: draws buffer data ending at sourceStart, extending leftward.
+   *
+   * Renders at reduced alpha (0.45) so both clips' waveforms are visible in the overlap zone.
+   * Not clipped to the clip boundary — draws into the adjacent clip's territory.
+   */
+  private renderCrossfadeOverlapWaveform(
+    track: Track,
+    bufferId: string,
+    laneY: number,
+    laneH: number,
+    overlapStartPx: number,
+    overlapEndPx: number,
+    bufferReadStart: number,
+    channelIndex: number,
+  ): void {
+    if (!this.bufferPool) return;
+
+    // Clamp overlap zone to visible canvas area
+    const visLeft = Math.max(TRACK_HEADER_WIDTH, overlapStartPx);
+    const visRight = Math.min(this.width, overlapEndPx);
+    if (visRight <= visLeft) return;
+
+    const pooled = this.bufferPool.getBuffer(bufferId);
+    if (!pooled) return;
+    const channelData = pooled.buffer.getChannelData(0);
+
+    // Waveform draw area (same padding as renderClipWaveform)
+    const nameSpace = laneH > 30 ? 16 : 2;
+    const waveTop = laneY + nameSpace;
+    const waveHeight = laneH - nameSpace - 2;
+    if (waveHeight <= 2) return;
+    const centerY = waveTop + waveHeight / 2;
+    const amplitude = waveHeight / 2;
+
+    const waveColor = channelIndex < CHANNEL_COLORS.length
+      ? CHANNEL_COLORS[channelIndex]
+      : track.color;
+
+    const ctx = this.ctx;
+    ctx.fillStyle = waveColor;
+    ctx.globalAlpha = 0.45;
+
+    const overlapWidthPx = Math.ceil(overlapEndPx - overlapStartPx);
+
+    for (let i = 0; i < overlapWidthPx; i++) {
+      const drawX = overlapStartPx + i;
+      if (drawX < TRACK_HEADER_WIDTH || drawX >= this.width) continue;
+
+      const srcStart = bufferReadStart + Math.floor(i * this.samplesPerPixel);
+      const srcEnd = bufferReadStart + Math.floor((i + 1) * this.samplesPerPixel);
+
+      // Skip if buffer has no data in this range
+      if (srcEnd <= 0 || srcStart >= channelData.length) continue;
+
+      let min = 0;
+      let max = 0;
+      const readFrom = Math.max(0, srcStart);
+      const readTo = Math.min(channelData.length, srcEnd);
+      for (let j = readFrom; j < readTo; j++) {
+        const v = channelData[j];
+        if (v < min) min = v;
+        if (v > max) max = v;
+      }
+
       const y1 = centerY - max * amplitude;
       const y2 = centerY - min * amplitude;
       ctx.fillRect(drawX, y1, 1, Math.max(1, y2 - y1));
