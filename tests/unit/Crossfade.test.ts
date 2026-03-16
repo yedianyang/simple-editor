@@ -130,7 +130,7 @@ describe('applyCrossfadeToClips', () => {
   function makeClip(id: string, timelineOffset: number, duration: number): Clip {
     return {
       id,
-      bufferId: 'buf',
+      bufferIds: ['buf'],
       name: 'test',
       timelineOffset,
       sourceStart: 0,

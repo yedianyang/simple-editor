@@ -40,10 +40,10 @@ function makeTrack(id: string, clips: Clip[] = [], overrides: Partial<Track> = {
   };
 }
 
-function makeClip(bufferId: string, overrides: Partial<Clip> = {}): Clip {
+function makeClip(bufferIdArg: string, overrides: Partial<Clip> = {}): Clip {
   return {
     id: `clip_${Math.random().toString(36).slice(2, 8)}`,
-    bufferId,
+    bufferIds: [bufferIdArg],
     name: 'Test Clip',
     timelineOffset: 0,
     sourceStart: 0,

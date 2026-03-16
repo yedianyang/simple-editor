@@ -44,7 +44,7 @@ describe('TimelineModel.importAudioToNewTrack', () => {
     expect(tracks[0].clips).toHaveLength(1);
     expect(tracks[0].clips[0].timelineOffset).toBe(0);
     expect(tracks[0].clips[0].duration).toBe(96000);
-    expect(tracks[0].clips[0].bufferId).toBe('buf-1');
+    expect(tracks[0].clips[0].bufferIds).toEqual(['buf-1']);
   });
 
   it('should place clip at the playhead position (sample offset)', () => {
@@ -65,7 +65,7 @@ describe('TimelineModel.importAudioToNewTrack', () => {
 
   // ==================== Stereo file ====================
 
-  it('should create a stereo track for a stereo file', () => {
+  it('should create a stereo track for a stereo file with a single clip', () => {
     const result = model.importAudioToNewTrack(
       ['buf-L', 'buf-R'],
       'stereo-ambience.wav',
@@ -76,23 +76,22 @@ describe('TimelineModel.importAudioToNewTrack', () => {
     );
 
     expect(result.newTrackIds).toHaveLength(1);
-    expect(result.clipIds).toHaveLength(2);
+    // New model: 1 clip with bufferIds = ['buf-L', 'buf-R']
+    expect(result.clipIds).toHaveLength(1);
 
     const tracks = model.timeline.tracks;
     expect(tracks).toHaveLength(1);
     expect(tracks[0].channels).toBe(2);
-    expect(tracks[0].clips).toHaveLength(2);
-    // Clips should have subChannel set
-    expect(tracks[0].clips[0].subChannel).toBe(0);
-    expect(tracks[0].clips[1].subChannel).toBe(1);
-    // Clips should share the same groupId
-    expect(tracks[0].clips[0].groupId).toBeDefined();
-    expect(tracks[0].clips[0].groupId).toBe(tracks[0].clips[1].groupId);
+    expect(tracks[0].clips).toHaveLength(1);
+    // Single clip holds both channel buffers
+    expect(tracks[0].clips[0].bufferIds).toEqual(['buf-L', 'buf-R']);
+    // Clip name is just the file name (no channel suffix)
+    expect(tracks[0].clips[0].name).toBe('stereo-ambience.wav');
   });
 
   // ==================== Quad file ====================
 
-  it('should create a quad track for a 4-channel file', () => {
+  it('should create a quad track for a 4-channel file with a single clip', () => {
     const result = model.importAudioToNewTrack(
       ['buf-0', 'buf-1', 'buf-2', 'buf-3'],
       'quad-ambience.wav',
@@ -103,19 +102,18 @@ describe('TimelineModel.importAudioToNewTrack', () => {
     );
 
     expect(result.newTrackIds).toHaveLength(1);
-    expect(result.clipIds).toHaveLength(4);
+    // New model: 1 clip with bufferIds = ['buf-0', 'buf-1', 'buf-2', 'buf-3']
+    expect(result.clipIds).toHaveLength(1);
 
     const track = model.timeline.tracks[0];
     expect(track.channels).toBe(4);
-    expect(track.clips).toHaveLength(4);
-    for (let i = 0; i < 4; i++) {
-      expect(track.clips[i].subChannel).toBe(i);
-    }
+    expect(track.clips).toHaveLength(1);
+    expect(track.clips[0].bufferIds).toEqual(['buf-0', 'buf-1', 'buf-2', 'buf-3']);
   });
 
   // ==================== 5.1 surround file ====================
 
-  it('should create a 5.1 track for a 6-channel file', () => {
+  it('should create a 5.1 track for a 6-channel file with a single clip', () => {
     const bufferIds = ['b0', 'b1', 'b2', 'b3', 'b4', 'b5'];
     const result = model.importAudioToNewTrack(
       bufferIds,
@@ -127,15 +125,18 @@ describe('TimelineModel.importAudioToNewTrack', () => {
     );
 
     expect(result.newTrackIds).toHaveLength(1);
-    expect(result.clipIds).toHaveLength(6);
+    // New model: 1 clip with all 6 bufferIds
+    expect(result.clipIds).toHaveLength(1);
 
     const track = model.timeline.tracks[0];
     expect(track.channels).toBe(6);
+    expect(track.clips).toHaveLength(1);
+    expect(track.clips[0].bufferIds).toEqual(bufferIds);
   });
 
   // ==================== 5-channel file ====================
 
-  it('should create a 5-channel track for a 5-channel file', () => {
+  it('should create a 5-channel track for a 5-channel file with a single clip', () => {
     const bufferIds = ['b0', 'b1', 'b2', 'b3', 'b4'];
     const result = model.importAudioToNewTrack(
       bufferIds,
@@ -147,10 +148,13 @@ describe('TimelineModel.importAudioToNewTrack', () => {
     );
 
     expect(result.newTrackIds).toHaveLength(1);
-    expect(result.clipIds).toHaveLength(5);
+    // New model: 1 clip with all 5 bufferIds
+    expect(result.clipIds).toHaveLength(1);
 
     const track = model.timeline.tracks[0];
     expect(track.channels).toBe(5);
+    expect(track.clips).toHaveLength(1);
+    expect(track.clips[0].bufferIds).toEqual(bufferIds);
   });
 
   // ==================== Unsupported channel count (3 or 7+) ====================

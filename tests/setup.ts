@@ -403,6 +403,32 @@ class MockOfflineAudioContext {
 
       const { gains, panNode, mergerInputIndex } = this._walkChain(source);
 
+      const srcChannels = source.buffer.numberOfChannels;
+
+      // For multi-channel source buffers: write each channel directly to the corresponding
+      // output channel (after applying gain). This models multi-channel clip routing where
+      // each channel of the combined buffer maps 1:1 to the output channel.
+      if (srcChannels > 1 && mergerInputIndex == null) {
+        for (let i = 0; i < durationSamples; i++) {
+          const outIdx = startSample + i;
+          if (outIdx < 0 || outIdx >= this.length) continue;
+          const srcIdx = offsetSample + i;
+          if (srcIdx < 0 || srcIdx >= source.buffer.length) continue;
+
+          const time = outIdx / this.sampleRate;
+          let gainMult = 1.0;
+          for (const gn of gains) {
+            gainMult *= gn.gain._evaluate(time);
+          }
+
+          for (let ch = 0; ch < Math.min(srcChannels, this.numberOfChannels); ch++) {
+            let sample = source.buffer.getChannelData(ch)[srcIdx];
+            output.getChannelData(ch)[outIdx] += sample * gainMult;
+          }
+        }
+        continue;
+      }
+
       for (let i = 0; i < durationSamples; i++) {
         const outIdx = startSample + i;
         if (outIdx < 0 || outIdx >= this.length) continue;

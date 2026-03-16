@@ -9,13 +9,13 @@ import { TimelineModel } from '../../src/core/TimelineModel';
 
 // ==================== DenoiseClipCommand ====================
 
-function createModelWithClip(bufferId: string) {
+function createModelWithClip(bufferIdVal: string) {
   const model = new TimelineModel();
   model.addTrack('Track 1', '#3b82f6', 0);
   const track = model.timeline.tracks[0];
   model.addClip(track.id, {
     id: 'clip-1',
-    bufferId,
+    bufferIds: [bufferIdVal],
     name: 'test-clip',
     timelineOffset: 0,
     sourceStart: 0,
@@ -30,17 +30,17 @@ function createModelWithClip(bufferId: string) {
 }
 
 describe('DenoiseClipCommand', () => {
-  it('should swap bufferId to denoised on execute', () => {
+  it('should swap bufferIds to denoised on execute', () => {
     const { model, trackId } = createModelWithClip('buf-original');
     const cmd = new DenoiseClipCommand(model, trackId, 'clip-1', 'buf-original', 'buf-denoised');
 
     cmd.execute();
 
     const clip = model.timeline.tracks[0].clips[0];
-    expect(clip.bufferId).toBe('buf-denoised');
+    expect(clip.bufferIds[0]).toBe('buf-denoised');
   });
 
-  it('should restore original bufferId on undo', () => {
+  it('should restore original bufferIds on undo', () => {
     const { model, trackId } = createModelWithClip('buf-original');
     const cmd = new DenoiseClipCommand(model, trackId, 'clip-1', 'buf-original', 'buf-denoised');
 
@@ -48,7 +48,7 @@ describe('DenoiseClipCommand', () => {
     cmd.undo();
 
     const clip = model.timeline.tracks[0].clips[0];
-    expect(clip.bufferId).toBe('buf-original');
+    expect(clip.bufferIds[0]).toBe('buf-original');
   });
 
   it('should swap back to denoised on redo (execute again)', () => {
@@ -60,7 +60,7 @@ describe('DenoiseClipCommand', () => {
     cmd.execute(); // redo
 
     const clip = model.timeline.tracks[0].clips[0];
-    expect(clip.bufferId).toBe('buf-denoised');
+    expect(clip.bufferIds[0]).toBe('buf-denoised');
   });
 
   it('should have correct description', () => {

@@ -47,10 +47,10 @@ function makeTrack(id: string, clips: Clip[] = [], overrides: Partial<Track> = {
   };
 }
 
-function makeClip(bufferId: string, overrides: Partial<Clip> = {}): Clip {
+function makeClip(bufferIdArg: string, overrides: Partial<Clip> = {}): Clip {
   return {
     id: `clip_${Math.random().toString(36).slice(2, 8)}`,
-    bufferId,
+    bufferIds: [bufferIdArg],
     name: 'Test Clip',
     timelineOffset: 0,
     sourceStart: 0,
@@ -384,12 +384,12 @@ describe('renderTimelineOffline', () => {
 
   // ---------- Multi-channel (stereo) output ----------
 
-  it('produces stereo output when a track has 2 channels via subChannel clips', async () => {
+  it('produces stereo output when a track has a single stereo clip with bufferIds', async () => {
     const bidL = addConstBuffer(pool, 0.4, 100);
     const bidR = addConstBuffer(pool, 0.6, 100);
-    const clipL = makeClip(bidL, { sourceEnd: 100, duration: 100, subChannel: 0 });
-    const clipR = makeClip(bidR, { sourceEnd: 100, duration: 100, subChannel: 1 });
-    const track = makeTrack('t1', [clipL, clipR], { channels: 2 });
+    // Single stereo clip: bufferIds = [L, R]
+    const stereoClip = makeClip(bidL, { sourceEnd: 100, duration: 100, bufferIds: [bidL, bidR] });
+    const track = makeTrack('t1', [stereoClip], { channels: 2 });
     const tl = makeTimeline({ totalLength: 100, tracks: [track] });
 
     const result = await renderTimelineOffline(tl, pool);
@@ -440,16 +440,16 @@ describe('renderTimelineOffline', () => {
     expect(result.duration).toBe(0);
   });
 
-  // ---------- Mono clips on stereo output (no subChannel) ----------
+  // ---------- Stereo clip on stereo output + mono track ----------
 
-  it('maps mono clips without subChannel to all output channels', async () => {
+  it('stereo clip on stereo track + mono clip on mono track renders correctly', async () => {
     const bidL = addConstBuffer(pool, 0.4, 100);
     const bidR = addConstBuffer(pool, 0.6, 100);
-    const clipL = makeClip(bidL, { sourceEnd: 100, duration: 100, subChannel: 0 });
-    const clipR = makeClip(bidR, { sourceEnd: 100, duration: 100, subChannel: 1 });
-    const stereoTrack = makeTrack('t1', [clipL, clipR], { channels: 2 });
+    // Single stereo clip with bufferIds [L, R]
+    const stereoClip = makeClip(bidL, { sourceEnd: 100, duration: 100, bufferIds: [bidL, bidR] });
+    const stereoTrack = makeTrack('t1', [stereoClip], { channels: 2 });
 
-    // Also a mono track without subChannel — should be summed to both channels
+    // Also a mono track — should be summed to both channels
     const bidMono = addConstBuffer(pool, 0.1, 100);
     const monoClip = makeClip(bidMono, { sourceEnd: 100, duration: 100 });
     const monoTrack = makeTrack('t2', [monoClip], { channels: 1 });
