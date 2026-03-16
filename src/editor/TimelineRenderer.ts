@@ -2464,6 +2464,27 @@ export class TimelineRenderer {
     ctx.roundRect(visLeft, clipY, visWidth, clipH, CLIP_BORDER_RADIUS);
     ctx.stroke();
 
+    // -- Incompatible-drop overlay (red tint when dragging to incompatible track) --
+    if (
+      this.drag.mode === 'clipMove' &&
+      clip.id === this.drag.clipId &&
+      this.dropTargetIncompatible
+    ) {
+      ctx.save();
+      ctx.globalAlpha = 0.45;
+      ctx.fillStyle = '#ff3b30';
+      ctx.beginPath();
+      ctx.roundRect(visLeft, clipY, visWidth, clipH, CLIP_BORDER_RADIUS);
+      ctx.fill();
+      ctx.restore();
+      // Red border to reinforce rejection
+      ctx.strokeStyle = '#ff3b30';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.roundRect(visLeft, clipY, visWidth, clipH, CLIP_BORDER_RADIUS);
+      ctx.stroke();
+    }
+
     // -- Muted overlay --
     if (isMuted) {
       ctx.save();
