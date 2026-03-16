@@ -721,7 +721,7 @@ export class ReverseClipCommand implements TimelineCommand {
   execute(): void {
     const clip = this.findClip();
     if (clip) {
-      clip.bufferId = this.reversedBufferId;
+      clip.bufferIds = [this.reversedBufferId];
       clip.reversed = true;
     }
   }
@@ -729,7 +729,7 @@ export class ReverseClipCommand implements TimelineCommand {
   undo(): void {
     const clip = this.findClip();
     if (clip) {
-      clip.bufferId = this.originalBufferId;
+      clip.bufferIds = [this.originalBufferId];
       clip.reversed = false;
     }
   }
@@ -760,14 +760,14 @@ export class NormalizeClipCommand implements TimelineCommand {
   execute(): void {
     const clip = this.findClip();
     if (clip) {
-      clip.bufferId = this.normalizedBufferId;
+      clip.bufferIds = [this.normalizedBufferId];
     }
   }
 
   undo(): void {
     const clip = this.findClip();
     if (clip) {
-      clip.bufferId = this.originalBufferId;
+      clip.bufferIds = [this.originalBufferId];
     }
   }
 
@@ -794,12 +794,12 @@ export class DenoiseClipCommand implements TimelineCommand {
 
   execute(): void {
     const clip = this.findClip();
-    if (clip) clip.bufferId = this.denoisedBufferId;
+    if (clip) clip.bufferIds = [this.denoisedBufferId];
   }
 
   undo(): void {
     const clip = this.findClip();
-    if (clip) clip.bufferId = this.originalBufferId;
+    if (clip) clip.bufferIds = [this.originalBufferId];
   }
 
   private findClip(): Clip | undefined {
