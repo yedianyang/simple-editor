@@ -9,10 +9,6 @@ export interface OverlapResult {
 let clipIdCounter = 0;
 let trackIdCounter = 0;
 
-/** Generate a unique group ID for linking related clips (e.g. multi-channel sub-channels). */
-export function generateGroupId(): string {
-  return `g-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
 
 function genClipId(): string {
   clipIdCounter++;
@@ -191,8 +187,9 @@ export class TimelineModel {
 
   /**
    * Import a multi-channel file.
-   * For supported channel counts (1,2,4,6): creates 1 multi-channel track with N clips (each with subChannel).
-   * For unsupported channel counts: falls back to N mono tracks.
+   * For supported channel counts (1,2,4,5,6): creates 1 multi-channel track with a single clip
+   * whose bufferIds contains all channel buffer IDs.
+   * For unsupported channel counts (3, 7+): falls back to N mono tracks, each with a 1-element bufferIds.
    */
   importMultiChannelFile(
     bufferIds: string[],
@@ -204,7 +201,7 @@ export class TimelineModel {
     const names = CHANNEL_NAMES[numChannels] ??
       Array.from({ length: numChannels }, (_, i) => `Ch ${i + 1}`);
 
-    // Supported multi-channel counts -> single multi-ch track
+    // Supported multi-channel counts -> single multi-ch track with one clip
     if (numChannels === 1 || numChannels === 2 || numChannels === 4 || numChannels === 5 || numChannels === 6) {
       const chCount = numChannels as TrackChannelCount;
       const track = this.addTrack(
@@ -214,27 +211,20 @@ export class TimelineModel {
         chCount,
       );
 
-      // Multi-channel files share a groupId so sub-channel clips stay linked
-      const groupId = numChannels > 1 ? generateGroupId() : undefined;
-
-      for (let i = 0; i < numChannels; i++) {
-        const clip: Clip = {
-          id: genClipId(),
-          bufferId: bufferIds[i],
-          name: `${fileName} — ${names[i]}`,
-          timelineOffset: 0,
-          sourceStart: 0,
-          sourceEnd: numSamples,
-          duration: numSamples,
-          gainDb: 0,
-          fadeInSamples: 0,
-          fadeOutSamples: 0,
-          muted: false,
-          subChannel: i,
-          groupId,
-        };
-        track.clips.push(clip);
-      }
+      const clip: Clip = {
+        id: genClipId(),
+        bufferIds: bufferIds.slice(),
+        name: fileName,
+        timelineOffset: 0,
+        sourceStart: 0,
+        sourceEnd: numSamples,
+        duration: numSamples,
+        gainDb: 0,
+        fadeInSamples: 0,
+        fadeOutSamples: 0,
+        muted: false,
+      };
+      track.clips.push(clip);
     } else {
       // Unsupported channel count -- fall back to N mono tracks
       for (let i = 0; i < numChannels; i++) {
@@ -245,7 +235,7 @@ export class TimelineModel {
         );
         const clip: Clip = {
           id: genClipId(),
-          bufferId: bufferIds[i],
+          bufferIds: [bufferIds[i]],
           name: `${fileName} — ${names[i]}`,
           timelineOffset: 0,
           sourceStart: 0,
@@ -267,8 +257,9 @@ export class TimelineModel {
   /**
    * Import a multi-channel file at a specific track + time position.
    * Unlike importMultiChannelFile(), this does NOT clear existing tracks.
-   * For supported multi-ch counts (2,4,5,6): creates 1 multi-ch track with N sub-channel clips.
-   * For mono or unsupported counts: one track per channel (existing behavior).
+   * For supported multi-ch counts (2,4,5,6): creates (or reuses) 1 multi-ch track with a single
+   * clip whose bufferIds contains all channel buffer IDs.
+   * For mono or unsupported counts: one track per channel, each with a 1-element bufferIds.
    * Returns the IDs of created clips and newly created tracks (for undo).
    */
   importFileAtPosition(
@@ -297,30 +288,23 @@ export class TimelineModel {
         newTrackIds.push(track.id);
       }
 
-      // Multi-channel files share a groupId so sub-channel clips stay linked
-      const groupId = generateGroupId();
-
-      for (let i = 0; i < numChannels; i++) {
-        const clip: Clip = {
-          id: genClipId(),
-          bufferId: bufferIds[i],
-          name: `${fileName} — ${names[i]}`,
-          timelineOffset: sampleOffset,
-          sourceStart: 0,
-          sourceEnd: numSamples,
-          duration: numSamples,
-          gainDb: 0,
-          fadeInSamples: 0,
-          fadeOutSamples: 0,
-          muted: false,
-          subChannel: i,
-          groupId,
-        };
-        track.clips.push(clip);
-        clipIds.push(clip.id);
-      }
+      const clip: Clip = {
+        id: genClipId(),
+        bufferIds: bufferIds.slice(),
+        name: fileName,
+        timelineOffset: sampleOffset,
+        sourceStart: 0,
+        sourceEnd: numSamples,
+        duration: numSamples,
+        gainDb: 0,
+        fadeInSamples: 0,
+        fadeOutSamples: 0,
+        muted: false,
+      };
+      track.clips.push(clip);
+      clipIds.push(clip.id);
     } else {
-      // Mono or unsupported -- one track per channel (existing behavior)
+      // Mono or unsupported -- one track per channel, each clip has 1-element bufferIds
       for (let i = 0; i < numChannels; i++) {
         const trackIndex = targetTrackIndex + i;
         let track: Track;
@@ -336,7 +320,7 @@ export class TimelineModel {
         }
         const clip: Clip = {
           id: genClipId(),
-          bufferId: bufferIds[i],
+          bufferIds: [bufferIds[i]],
           name: `${fileName} — ${names[i]}`,
           timelineOffset: sampleOffset,
           sourceStart: 0,
@@ -359,8 +343,9 @@ export class TimelineModel {
   /**
    * Import audio to a NEW track (Cmd+O / import-to-timeline workflow).
    * ALWAYS creates new tracks — never reuses existing ones.
-   * For supported multi-ch counts (1,2,4,5,6): creates 1 multi-ch track.
-   * For unsupported counts (3,7+): creates N mono tracks.
+   * For supported multi-ch counts (1,2,4,5,6): creates 1 multi-ch track with a single clip
+   * whose bufferIds contains all channel buffer IDs.
+   * For unsupported counts (3,7+): creates N mono tracks, each with a 1-element bufferIds clip.
    * Inserts the new track(s) AFTER insertAfterIndex (-1 = append at end).
    * Returns the IDs of created clips and newly created tracks (for undo).
    */
@@ -383,7 +368,7 @@ export class TimelineModel {
       ? insertAfterIndex + 1
       : this.timeline.tracks.length;
 
-    // Supported multi-channel counts -> single multi-ch track
+    // Supported multi-channel counts -> single multi-ch track with one clip
     if (numChannels === 1 || numChannels === 2 || numChannels === 4 || numChannels === 5 || numChannels === 6) {
       const chCount = numChannels as TrackChannelCount;
       const track: Track = {
@@ -401,28 +386,21 @@ export class TimelineModel {
         height: 80,
       };
 
-      // Multi-channel files share a groupId so sub-channel clips stay linked
-      const groupId = numChannels > 1 ? generateGroupId() : undefined;
-
-      for (let i = 0; i < numChannels; i++) {
-        const clip: Clip = {
-          id: genClipId(),
-          bufferId: bufferIds[i],
-          name: `${fileName} — ${names[i]}`,
-          timelineOffset: sampleOffset,
-          sourceStart: 0,
-          sourceEnd: numSamples,
-          duration: numSamples,
-          gainDb: 0,
-          fadeInSamples: 0,
-          fadeOutSamples: 0,
-          muted: false,
-          subChannel: numChannels > 1 ? i : undefined,
-          groupId,
-        };
-        track.clips.push(clip);
-        clipIds.push(clip.id);
-      }
+      const clip: Clip = {
+        id: genClipId(),
+        bufferIds: bufferIds.slice(),
+        name: fileName,
+        timelineOffset: sampleOffset,
+        sourceStart: 0,
+        sourceEnd: numSamples,
+        duration: numSamples,
+        gainDb: 0,
+        fadeInSamples: 0,
+        fadeOutSamples: 0,
+        muted: false,
+      };
+      track.clips.push(clip);
+      clipIds.push(clip.id);
 
       this.insertTrackAt(track, insertAt);
       newTrackIds.push(track.id);
@@ -445,7 +423,7 @@ export class TimelineModel {
         };
         const clip: Clip = {
           id: genClipId(),
-          bufferId: bufferIds[i],
+          bufferIds: [bufferIds[i]],
           name: `${fileName} — ${names[i]}`,
           timelineOffset: sampleOffset,
           sourceStart: 0,
@@ -544,7 +522,7 @@ export class TimelineModel {
     const movedEnd = moved.timelineOffset + moved.duration;
 
     // Snapshot the clip list — we'll modify the array during iteration
-    const others = track.clips.filter(c => c.id !== protectedClipId && !(moved.groupId && c.groupId === moved.groupId));
+    const others = track.clips.filter(c => c.id !== protectedClipId);
 
     for (const existing of others) {
       const existStart = existing.timelineOffset;
@@ -705,36 +683,9 @@ export class TimelineModel {
     if (!track) return;
     const clip = track.clips.find(c => c.id === clipId);
     if (!clip) return;
-    clip.bufferId = newBufferId;
+    // For single-channel clips, replace the first buffer ID with the reversed version
+    clip.bufferIds = [newBufferId];
     clip.reversed = !clip.reversed;
-  }
-
-  /**
-   * Get sibling clips within the same track that share the same groupId.
-   * Returns clips that belong to the same group, excluding the queried clip itself.
-   */
-  getSiblingClips(trackId: string, clipId: string): Clip[] {
-    const track = this.findTrack(trackId);
-    if (!track) return [];
-    const clip = track.clips.find(c => c.id === clipId);
-    if (!clip?.groupId) return [];
-    return track.clips.filter(c => c.groupId === clip.groupId && c.id !== clipId);
-  }
-
-  /**
-   * Get all clips across all tracks that share a given groupId.
-   * Returns track + clip pairs for cross-track group operations.
-   */
-  getAllGroupClips(groupId: string): { track: Track; clip: Clip }[] {
-    const results: { track: Track; clip: Clip }[] = [];
-    for (const track of this.timeline.tracks) {
-      for (const clip of track.clips) {
-        if (clip.groupId === groupId) {
-          results.push({ track, clip });
-        }
-      }
-    }
-    return results;
   }
 
   private recalcTotalLength(): void {
