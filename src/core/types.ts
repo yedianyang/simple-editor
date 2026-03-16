@@ -274,7 +274,8 @@ export interface PooledBuffer {
 
 export interface Clip {
   id: string;
-  bufferId: string;
+  /** One buffer ID per channel. Single-channel clips have length 1; stereo have length 2, etc. */
+  bufferIds: string[];
   name: string;
   timelineOffset: number;
   sourceStart: number;
@@ -287,8 +288,6 @@ export interface Clip {
   fadeOutCurve?: number;  // -1 to 1, default 0 (linear); pow(1-t, pow(2,-curve))
   muted: boolean;
   reversed?: boolean;
-  subChannel?: number;
-  groupId?: string;
   crossfadeInSamples?: number;   // overlap with previous clip (incoming crossfade)
   crossfadeOutSamples?: number;  // overlap with next clip (outgoing crossfade)
   crossfadeType?: 'equalPower' | 'equalGain';  // default: equalPower
