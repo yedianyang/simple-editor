@@ -726,6 +726,21 @@ export class App {
       }
       this.timelineRenderer?.render();
     };
+
+    // ---- Crossfade callbacks ----
+    this.timelineRenderer.onCrossfadeDragEnd = (trackId, clipAId, clipBId, prevOut, prevIn, newOut, newIn, type) => {
+      if (prevOut !== newOut || prevIn !== newIn) {
+        this.timelineUndoManager.pushExecuted(
+          new CrossfadeCommand(this.timelineModel, trackId, clipAId, clipBId, prevOut, prevIn, newOut, newIn, type),
+        );
+        this.invalidatePlayback();
+      }
+    };
+
+    this.timelineRenderer.onCrossfadeTypeChange = (_trackId, _clipAId, _clipBId, _type) => {
+      this.invalidatePlayback();
+      this.timelineRenderer?.render();
+    };
   }
 
   setupEventListeners(): void {

@@ -46,7 +46,7 @@ const CUE_FLAG_HEIGHT = 14;
 const CUE_FLAG_WIDTH = 8;
 
 type DragMode = 'none' | 'selection' | 'clipMove' | 'trimStart' | 'trimEnd' | 'marquee'
-  | 'clipGain' | 'fadeIn' | 'fadeOut' | 'cuePoint' | 'trackResize';
+  | 'clipGain' | 'fadeIn' | 'fadeOut' | 'cuePoint' | 'trackResize' | 'crossfade';
 
 interface DragState {
   mode: DragMode;
@@ -76,6 +76,8 @@ interface DragState {
   resizeTrackIndex?: number;
   /** Original track height at drag start (for trackResize mode). */
   resizeOriginalHeight?: number;
+  /** ID of the second clip in a crossfade drag (clipB). */
+  crossfadeClipBId?: string;
 }
 
 interface ClipPeakEntry {
@@ -215,6 +217,12 @@ export class TimelineRenderer {
 
   /** Called when a file is dropped from the file browser onto the timeline. */
   onExternalFileDrop: ((filePath: string, trackIndex: number, sampleOffset: number) => void) | null = null;
+
+  /** Called when a crossfade drag ends with final values for undo/redo. */
+  onCrossfadeDragEnd: ((trackId: string, clipAId: string, clipBId: string, prevOut: number, prevIn: number, newOut: number, newIn: number, type: 'equalPower' | 'equalGain') => void) | null = null;
+
+  /** Called when the user double-clicks a crossfade zone to toggle the type. */
+  onCrossfadeTypeChange: ((trackId: string, clipAId: string, clipBId: string, type: 'equalPower' | 'equalGain') => void) | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -432,6 +440,21 @@ export class TimelineRenderer {
   private onDoubleClick(e: MouseEvent): void {
     if (!this.timeline) return;
     const { x, y } = this.clientToLocal(e);
+
+    // Check for crossfade zone double-click in content area → toggle type
+    if (x >= TRACK_HEADER_WIDTH && y >= RULER_HEIGHT) {
+      const xfHit = this.findAdjacentClipPair(x, y);
+      if (xfHit && (xfHit.clipA.crossfadeOutSamples ?? 0) > 0) {
+        const currentType = xfHit.clipA.crossfadeType ?? 'equalPower';
+        const newType: 'equalPower' | 'equalGain' = currentType === 'equalPower' ? 'equalGain' : 'equalPower';
+        xfHit.clipA.crossfadeType = newType;
+        xfHit.clipB.crossfadeType = newType;
+        this.onCrossfadeTypeChange?.(xfHit.track.id, xfHit.clipA.id, xfHit.clipB.id, newType);
+        this.render();
+        return;
+      }
+    }
+
     // Only respond in track header name area
     if (x >= TRACK_HEADER_WIDTH || y < RULER_HEIGHT) return;
     const trackIdx = this.yToTrackIndex(y);
@@ -772,6 +795,50 @@ export class TimelineRenderer {
     return null;
   }
 
+  /**
+   * Find a pair of adjacent clips (touching or very close) near the given canvas coordinate.
+   * Returns the pair and the sample position of their junction, or null.
+   */
+  private findAdjacentClipPair(x: number, y: number): {
+    clipA: Clip; clipB: Clip; track: Track; overlapCenter: number;
+  } | null {
+    if (!this.timeline || x < TRACK_HEADER_WIDTH) return null;
+    const trackIndex = this.yToTrackIndex(y);
+    if (trackIndex < 0 || trackIndex >= this.timeline.tracks.length) return null;
+    const track = this.timeline.tracks[trackIndex];
+
+    // Sort clips by timeline offset
+    const sorted = [...track.clips].sort((a, b) => a.timelineOffset - b.timelineOffset);
+    const GAP_THRESHOLD_PX = 8;
+
+    for (let i = 0; i < sorted.length - 1; i++) {
+      const clipA = sorted[i];
+      const clipB = sorted[i + 1];
+      const endA = clipA.timelineOffset + clipA.duration;
+
+      // Detect existing crossfade zone — check if mouse is inside the crossfade overlay
+      if (clipA.crossfadeOutSamples && clipA.crossfadeOutSamples > 0) {
+        const xfStartPx = this.sampleToPixel(endA - clipA.crossfadeOutSamples);
+        const xfEndPx = this.sampleToPixel(endA);
+        if (x >= xfStartPx && x <= xfEndPx) {
+          return { clipA, clipB, track, overlapCenter: endA };
+        }
+      }
+
+      // Detect adjacency: clips within GAP_THRESHOLD_PX gap and mouse near junction
+      const startB = clipB.timelineOffset;
+      const gap = startB - endA;
+      const gapPx = gap / this.samplesPerPixel;
+      if (Math.abs(gapPx) <= GAP_THRESHOLD_PX) {
+        const junctionPx = this.sampleToPixel(endA);
+        if (Math.abs(x - junctionPx) <= GAP_THRESHOLD_PX) {
+          return { clipA, clipB, track, overlapCenter: endA };
+        }
+      }
+    }
+    return null;
+  }
+
   // ==================================================================
   // Mouse handlers
   // ==================================================================
@@ -891,6 +958,29 @@ export class TimelineRenderer {
       // Select all tracks on ruler click
       this.timeline.selectedTrackIds = this.timeline.tracks.map(t => t.id);
       this.onTrackSelect?.(this.timeline.selectedTrackIds);
+    }
+
+    // 4b. Check for crossfade zone between adjacent clips
+    if (y >= RULER_HEIGHT && x >= TRACK_HEADER_WIDTH) {
+      const xfHit = this.findAdjacentClipPair(x, y);
+      if (xfHit) {
+        this.timeline.selectedClipIds = [xfHit.clipA.id, xfHit.clipB.id];
+        this.drag = {
+          mode: 'crossfade',
+          clipId: xfHit.clipA.id,
+          trackId: xfHit.track.id,
+          grabOffsetSamples: 0,
+          originalValue: xfHit.clipA.crossfadeOutSamples ?? 0,
+          originalFadeIn: xfHit.clipB.crossfadeInSamples ?? 0,
+          startMouseX: x,
+          startMouseY: y,
+          hasDragged: false,
+          shiftHeld: false,
+          crossfadeClipBId: xfHit.clipB.id,
+        };
+        this.render();
+        return;
+      }
     }
 
     // 5. Hit-test clips (Smart Tool: zone depends on Y position)
@@ -1079,23 +1169,29 @@ export class TimelineRenderer {
       } else if (x < TRACK_HEADER_WIDTH) {
         this.canvas.style.cursor = 'default';
       } else {
-        const hit = this.hitTestClip(x, y);
-        if (hit) {
-          if (hit.zone === 'clipGain') {
-            this.canvas.style.cursor = 'ns-resize';
-          } else if (hit.zone === 'fadeIn' || hit.zone === 'fadeOut') {
-            this.canvas.style.cursor = 'col-resize';
-          } else if (hit.zone === 'trimStart' || hit.zone === 'trimEnd') {
-            this.canvas.style.cursor = 'col-resize';
-          } else if (hit.zone === 'move') {
-            this.canvas.style.cursor = 'grab';
+        // Check for crossfade zone first (higher priority than clip body)
+        const xfHover = this.findAdjacentClipPair(x, y);
+        if (xfHover) {
+          this.canvas.style.cursor = 'col-resize';
+        } else {
+          const hit = this.hitTestClip(x, y);
+          if (hit) {
+            if (hit.zone === 'clipGain') {
+              this.canvas.style.cursor = 'ns-resize';
+            } else if (hit.zone === 'fadeIn' || hit.zone === 'fadeOut') {
+              this.canvas.style.cursor = 'col-resize';
+            } else if (hit.zone === 'trimStart' || hit.zone === 'trimEnd') {
+              this.canvas.style.cursor = 'col-resize';
+            } else if (hit.zone === 'move') {
+              this.canvas.style.cursor = 'grab';
+            } else {
+              // 'select' — upper half
+              this.canvas.style.cursor = 'text';
+            }
           } else {
-            // 'select' — upper half
+            // Empty space → selection tool
             this.canvas.style.cursor = 'text';
           }
-        } else {
-          // Empty space → selection tool
-          this.canvas.style.cursor = 'text';
         }
       }
       return;
@@ -1238,6 +1334,30 @@ export class TimelineRenderer {
       return;
     }
 
+    if (this.drag.mode === 'crossfade') {
+      this.canvas.style.cursor = 'col-resize';
+      this.drag.hasDragged = true;
+      const track = this.timeline.tracks.find(t => t.id === this.drag.trackId);
+      const clipA = track?.clips.find(c => c.id === this.drag.clipId);
+      const clipBId = this.drag.crossfadeClipBId;
+      const clipB = track?.clips.find(c => c.id === clipBId);
+      if (clipA && clipB) {
+        const endA = clipA.timelineOffset + clipA.duration;
+        const junctionPx = this.sampleToPixel(endA);
+        const distPx = Math.abs(x - junctionPx);
+        const newXfSamples = Math.max(0, Math.round(distPx * this.samplesPerPixel));
+        const maxXf = Math.min(Math.floor(clipA.duration / 2), Math.floor(clipB.duration / 2));
+        const clamped = Math.min(newXfSamples, maxXf);
+        clipA.crossfadeOutSamples = clamped;
+        clipB.crossfadeInSamples = clamped;
+        const xfType = clipA.crossfadeType ?? 'equalPower';
+        clipA.crossfadeType = xfType;
+        clipB.crossfadeType = xfType;
+        this.render();
+      }
+      return;
+    }
+
     if (this.drag.mode === 'cuePoint') {
       this.canvas.style.cursor = 'grabbing';
       const newSample = Math.max(0, this.pixelToSample(x));
@@ -1319,6 +1439,29 @@ export class TimelineRenderer {
       }
       // Clear marquee visual
       this.marqueeStartX = this.marqueeStartY = this.marqueeEndX = this.marqueeEndY = 0;
+      this.drag.mode = 'none';
+      this.render();
+      return;
+    }
+
+    // Crossfade drag end → fire dedicated callback for undo
+    if (this.drag.mode === 'crossfade') {
+      const track = this.timeline?.tracks.find(t => t.id === this.drag.trackId);
+      const clipA = track?.clips.find(c => c.id === this.drag.clipId);
+      const clipBId = this.drag.crossfadeClipBId;
+      const clipB = track?.clips.find(c => c.id === clipBId);
+      if (clipA && clipB && this.onCrossfadeDragEnd) {
+        this.onCrossfadeDragEnd(
+          this.drag.trackId,
+          clipA.id,
+          clipB.id,
+          this.drag.originalValue,
+          this.drag.originalFadeIn ?? 0,
+          clipA.crossfadeOutSamples ?? 0,
+          clipB.crossfadeInSamples ?? 0,
+          clipA.crossfadeType ?? 'equalPower',
+        );
+      }
       this.drag.mode = 'none';
       this.render();
       return;
@@ -2261,6 +2404,59 @@ export class TimelineRenderer {
         if (px < visLeft || px > visRight) continue;
         const py = clipY + clipH - gain * clipH;
         if (!movedOut) { ctx.moveTo(px, py); movedOut = true; }
+        else ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+    }
+
+    // -- Crossfade overlays (inside clip region, amber tint) --
+    if (clip.crossfadeOutSamples && clip.crossfadeOutSamples > 0) {
+      const xfOutPx = clip.crossfadeOutSamples / this.samplesPerPixel;
+      const xfStartPx = clipEndPx - xfOutPx;
+      ctx.fillStyle = 'rgba(255, 200, 0, 0.15)';
+      ctx.fillRect(
+        Math.max(visLeft, xfStartPx), clipY,
+        Math.min(visRight, clipEndPx) - Math.max(visLeft, xfStartPx), clipH,
+      );
+      ctx.strokeStyle = 'rgba(255, 200, 0, 0.7)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      const xfTypeOut = clip.crossfadeType ?? 'equalPower';
+      const stepsOut = Math.max(2, Math.min(50, Math.round(xfOutPx)));
+      let movedXfOut = false;
+      for (let i = 0; i <= stepsOut; i++) {
+        const t = i / stepsOut;
+        const gain = xfTypeOut === 'equalPower' ? Math.cos(t * Math.PI / 2) : (1 - t);
+        const px = xfStartPx + t * xfOutPx;
+        if (px < visLeft || px > visRight) continue;
+        const py = clipY + clipH - gain * clipH;
+        if (!movedXfOut) { ctx.moveTo(px, py); movedXfOut = true; }
+        else ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+    }
+
+    if (clip.crossfadeInSamples && clip.crossfadeInSamples > 0) {
+      const xfInPx = clip.crossfadeInSamples / this.samplesPerPixel;
+      const xfEndPx = clipStartPx + xfInPx;
+      ctx.fillStyle = 'rgba(255, 200, 0, 0.15)';
+      ctx.fillRect(
+        Math.max(visLeft, clipStartPx), clipY,
+        Math.min(visRight, xfEndPx) - Math.max(visLeft, clipStartPx), clipH,
+      );
+      ctx.strokeStyle = 'rgba(255, 200, 0, 0.7)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      const xfTypeIn = clip.crossfadeType ?? 'equalPower';
+      const stepsIn = Math.max(2, Math.min(50, Math.round(xfInPx)));
+      let movedXfIn = false;
+      for (let i = 0; i <= stepsIn; i++) {
+        const t = i / stepsIn;
+        const gain = xfTypeIn === 'equalPower' ? Math.sin(t * Math.PI / 2) : t;
+        const px = clipStartPx + t * xfInPx;
+        if (px < visLeft || px > visRight) continue;
+        const py = clipY + clipH - gain * clipH;
+        if (!movedXfIn) { ctx.moveTo(px, py); movedXfIn = true; }
         else ctx.lineTo(px, py);
       }
       ctx.stroke();
