@@ -81,7 +81,7 @@ interface DragState {
 }
 
 interface ClipPeakEntry {
-  bufferId: string;
+  bufferId: string; // bufferIds[0] — primary channel used as cache key
   sourceStart: number;
   sourceEnd: number;
   samplesPerPixel: number;
@@ -672,19 +672,6 @@ export class TimelineRenderer {
   }
 
   /**
-   * Get all clip IDs in the same group (same track, same groupId).
-   * Returns just [clipId] if the clip has no groupId.
-   */
-  private getGroupClipIds(trackId: string, clipId: string): string[] {
-    if (!this.timeline) return [clipId];
-    const track = this.timeline.tracks.find(t => t.id === trackId);
-    if (!track) return [clipId];
-    const clip = track.clips.find(c => c.id === clipId);
-    if (!clip?.groupId) return [clipId];
-    return track.clips.filter(c => c.groupId === clip.groupId).map(c => c.id);
-  }
-
-  /**
    * Check if a cross-track channel move is compatible (valid split/merge scenario).
    * sourceChannels → targetChannels at targetIdx:
    * - Same channels: always OK
@@ -989,7 +976,7 @@ export class TimelineRenderer {
       const { clip, track, zone } = hit;
 
       if (zone === 'trimStart') {
-        this.timeline.selectedClipIds = this.getGroupClipIds(track.id, clip.id);
+        this.timeline.selectedClipIds = [clip.id];
         if (this.onClipSelect) this.onClipSelect(clip.id, track.id);
         this.drag = {
           mode: 'trimStart', clipId: clip.id, trackId: track.id,
@@ -1001,7 +988,7 @@ export class TimelineRenderer {
       }
 
       if (zone === 'trimEnd') {
-        this.timeline.selectedClipIds = this.getGroupClipIds(track.id, clip.id);
+        this.timeline.selectedClipIds = [clip.id];
         if (this.onClipSelect) this.onClipSelect(clip.id, track.id);
         this.drag = {
           mode: 'trimEnd', clipId: clip.id, trackId: track.id,
@@ -1026,7 +1013,7 @@ export class TimelineRenderer {
       }
 
       if (zone === 'fadeIn') {
-        this.timeline.selectedClipIds = this.getGroupClipIds(track.id, clip.id);
+        this.timeline.selectedClipIds = [clip.id];
         if (this.onClipSelect) this.onClipSelect(clip.id, track.id);
         this.drag = {
           mode: 'fadeIn', clipId: clip.id, trackId: track.id,
@@ -1039,7 +1026,7 @@ export class TimelineRenderer {
       }
 
       if (zone === 'fadeOut') {
-        this.timeline.selectedClipIds = this.getGroupClipIds(track.id, clip.id);
+        this.timeline.selectedClipIds = [clip.id];
         if (this.onClipSelect) this.onClipSelect(clip.id, track.id);
         this.drag = {
           mode: 'fadeOut', clipId: clip.id, trackId: track.id,
@@ -1052,24 +1039,18 @@ export class TimelineRenderer {
       }
 
       if (zone === 'move') {
-        // Lower half of track → move clip
-        const groupIds = this.getGroupClipIds(track.id, clip.id);
+        // Move clip — single entity selection
         if (e.shiftKey) {
-          // Shift: toggle clip group in selection
-          const allInSelection = groupIds.every(id => this.timeline!.selectedClipIds.includes(id));
-          if (allInSelection) {
-            this.timeline.selectedClipIds = this.timeline.selectedClipIds.filter(id => !groupIds.includes(id));
+          // Shift: toggle clip in selection
+          if (this.timeline.selectedClipIds.includes(clip.id)) {
+            this.timeline.selectedClipIds = this.timeline.selectedClipIds.filter(id => id !== clip.id);
           } else {
-            for (const id of groupIds) {
-              if (!this.timeline.selectedClipIds.includes(id)) {
-                this.timeline.selectedClipIds.push(id);
-              }
-            }
+            this.timeline.selectedClipIds.push(clip.id);
           }
         } else {
           // Without shift: replace selection only if clip not already selected
           if (!this.timeline.selectedClipIds.includes(clip.id)) {
-            this.timeline.selectedClipIds = [...groupIds];
+            this.timeline.selectedClipIds = [clip.id];
           }
         }
         // Auto-add parent track to selectedTrackIds
@@ -1088,21 +1069,15 @@ export class TimelineRenderer {
         return;
       }
 
-      // zone === 'select' → select clip group, then fall through to time selection
-      const selectGroupIds = this.getGroupClipIds(track.id, clip.id);
+      // zone === 'select' → select clip, then fall through to time selection
       if (e.shiftKey) {
-        const allInSelection = selectGroupIds.every(id => this.timeline!.selectedClipIds.includes(id));
-        if (allInSelection) {
-          this.timeline.selectedClipIds = this.timeline.selectedClipIds.filter(id => !selectGroupIds.includes(id));
+        if (this.timeline.selectedClipIds.includes(clip.id)) {
+          this.timeline.selectedClipIds = this.timeline.selectedClipIds.filter(id => id !== clip.id);
         } else {
-          for (const id of selectGroupIds) {
-            if (!this.timeline.selectedClipIds.includes(id)) {
-              this.timeline.selectedClipIds.push(id);
-            }
-          }
+          this.timeline.selectedClipIds.push(clip.id);
         }
       } else {
-        this.timeline.selectedClipIds = [...selectGroupIds];
+        this.timeline.selectedClipIds = [clip.id];
       }
     }
 
@@ -1653,15 +1628,16 @@ export class TimelineRenderer {
   }
 
   /**
-   * Get per-pixel peaks for a clip, with caching.
+   * Get per-pixel peaks for a clip's specific buffer channel, with caching.
    * Uses the buffer-level peak cache for zoomed-out views,
    * or direct sample access when zoomed in past the block size.
    */
-  private getClipPeaks(clip: Clip, widthPx: number): Float32Array {
-    const cached = this.clipPeakCaches.get(clip.id);
+  private getClipPeaksForBuffer(clip: Clip, bufferId: string, widthPx: number): Float32Array {
+    const cacheKey = `${clip.id}:${bufferId}`;
+    const cached = this.clipPeakCaches.get(cacheKey);
     if (
       cached &&
-      cached.bufferId === clip.bufferId &&
+      cached.bufferId === bufferId &&
       cached.sourceStart === clip.sourceStart &&
       cached.sourceEnd === clip.sourceEnd &&
       cached.samplesPerPixel === this.samplesPerPixel &&
@@ -1673,14 +1649,14 @@ export class TimelineRenderer {
     const peaks = new Float32Array(widthPx * 2);
     if (!this.bufferPool) return peaks;
 
-    const pooled = this.bufferPool.getBuffer(clip.bufferId);
+    const pooled = this.bufferPool.getBuffer(bufferId);
     if (!pooled) return peaks;
 
     const clipSourceLength = clip.sourceEnd - clip.sourceStart;
     const samplesPerPeak = clipSourceLength / widthPx;
 
     // Decide whether to use block cache or direct samples
-    const bufferCache = this.getBufferPeakCache(clip.bufferId);
+    const bufferCache = this.getBufferPeakCache(bufferId);
     const useBlockCache = bufferCache && samplesPerPeak >= PEAK_BLOCK_SIZE;
 
     if (useBlockCache && bufferCache) {
@@ -1718,8 +1694,8 @@ export class TimelineRenderer {
       }
     }
 
-    this.clipPeakCaches.set(clip.id, {
-      bufferId: clip.bufferId,
+    this.clipPeakCaches.set(cacheKey, {
+      bufferId,
       sourceStart: clip.sourceStart,
       sourceEnd: clip.sourceEnd,
       samplesPerPixel: this.samplesPerPixel,
@@ -2317,18 +2293,10 @@ export class TimelineRenderer {
     const visWidth = visRight - visLeft;
     if (visWidth <= 0) return;
 
-    // If multi-channel track and clip has a subChannel, render in sub-lane
+    // Clip occupies full track height — one entity regardless of channel count
     const trackH = track.height;
-    let clipY: number;
-    let clipH: number;
-    if (track.channels > 1 && clip.subChannel != null) {
-      const laneH = trackH / track.channels;
-      clipY = trackTopY + clip.subChannel * laneH + 2;
-      clipH = laneH - 4;
-    } else {
-      clipY = trackTopY + 4;
-      clipH = trackH - 8;
-    }
+    const clipY = trackTopY + 4;
+    const clipH = trackH - 8;
     const isSelected = this.timeline!.selectedClipIds.includes(clip.id);
     const isMuted = clip.muted || track.mute;
 
@@ -2341,8 +2309,33 @@ export class TimelineRenderer {
     ctx.fillStyle = isMuted ? '#2a2a2a' : this.hexToRgba(track.color, 0.2);
     ctx.fillRect(visLeft, clipY, visWidth, clipH);
 
-    // -- Waveform inside clip --
-    this.renderClipWaveform(clip, track, clipY, clipH, clipStartPx, clipEndPx, visLeft, visRight, isMuted);
+    // -- Waveform inside clip (per-channel lanes for multi-channel clips) --
+    const numChannels = clip.bufferIds.length;
+    if (numChannels > 1) {
+      const laneH = clipH / numChannels;
+      for (let ch = 0; ch < numChannels; ch++) {
+        const laneY = clipY + ch * laneH;
+        this.renderClipWaveform(
+          clip, track, clip.bufferIds[ch], laneY, laneH,
+          clipStartPx, clipEndPx, visLeft, visRight, isMuted, ch,
+        );
+        // Thin divider between lanes (not after the last lane)
+        if (ch < numChannels - 1) {
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(visLeft, laneY + laneH);
+          ctx.lineTo(visRight, laneY + laneH);
+          ctx.stroke();
+        }
+      }
+    } else {
+      // Mono: single waveform
+      this.renderClipWaveform(
+        clip, track, clip.bufferIds[0], clipY, clipH,
+        clipStartPx, clipEndPx, visLeft, visRight, isMuted, 0,
+      );
+    }
 
     // -- Fade overlays (inside clip region) --
     if (clip.fadeInSamples > 0) {
@@ -2561,6 +2554,7 @@ export class TimelineRenderer {
   private renderClipWaveform(
     clip: Clip,
     track: Track,
+    bufferId: string,
     clipY: number,
     clipH: number,
     fullClipStartPx: number,
@@ -2568,14 +2562,15 @@ export class TimelineRenderer {
     visLeft: number,
     visRight: number,
     isMuted: boolean,
+    channelIndex: number,
   ): void {
     const ctx = this.ctx;
 
     // Total pixel width of the full (unclipped) clip region
     const fullWidthPx = Math.max(1, Math.round(fullClipEndPx - fullClipStartPx));
 
-    // Get cached peaks for the full clip
-    const peaks = this.getClipPeaks(clip, fullWidthPx);
+    // Get cached peaks for this channel's buffer
+    const peaks = this.getClipPeaksForBuffer(clip, bufferId, fullWidthPx);
 
     // Waveform draw area (leave room for clip name at top, reduce padding for small lanes)
     const nameSpace = clipH > 30 ? 16 : 2;
@@ -2586,9 +2581,9 @@ export class TimelineRenderer {
     const centerY = waveTop + waveHeight / 2;
     const amplitude = waveHeight / 2;
 
-    // Use sub-channel color if clip has a subChannel defined
-    const waveColor = (clip.subChannel != null && clip.subChannel < CHANNEL_COLORS.length)
-      ? CHANNEL_COLORS[clip.subChannel]
+    // Use per-channel color for multi-channel clips
+    const waveColor = channelIndex < CHANNEL_COLORS.length
+      ? CHANNEL_COLORS[channelIndex]
       : track.color;
     ctx.fillStyle = isMuted ? '#444' : waveColor;
     ctx.globalAlpha = isMuted ? 0.3 : 0.7;

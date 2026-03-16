@@ -20,7 +20,7 @@ import { FileHandler } from '../utils/FileHandler';
 import { BufferPool } from '../core/BufferPool';
 import { encodeWavAsync, WavMetadata } from '../core/WavEncoder';
 import { encodeMp3Async, Mp3Metadata } from '../core/Mp3Encoder';
-import { TimelineModel, generateGroupId } from '../core/TimelineModel';
+import { TimelineModel } from '../core/TimelineModel';
 import { renderTimelineOffline } from '../core/OfflineRender';
 import {
   TimelineUndoManager,
@@ -207,7 +207,7 @@ export class App {
         const track = this.timelineModel.timeline.tracks.find(t => t.id === trackId);
         const clip = track?.clips.find(c => c.id === clipId);
         if (clip) {
-          const pooled = this.bufferPool.getBuffer(clip.bufferId);
+          const pooled = this.bufferPool.getBuffer(clip.bufferIds[0]);
           if (pooled) {
             const regionLen = clip.sourceEnd - clip.sourceStart;
             if (regionLen > 0) {
@@ -311,7 +311,7 @@ export class App {
       const track = this.timelineModel.timeline.tracks.find(t => t.id === trackId);
       const clip = track?.clips.find(c => c.id === clipId);
       if (!clip) return;
-      const pooled = this.bufferPool.getBuffer(clip.bufferId);
+      const pooled = this.bufferPool.getBuffer(clip.bufferIds[0]);
       const bufferLength = pooled?.length ?? clip.sourceEnd;
 
       let clamped = newValue;
@@ -321,30 +321,16 @@ export class App {
         clamped = Math.max(clip.sourceStart + 1, Math.min(bufferLength, newValue));
       }
 
-      // Snapshot original state on first trim of this drag (including siblings)
+      // Snapshot original state on first trim of this drag
       if (!this._dragStartSnapshot) {
         this._dragStartSnapshot = { clipId, trackId, clip: { ...clip } };
-        // Snapshot sibling clips for grouped trim undo
         this._dragBatchSnapshots = [];
-        const siblings = this.timelineModel.getSiblingClips(trackId, clipId);
-        for (const sib of siblings) {
-          this._dragBatchSnapshots.push({ clipId: sib.id, trackId, clip: { ...sib } });
-        }
       }
       // Apply trim directly (single undo entry created on drag end)
       if (edge === 'start') {
         this.timelineModel.trimClipStart(trackId, clipId, clamped);
       } else {
         this.timelineModel.trimClipEnd(trackId, clipId, clamped);
-      }
-      // Sync trim to sibling clips in the same group
-      const trimSiblings = this.timelineModel.getSiblingClips(trackId, clipId);
-      for (const sib of trimSiblings) {
-        if (edge === 'start') {
-          this.timelineModel.trimClipStart(trackId, sib.id, clamped);
-        } else {
-          this.timelineModel.trimClipEnd(trackId, sib.id, clamped);
-        }
       }
       this._dragCurrentTrackId = trackId;
       this.timelineRenderer?.clearPeakCaches();
@@ -357,49 +343,16 @@ export class App {
     };
 
     this.timelineRenderer.onClipSplit = (trackId, clipId, splitSample) => {
-      const track = this.timelineModel.timeline.tracks.find(t => t.id === trackId);
-      const clip = track?.clips.find(c => c.id === clipId);
-      const siblings = clip?.groupId
-        ? this.timelineModel.getSiblingClips(trackId, clipId)
-        : [];
-
-      // Split primary + all siblings
-      const commands: SplitClipCommand[] = [
+      this.timelineUndoManager.push(
         new SplitClipCommand(this.timelineModel, trackId, clipId, splitSample),
-      ];
-      for (const sib of siblings) {
-        commands.push(new SplitClipCommand(this.timelineModel, trackId, sib.id, splitSample));
-      }
-
-      if (commands.length === 1) {
-        this.timelineUndoManager.push(commands[0]);
-      } else {
-        this.timelineUndoManager.push(new CompoundCommand(commands, 'Split grouped clips'));
-        // After split, assign new groupIds to left and right halves
-        this.regroupAfterSplit(trackId, clip!.groupId!, splitSample);
-      }
+      );
       this.timelineRenderer?.render();
     };
 
     this.timelineRenderer.onClipDelete = (trackId, clipId) => {
-      const track = this.timelineModel.timeline.tracks.find(t => t.id === trackId);
-      const clip = track?.clips.find(c => c.id === clipId);
-      const siblings = clip?.groupId
-        ? this.timelineModel.getSiblingClips(trackId, clipId)
-        : [];
-
-      const commands: DeleteClipCommand[] = [
+      this.timelineUndoManager.push(
         new DeleteClipCommand(this.timelineModel, trackId, clipId),
-      ];
-      for (const sib of siblings) {
-        commands.push(new DeleteClipCommand(this.timelineModel, trackId, sib.id));
-      }
-
-      if (commands.length === 1) {
-        this.timelineUndoManager.push(commands[0]);
-      } else {
-        this.timelineUndoManager.push(new CompoundCommand(commands, 'Delete grouped clips'));
-      }
+      );
       this.timelineRenderer?.render();
     };
 
@@ -417,15 +370,10 @@ export class App {
           const sourceTrack = this.timelineModel.timeline.tracks.find(t => t.id === originalTrackId);
           const targetTrack = this.timelineModel.timeline.tracks.find(t => t.id === crossTargetId);
           if (sourceTrack && targetTrack) {
-            // Revert the dragged clip (and siblings) back to original offset before snapshotting
+            // Revert the dragged clip back to original offset before snapshotting
             const draggedClip = sourceTrack.clips.find(c => c.id === clipId);
             if (draggedClip) {
-              const siblings = draggedClip.groupId
-                ? sourceTrack.clips.filter(c => c.groupId === draggedClip.groupId)
-                : [draggedClip];
-              for (const sib of siblings) {
-                sib.timelineOffset = originalState.timelineOffset;
-              }
+              draggedClip.timelineOffset = originalState.timelineOffset;
             }
 
             // Also revert batch-moved clips
@@ -622,12 +570,6 @@ export class App {
         }
         if (edge === 'in') clip.fadeInSamples = samples;
         else clip.fadeOutSamples = samples;
-        // Sync fade to sibling clips in the same group
-        const fadeSiblings = this.timelineModel.getSiblingClips(trackId, clipId);
-        for (const sib of fadeSiblings) {
-          if (edge === 'in') sib.fadeInSamples = samples;
-          else sib.fadeOutSamples = samples;
-        }
       }
     };
 
@@ -1174,27 +1116,6 @@ export class App {
   }
 
   /**
-   * After splitting all clips in a group, assign new groupIds to the left and right halves.
-   * Left halves are clips ending at or before splitSample, right halves start at or after.
-   */
-  private regroupAfterSplit(trackId: string, oldGroupId: string, splitSample: number): void {
-    const track = this.timelineModel.timeline.tracks.find(t => t.id === trackId);
-    if (!track) return;
-    const leftGroupId = generateGroupId();
-    const rightGroupId = generateGroupId();
-    for (const clip of track.clips) {
-      if (clip.groupId !== oldGroupId) continue;
-      // Left half: ends at splitSample (timelineOffset + duration <= splitSample)
-      const clipEnd = clip.timelineOffset + clip.duration;
-      if (clipEnd <= splitSample) {
-        clip.groupId = leftGroupId;
-      } else if (clip.timelineOffset >= splitSample) {
-        clip.groupId = rightGroupId;
-      }
-    }
-  }
-
-  /**
    * Check if a cross-track channel move is compatible.
    * Returns true for same channels, valid split (higher→lower), or valid merge (lower→higher).
    * Returns false for incompatible scenarios (e.g. mono→stereo without partner).
@@ -1219,7 +1140,10 @@ export class App {
 
   /**
    * Execute cross-track channel split operation.
-   * Moves grouped clips from a multi-channel track to consecutive lower-channel tracks.
+   * Splits a multi-channel clip (bufferIds.length > 1) into individual mono/lower-channel clips
+   * placed on consecutive target tracks.
+   *
+   * E.g. stereo clip (bufferIds=[L,R]) on a stereo track → 2 mono clips on 2 mono tracks.
    *
    * Returns before/after snapshots for undo, or null if the operation failed.
    */
@@ -1233,29 +1157,25 @@ export class App {
     const sourceTrack = tracks.find(t => t.id === sourceTrackId);
     if (!sourceTrack) return null;
 
-    // Find the clip and its group
     const clip = sourceTrack.clips.find(c => c.id === clipId);
     if (!clip) return null;
-
-    const groupClips = clip.groupId
-      ? sourceTrack.clips.filter(c => c.groupId === clip.groupId).sort((a, b) => (a.subChannel ?? 0) - (b.subChannel ?? 0))
-      : [clip];
 
     const sourceChannels = sourceTrack.channels;
     const targetTrack = tracks[targetTrackStartIndex];
     if (!targetTrack) return null;
     const targetChannels = targetTrack.channels;
 
-    const clipsPerTarget = targetChannels; // e.g. stereo→mono: 1 clip per target, quad→stereo: 2 clips per target
+    // Each target track receives (targetChannels) buffer IDs from the source clip
     const numTargetTracks = sourceChannels / targetChannels;
+    if (!Number.isInteger(numTargetTracks)) return null;
 
-    // Verify we have enough consecutive target tracks
+    // Verify we have enough consecutive target tracks of matching channel count
     for (let i = 0; i < numTargetTracks; i++) {
       const idx = targetTrackStartIndex + i;
       if (idx >= tracks.length || tracks[idx].channels !== targetChannels) return null;
     }
 
-    // Compute offset delta from original clip position
+    // Compute offset delta
     const offsetDelta = newOffset - clip.timelineOffset;
 
     // Snapshot before state
@@ -1269,33 +1189,22 @@ export class App {
       return { trackId: tId, clips: t.clips.map(c => ({ ...c })) };
     });
 
-    // Execute split: remove group clips from source, distribute to target tracks
-    sourceTrack.clips = sourceTrack.clips.filter(c => !groupClips.some(gc => gc.id === c.id));
+    // Remove clip from source track
+    sourceTrack.clips = sourceTrack.clips.filter(c => c.id !== clipId);
 
-    for (let targetOffset = 0; targetOffset < numTargetTracks; targetOffset++) {
-      const tTrack = tracks[targetTrackStartIndex + targetOffset];
-      const startSubCh = targetOffset * clipsPerTarget;
-      const endSubCh = startSubCh + clipsPerTarget;
-      const clipsForThisTrack = groupClips.filter(c => {
-        const sub = c.subChannel ?? 0;
-        return sub >= startSubCh && sub < endSubCh;
-      });
-
-      // Assign new groupId if multiple clips go to the same target track
-      const newGroupId = clipsForThisTrack.length > 1 ? generateGroupId() : undefined;
-
-      for (const gc of clipsForThisTrack) {
-        const newClip: Clip = {
-          ...gc,
-          timelineOffset: Math.max(0, gc.timelineOffset + offsetDelta),
-          subChannel: clipsPerTarget > 1 ? (gc.subChannel ?? 0) - startSubCh : undefined,
-          groupId: newGroupId,
-        };
-        tTrack.clips.push(newClip);
-
-        // Resolve overlaps for the newly placed clip
-        this.timelineModel.resolveOverlaps(tTrack.id, newClip.id);
-      }
+    // Distribute buffer IDs across target tracks
+    for (let ti = 0; ti < numTargetTracks; ti++) {
+      const tTrack = tracks[targetTrackStartIndex + ti];
+      const startCh = ti * targetChannels;
+      const slicedBufferIds = clip.bufferIds.slice(startCh, startCh + targetChannels);
+      const newClip: Clip = {
+        ...clip,
+        id: `${clip.id}_split_${ti}`,
+        bufferIds: slicedBufferIds,
+        timelineOffset: Math.max(0, clip.timelineOffset + offsetDelta),
+      };
+      tTrack.clips.push(newClip);
+      this.timelineModel.resolveOverlaps(tTrack.id, newClip.id);
     }
 
     // Snapshot after state
@@ -1309,7 +1218,10 @@ export class App {
 
   /**
    * Execute cross-track channel merge operation.
-   * Moves clips from lower-channel tracks into a single higher-channel track.
+   * Combines multiple mono/lower-channel clips into a single higher-channel clip
+   * by merging their bufferIds arrays.
+   *
+   * E.g. 2 mono clips (bufferIds=[L], bufferIds=[R]) → 1 stereo clip (bufferIds=[L,R]).
    *
    * Returns before/after snapshots for undo, or null if the operation failed.
    */
@@ -1332,12 +1244,11 @@ export class App {
 
     // How many source clips are needed to fill target track channels
     const clipsNeeded = targetChannels / sourceChannels;
+    if (!Number.isInteger(clipsNeeded)) return null;
 
-    // Collect all selected clips that are candidates for merging
-    // They should be from consecutive source-channel-count tracks
+    // Collect selected clips from source-channel-count tracks, sorted by track index
     const selectedClipIds = this.timelineModel.timeline.selectedClipIds;
     const candidateClips: Array<{ clip: Clip; trackId: string; trackIndex: number }> = [];
-
     for (const selId of selectedClipIds) {
       for (let ti = 0; ti < tracks.length; ti++) {
         const c = tracks[ti].clips.find(cl => cl.id === selId);
@@ -1348,13 +1259,8 @@ export class App {
       }
     }
 
-    // We need exactly clipsNeeded clips with similar timing
     if (candidateClips.length < clipsNeeded) return null;
-
-    // Sort by track index to assign subChannels in order
     candidateClips.sort((a, b) => a.trackIndex - b.trackIndex);
-
-    // Take the first clipsNeeded candidates
     const mergeSet = candidateClips.slice(0, clipsNeeded);
 
     // Compute offset delta
@@ -1364,45 +1270,33 @@ export class App {
     const affectedTrackIds = new Set<string>([targetTrackId]);
     for (const mc of mergeSet) affectedTrackIds.add(mc.trackId);
     const affectedIds = Array.from(affectedTrackIds);
-
     const before = affectedIds.map(tId => {
       const t = tracks.find(tr => tr.id === tId)!;
       return { trackId: tId, clips: t.clips.map(c => ({ ...c })) };
     });
 
-    // Execute merge: remove clips from source tracks, add to target with subChannel assignment
-    const newGroupId = generateGroupId();
-
-    for (let i = 0; i < mergeSet.length; i++) {
-      const mc = mergeSet[i];
-      const srcTrack = tracks.find(t => t.id === mc.trackId)!;
-
-      // Collect all clips to move from this source track (primary + grouped siblings)
-      const allClipsFromTrack: Clip[] = mc.clip.groupId
-        ? srcTrack.clips.filter(c => c.groupId === mc.clip.groupId)
-            .sort((a, b) => (a.subChannel ?? 0) - (b.subChannel ?? 0))
-        : [mc.clip];
-
-      // Remove all of them from the source track
-      const idsToRemove = new Set(allClipsFromTrack.map(c => c.id));
-      srcTrack.clips = srcTrack.clips.filter(c => !idsToRemove.has(c.id));
-
-      const baseSubChannel = i * sourceChannels;
-
-      // Place each sub-channel clip on the target with remapped subChannel
-      for (let ch = 0; ch < sourceChannels; ch++) {
-        const subClip = allClipsFromTrack.find(c => (c.subChannel ?? 0) === ch) ?? allClipsFromTrack[0];
-        if (!subClip) continue;
-        const newClip: Clip = {
-          ...subClip,
-          timelineOffset: Math.max(0, subClip.timelineOffset + offsetDelta),
-          subChannel: baseSubChannel + ch,
-          groupId: newGroupId,
-        };
-        targetTrack.clips.push(newClip);
-        this.timelineModel.resolveOverlaps(targetTrackId, newClip.id);
-      }
+    // Merge buffer IDs from all source clips in track order
+    const mergedBufferIds: string[] = [];
+    for (const mc of mergeSet) {
+      mergedBufferIds.push(...mc.clip.bufferIds);
     }
+
+    // Remove source clips from their tracks
+    for (const mc of mergeSet) {
+      const srcTrack = tracks.find(t => t.id === mc.trackId)!;
+      srcTrack.clips = srcTrack.clips.filter(c => c.id !== mc.clip.id);
+    }
+
+    // Add merged clip to target track
+    const primaryClip = mergeSet[0].clip;
+    const newClip: Clip = {
+      ...primaryClip,
+      id: `${primaryClip.id}_merged`,
+      bufferIds: mergedBufferIds,
+      timelineOffset: Math.max(0, primaryClip.timelineOffset + offsetDelta),
+    };
+    targetTrack.clips.push(newClip);
+    this.timelineModel.resolveOverlaps(targetTrackId, newClip.id);
 
     // Snapshot after state
     const after = affectedIds.map(tId => {
@@ -1490,33 +1384,20 @@ export class App {
         const selected = this.timelineModel.timeline.selectedClipIds;
         if (selected.length > 0) {
           const splitSample = this.timelineModel.timeline.playheadSample;
-          // Collect clips to split and track groupIds for re-grouping
-          const toSplit: Array<{ trackId: string; clipId: string; groupId?: string }> = [];
+          const commands: SplitClipCommand[] = [];
           for (const track of this.timelineModel.timeline.tracks) {
             for (const clip of track.clips) {
               if (selected.includes(clip.id)) {
-                toSplit.push({ trackId: track.id, clipId: clip.id, groupId: clip.groupId });
+                commands.push(new SplitClipCommand(this.timelineModel, track.id, clip.id, splitSample));
               }
             }
-          }
-          const commands: SplitClipCommand[] = [];
-          for (const { trackId, clipId } of toSplit) {
-            commands.push(new SplitClipCommand(this.timelineModel, trackId, clipId, splitSample));
           }
           if (commands.length === 1) {
             this.timelineUndoManager.push(commands[0]);
           } else if (commands.length > 1) {
             this.timelineUndoManager.push(new CompoundCommand(commands, 'Split clips'));
           }
-          // Re-group split halves for grouped clips
-          const processedGroupIds = new Set<string>();
-          for (const { trackId, groupId } of toSplit) {
-            if (groupId && !processedGroupIds.has(groupId)) {
-              processedGroupIds.add(groupId);
-              this.regroupAfterSplit(trackId, groupId, splitSample);
-            }
-          }
-          if (toSplit.length > 0) {
+          if (commands.length > 0) {
             this.timelineRenderer?.render();
           }
         }
@@ -2034,11 +1915,11 @@ export class App {
         for (const clip of track.clips) {
           if (selected.includes(clip.id)) {
             const newBufferId = this.bufferPool.createNormalizedBuffer(
-              clip.bufferId, clip.sourceStart, clip.sourceEnd, level,
+              clip.bufferIds[0], clip.sourceStart, clip.sourceEnd, level,
             );
             if (newBufferId) {
-              const originalBufferId = clip.bufferId;
-              clip.bufferId = newBufferId;
+              const originalBufferId = clip.bufferIds[0];
+              clip.bufferIds = [newBufferId];
               this.timelineUndoManager.pushExecuted(
                 new NormalizeClipCommand(this.timelineModel, track.id, clip.id, originalBufferId, newBufferId),
               );
@@ -2089,10 +1970,10 @@ export class App {
       for (const track of this.timelineModel.timeline.tracks) {
         for (const clip of track.clips) {
           if (selected.includes(clip.id)) {
-            const newBufferId = this.bufferPool.createReversedBuffer(clip.bufferId);
+            const newBufferId = this.bufferPool.createReversedBuffer(clip.bufferIds[0]);
             if (newBufferId) {
-              const originalBufferId = clip.bufferId;
-              clip.bufferId = newBufferId;
+              const originalBufferId = clip.bufferIds[0];
+              clip.bufferIds = [newBufferId];
               clip.reversed = !clip.reversed;
               this.timelineUndoManager.pushExecuted(
                 new ReverseClipCommand(this.timelineModel, track.id, clip.id, originalBufferId, newBufferId),
@@ -3738,7 +3619,7 @@ export class App {
     let totalClips = 0;
     for (const track of this.timelineModel.timeline.tracks) {
       for (const clip of track.clips) {
-        if (selected.includes(clip.id) && this.bufferPool.getBuffer(clip.bufferId)) {
+        if (selected.includes(clip.id) && this.bufferPool.getBuffer(clip.bufferIds[0])) {
           totalClips++;
         }
       }
@@ -3758,7 +3639,7 @@ export class App {
       for (const track of this.timelineModel.timeline.tracks) {
         for (const clip of track.clips) {
           if (!selected.includes(clip.id)) continue;
-          const pooled = this.bufferPool.getBuffer(clip.bufferId);
+          const pooled = this.bufferPool.getBuffer(clip.bufferIds[0]);
           if (!pooled) continue;
 
           const srcData = pooled.buffer.getChannelData(0);
@@ -3785,9 +3666,9 @@ export class App {
             newBuffer, pooled.sourceFileName + ' [denoised]', pooled.sourceChannelIndex,
           );
 
-          // Swap buffer + push undo
-          const originalBufferId = clip.bufferId;
-          clip.bufferId = newBufferId;
+          // Swap buffer + push undo (only handles single-channel clips for now)
+          const originalBufferId = clip.bufferIds[0];
+          clip.bufferIds = [newBufferId];
           this.timelineUndoManager.pushExecuted(
             new DenoiseClipCommand(this.timelineModel, track.id, clip.id, originalBufferId, newBufferId),
           );
