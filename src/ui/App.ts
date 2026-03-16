@@ -2556,6 +2556,11 @@ export class App {
         this.fileStatuses.set(f.path, next);
         this.renderFileBrowser();
       });
+      // Prevent rapid double-click on the marker circle from triggering the
+      // item-level dblclick handler that imports the file.
+      statusBtn.addEventListener('dblclick', (e) => {
+        e.stopPropagation();
+      });
 
       item.appendChild(statusBtn);
       item.appendChild(nameSpan);
@@ -2673,9 +2678,10 @@ export class App {
             this.timelineModel.timeline.tracks.length)) {
         const filekHz = formatSampleRate(audioBuffer.sampleRate);
         const sessionkHz = formatSampleRate(this.timelineModel.timeline.sampleRate);
-        const ok = window.confirm(
-          `Sample rate mismatch: file is ${filekHz}, session is ${sessionkHz}. ` +
-          `Audio will play at session rate (${sessionkHz}).`
+        const ok = await this.showConfirmDialog(
+          'Sample Rate Mismatch',
+          `File is ${filekHz}, session is ${sessionkHz}. ` +
+          `Audio will be resampled to match session.`,
         );
         if (!ok) {
           this.hideLoadingIndicator();
@@ -2777,9 +2783,10 @@ export class App {
               this.timelineModel.timeline.tracks.length)) {
           const filekHz = formatSampleRate(audioBuffer.sampleRate);
           const sessionkHz = formatSampleRate(this.timelineModel.timeline.sampleRate);
-          const ok = window.confirm(
-            `Sample rate mismatch: file is ${filekHz}, session is ${sessionkHz}. ` +
-            `Audio will play at session rate (${sessionkHz}).`
+          const ok = await this.showConfirmDialog(
+            'Sample Rate Mismatch',
+            `File is ${filekHz}, session is ${sessionkHz}. ` +
+            `Audio will be resampled to match session.`,
           );
           if (!ok) continue;
         }
@@ -3137,10 +3144,6 @@ export class App {
     if (!container) return;
 
     const tracks = this.timelineModel.timeline.tracks;
-    if (tracks.length === 0) {
-      container.innerHTML = '';
-      return;
-    }
 
     // Preserve existing values before rebuilding
     const existing: string[] = Array.from(
@@ -3148,10 +3151,14 @@ export class App {
     ).map(el => (el as HTMLInputElement).value);
 
     container.innerHTML = '';
-    const channelNames = CHANNEL_NAMES[tracks.length] ||
-      tracks.map((_, i) => `Ch ${i + 1}`);
 
-    tracks.forEach((track, i) => {
+    // When no tracks are loaded yet, show 2 default stereo inputs so users
+    // can pre-fill channel names before loading audio.
+    const count = tracks.length > 0 ? tracks.length : 2;
+    const channelNames = CHANNEL_NAMES[count] ||
+      Array.from({ length: count }, (_, i) => `Ch ${i + 1}`);
+
+    for (let i = 0; i < count; i++) {
       const row = document.createElement('div');
       row.className = 'metadata-inline-field';
 
@@ -3162,8 +3169,9 @@ export class App {
       input.type = 'text';
       input.placeholder = channelNames[i] ?? `Ch ${i + 1}`;
       input.dataset.trackIdx = String(i);
-      // Use preserved value, then track name, then empty
-      input.value = existing[i] ?? track.name ?? '';
+      // Use preserved value, then track name (if track exists), then empty
+      const trackName = tracks[i]?.name ?? '';
+      input.value = existing[i] ?? trackName;
       input.addEventListener('input', () => {
         // Keep sessionMetadata.trackNames in sync
         if (!this.sessionMetadata.trackNames) this.sessionMetadata.trackNames = [];
@@ -3173,7 +3181,7 @@ export class App {
       row.appendChild(label);
       row.appendChild(input);
       container.appendChild(row);
-    });
+    }
   }
 
   // ==================== Export Section ====================
