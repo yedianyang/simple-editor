@@ -212,6 +212,9 @@ export class TimelineRenderer {
   // Track header context menu callback
   onTrackHeaderContextMenu: ((trackId: string, clientX: number, clientY: number) => void) | null = null;
 
+  /** Called on right-click in the timeline content area (not track header). */
+  onClipContentContextMenu: ((clientX: number, clientY: number) => void) | null = null;
+
   // Track name edit callback (double-click inline rename)
   onTrackNameChange: ((trackId: string, newName: string) => void) | null = null;
 
@@ -429,18 +432,24 @@ export class TimelineRenderer {
     e.preventDefault();
     if (!this.timeline) return;
     const { x, y } = this.clientToLocal(e);
-    // Only fire for track header area
-    if (x >= TRACK_HEADER_WIDTH || y < RULER_HEIGHT) return;
-    const trackIdx = this.yToTrackIndex(y);
-    if (trackIdx < 0 || trackIdx >= this.timeline.tracks.length) return;
-    const trackId = this.timeline.tracks[trackIdx].id;
-    // Select the track if not already selected
-    if (!this.timeline.selectedTrackIds.includes(trackId)) {
-      this.timeline.selectedTrackIds = [trackId];
-      this.onTrackSelect?.(this.timeline.selectedTrackIds);
-      this.render();
+    if (y < RULER_HEIGHT) return;
+
+    if (x < TRACK_HEADER_WIDTH) {
+      // Track header area
+      const trackIdx = this.yToTrackIndex(y);
+      if (trackIdx < 0 || trackIdx >= this.timeline.tracks.length) return;
+      const trackId = this.timeline.tracks[trackIdx].id;
+      // Select the track if not already selected
+      if (!this.timeline.selectedTrackIds.includes(trackId)) {
+        this.timeline.selectedTrackIds = [trackId];
+        this.onTrackSelect?.(this.timeline.selectedTrackIds);
+        this.render();
+      }
+      this.onTrackHeaderContextMenu?.(trackId, e.clientX, e.clientY);
+    } else {
+      // Content area — fire clip content context menu
+      this.onClipContentContextMenu?.(e.clientX, e.clientY);
     }
-    this.onTrackHeaderContextMenu?.(trackId, e.clientX, e.clientY);
   }
 
   private onDoubleClick(e: MouseEvent): void {
@@ -688,14 +697,13 @@ export class TimelineRenderer {
   }
 
   /**
-   * Check if a cross-track channel move is compatible (valid split/merge scenario).
+   * Check if a cross-track channel split is compatible (valid split scenario).
    * sourceChannels → targetChannels at targetIdx:
    * - Same channels: always OK
    * - Stereo → Mono: need 2 consecutive Mono tracks from targetIdx
    * - Quad → Stereo: need 2 consecutive Stereo tracks from targetIdx
    * - Quad → Mono: need 4 consecutive Mono tracks from targetIdx
-   * - 2x Mono → Stereo: OK (merge)
-   * - Mono → Stereo: rejected (can't upmix single mono to stereo)
+   * - Merge (lower→higher): always rejected — use right-click "Merge to stereo track"
    */
   private isChannelMoveCompatible(
     sourceChannels: number, targetChannels: number, targetIdx: number,
@@ -716,12 +724,9 @@ export class TimelineRenderer {
       return true;
     }
 
-    // Merge scenarios: lower channel count → higher
+    // Merge scenarios: lower channel count → higher are NOT allowed via drag.
+    // Merging requires explicit selection + right-click "Merge to stereo track".
     if (sourceChannels < targetChannels) {
-      // Mono → Stereo is a merge (need the clip to have a partner being dragged together)
-      // For now, allow if target can hold source (e.g. mono clips can be placed in stereo tracks)
-      // The actual merge logic is handled in App.ts onDragEnd
-      if (targetChannels % sourceChannels === 0) return true;
       return false;
     }
 
@@ -1891,10 +1896,18 @@ export class TimelineRenderer {
       const isMultiChannel = channelCount === 2 || channelCount === 4 || channelCount === 6;
       const newTrackCount = isMultiChannel ? 1 : channelCount;
 
+      // Check channel compatibility for existing track drops
+      const droppingOnExisting = trackIndex < totalTracks;
+      const externalIncompatible = droppingOnExisting &&
+        this.timeline!.tracks[trackIndex].channels !== channelCount;
+
+      // Choose accent colour based on compatibility
+      const accentAlpha = externalIncompatible ? 'rgba(255, 59, 48,' : 'rgba(37, 99, 235,';
+
       ctx.save();
 
       // --- Ghost Tracks (dashed outline for new tracks below existing ones) ---
-      if (trackIndex >= totalTracks) {
+      if (!droppingOnExisting) {
         const ghostBaseY = RULER_HEIGHT + this.totalTrackHeight - this.scrollOffsetY;
         for (let i = 0; i < newTrackCount; i++) {
           const gy = ghostBaseY + i * defaultTrackH;
@@ -1902,7 +1915,7 @@ export class TimelineRenderer {
           const clampedBottom = Math.min(h, gy + defaultTrackH);
           if (clampedBottom <= RULER_HEIGHT || clampedTop >= h) continue;
 
-          // Dashed border + subtle fill
+          // Dashed border + subtle fill (always blue for new tracks)
           ctx.setLineDash([6, 4]);
           ctx.strokeStyle = 'rgba(37, 99, 235, 0.6)';
           ctx.fillStyle = 'rgba(37, 99, 235, 0.08)';
@@ -1919,8 +1932,8 @@ export class TimelineRenderer {
         }
         ctx.setLineDash([]);
       } else {
-        // Highlight existing target tracks
-        ctx.fillStyle = 'rgba(37, 99, 235, 0.12)';
+        // Highlight existing target tracks with compatibility colour
+        ctx.fillStyle = `${accentAlpha} 0.12)`;
         const tracksToHighlight = Math.min(isMultiChannel ? 1 : channelCount, totalTracks - trackIndex);
         for (let i = 0; i < tracksToHighlight; i++) {
           const ti = trackIndex + i;
@@ -1945,7 +1958,7 @@ export class TimelineRenderer {
         // Determine Y position and height for the ghost clip
         let clipY: number;
         let clipH: number;
-        if (trackIndex < totalTracks) {
+        if (droppingOnExisting) {
           clipY = RULER_HEIGHT + this.trackTops[trackIndex] - this.scrollOffsetY;
           clipH = this.timeline!.tracks[trackIndex].height;
         } else {
@@ -1956,10 +1969,10 @@ export class TimelineRenderer {
         const clampedClipBottom = Math.min(h, clipY + clipH);
 
         if (clampedClipBottom > RULER_HEIGHT && clampedClipTop < h && clipX < w) {
-          // Dashed clip outline
+          // Dashed clip outline — use compatibility colour
           ctx.setLineDash([4, 3]);
-          ctx.strokeStyle = 'rgba(37, 99, 235, 0.8)';
-          ctx.fillStyle = 'rgba(37, 99, 235, 0.12)';
+          ctx.strokeStyle = `${accentAlpha} 0.8)`;
+          ctx.fillStyle = `${accentAlpha} 0.12)`;
           ctx.lineWidth = 1;
           const drawX = Math.max(TRACK_HEADER_WIDTH, clipX);
           const drawW = Math.min(clipW - (drawX - clipX), w - drawX);
@@ -1988,7 +2001,7 @@ export class TimelineRenderer {
       // Dashed vertical line at drop position
       const dropX = this.sampleToPixel(sampleOffset);
       if (dropX >= TRACK_HEADER_WIDTH && dropX <= w) {
-        ctx.strokeStyle = 'rgba(37, 99, 235, 0.8)';
+        ctx.strokeStyle = `${accentAlpha} 0.8)`;
         ctx.setLineDash([4, 4]);
         ctx.lineWidth = 1;
         ctx.beginPath();
@@ -2320,8 +2333,21 @@ export class TimelineRenderer {
       if (bottomY < RULER_HEIGHT || topY > this.height) continue;
 
       // Lane background (alternating colors, highlight drop target)
-      if (this.dropTargetTrackIndex === i && this.drag.mode === 'clipMove') {
-        ctx.fillStyle = this.dropTargetIncompatible ? '#3a1e1e' : '#1e2a3a';  // red for incompatible, blue for valid
+      if (this.drag.mode === 'clipMove' && this.dropTargetTrackIndex >= 0) {
+        // Determine split span: how many consecutive tracks are highlighted for a split op
+        const sourceTrackForSpan = tracks.find(t => t.id === this.drag.trackId);
+        const targetTrackForSpan = tracks[this.dropTargetTrackIndex];
+        let splitSpan = 1;
+        if (!this.dropTargetIncompatible && sourceTrackForSpan && targetTrackForSpan
+            && sourceTrackForSpan.channels > targetTrackForSpan.channels) {
+          splitSpan = sourceTrackForSpan.channels / targetTrackForSpan.channels;
+        }
+        const inSplitSpan = i >= this.dropTargetTrackIndex && i < this.dropTargetTrackIndex + splitSpan;
+        if (inSplitSpan) {
+          ctx.fillStyle = this.dropTargetIncompatible ? '#3a1e1e' : '#1e2a3a';  // red for incompatible, blue for valid
+        } else {
+          ctx.fillStyle = i % 2 === 0 ? COLOR_TRACK_EVEN : COLOR_TRACK_ODD;
+        }
       } else {
         ctx.fillStyle = i % 2 === 0 ? COLOR_TRACK_EVEN : COLOR_TRACK_ODD;
       }

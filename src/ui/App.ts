@@ -42,6 +42,7 @@ import {
   ImportAudioToNewTrackCommand,
   CrossTrackChannelCommand,
   CrossfadeCommand,
+  MergeToStereoCommand,
 } from '../utils/TimelineUndoManager';
 import type { AudioFileInfo, AudioFileMeta, ParsedAudioData } from '../utils/TauriAPI';
 import { generateUCSFilename, parseUCSFilename } from '../core/ucs-data';
@@ -546,6 +547,10 @@ export class App {
 
     this.timelineRenderer.onTrackHeaderContextMenu = (trackId, clientX, clientY) => {
       this.showTrackContextMenu(trackId, clientX, clientY);
+    };
+
+    this.timelineRenderer.onClipContentContextMenu = (clientX, clientY) => {
+      this.showClipContentContextMenu(clientX, clientY);
     };
 
     // ---- Clip gain callback ----
@@ -2411,6 +2416,102 @@ export class App {
       this.contextMenuCleanup();
       this.contextMenuCleanup = null;
     }
+  }
+
+  /**
+   * Show context menu in the timeline content area.
+   * Shows "Merge to stereo track" when exactly 2 mono clips are selected.
+   */
+  private showClipContentContextMenu(clientX: number, clientY: number): void {
+    const tracks = this.timelineModel.timeline.tracks;
+    const selectedIds = this.timelineModel.timeline.selectedClipIds;
+
+    // Check if exactly 2 mono clips are selected
+    const selectedMonoClips: Array<{ clip: Clip; trackId: string; trackIndex: number }> = [];
+    for (let ti = 0; ti < tracks.length; ti++) {
+      const track = tracks[ti];
+      if (track.channels !== 1) continue;
+      for (const clip of track.clips) {
+        if (selectedIds.includes(clip.id) && clip.bufferIds.length === 1) {
+          selectedMonoClips.push({ clip, trackId: track.id, trackIndex: ti });
+        }
+      }
+    }
+
+    const canMerge = selectedMonoClips.length === 2 && selectedIds.length === 2;
+    if (!canMerge) return; // No items to show — skip menu
+
+    this.dismissContextMenu();
+
+    const menu = document.createElement('div');
+    menu.className = 'context-menu';
+    menu.style.left = `${clientX}px`;
+    menu.style.top = `${clientY}px`;
+
+    const mergeItem = document.createElement('div');
+    mergeItem.className = 'context-menu-item';
+    mergeItem.textContent = 'Merge to stereo track';
+    mergeItem.addEventListener('click', () => {
+      this.dismissContextMenu();
+      this.mergeSelectedMonoToStereo(selectedMonoClips);
+    });
+    menu.appendChild(mergeItem);
+
+    document.body.appendChild(menu);
+    this.activeContextMenu = menu;
+
+    const onClickOutside = (e: MouseEvent) => {
+      if (!menu.contains(e.target as Node)) this.dismissContextMenu();
+    };
+    const onEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') this.dismissContextMenu();
+    };
+    const onBlur = () => this.dismissContextMenu();
+
+    requestAnimationFrame(() => {
+      document.addEventListener('mousedown', onClickOutside);
+      document.addEventListener('keydown', onEscape);
+      window.addEventListener('blur', onBlur);
+    });
+
+    this.contextMenuCleanup = () => {
+      document.removeEventListener('mousedown', onClickOutside);
+      document.removeEventListener('keydown', onEscape);
+      window.removeEventListener('blur', onBlur);
+    };
+  }
+
+  /**
+   * Merge two selected mono clips into a new stereo track.
+   * The new track is inserted immediately after the higher-indexed source track.
+   */
+  private mergeSelectedMonoToStereo(
+    clips: Array<{ clip: Clip; trackId: string; trackIndex: number }>,
+  ): void {
+    // Sort by track index so top track becomes L channel, bottom becomes R
+    const sorted = [...clips].sort((a, b) => a.trackIndex - b.trackIndex);
+    const [first, second] = sorted;
+
+    const insertAfterIdx = second.trackIndex;
+    const newTrackName = `${first.clip.name ?? 'Clip'} (Stereo)`;
+    const newTrackColor = CHANNEL_COLORS[insertAfterIdx % CHANNEL_COLORS.length];
+
+    this.timelineUndoManager.push(
+      new MergeToStereoCommand(
+        this.timelineModel,
+        first.clip,
+        first.trackId,
+        second.clip,
+        second.trackId,
+        newTrackName,
+        newTrackColor,
+        insertAfterIdx,
+      ),
+    );
+
+    this.mixer.updateStripsUI(this.timelineModel.timeline.tracks);
+    this.timelineRenderer?.render();
+    this.invalidatePlayback();
   }
 
   private showFileBrowserContextMenu(file: AudioFileMeta, clientX: number, clientY: number): void {

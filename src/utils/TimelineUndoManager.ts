@@ -1005,3 +1005,100 @@ export class DeleteTrackCommand implements TimelineCommand {
     );
   }
 }
+
+/**
+ * Undo/redo for context-menu "Merge to stereo track" operation.
+ * Creates a new stereo track with the merged clip, removes source mono clips.
+ *
+ * execute(): creates stereo track + merged clip, removes source clips
+ * undo(): removes stereo track, restores source clips to their original tracks
+ */
+export class MergeToStereoCommand implements TimelineCommand {
+  description = 'Merge to stereo track';
+
+  /**
+   * @param model          Timeline model
+   * @param clip1          Source clip from the first (top) mono track
+   * @param trackId1       ID of the first mono track
+   * @param clip2          Source clip from the second (bottom) mono track
+   * @param trackId2       ID of the second mono track
+   * @param newTrackName   Name for the new stereo track
+   * @param newTrackColor  Color for the new stereo track
+   * @param insertAfterIdx Index after which to insert the new stereo track
+   */
+  constructor(
+    private model: TimelineModel,
+    private clip1: Clip,
+    private trackId1: string,
+    private clip2: Clip,
+    private trackId2: string,
+    private newTrackName: string,
+    private newTrackColor: string,
+    private insertAfterIdx: number,
+  ) {}
+
+  /** ID of the newly created stereo track (set during execute). */
+  private newTrackId = '';
+  /** ID of the merged clip (set during execute). */
+  private mergedClipId = '';
+
+  execute(): void {
+    const tracks = this.model.timeline.tracks;
+
+    // Remove source clips from their tracks
+    const t1 = tracks.find(t => t.id === this.trackId1);
+    const t2 = tracks.find(t => t.id === this.trackId2);
+    if (!t1 || !t2) return;
+    t1.clips = t1.clips.filter(c => c.id !== this.clip1.id);
+    t2.clips = t2.clips.filter(c => c.id !== this.clip2.id);
+
+    // Create new stereo track
+    const stereoTrack = this.model.addTrack(
+      this.newTrackName, this.newTrackColor, this.insertAfterIdx + 1, 2,
+    );
+    this.newTrackId = stereoTrack.id;
+
+    // Move track to correct position (addTrack appends to end)
+    const newIdx = tracks.findIndex(t => t.id === stereoTrack.id);
+    const targetIdx = Math.min(this.insertAfterIdx + 1, tracks.length - 1);
+    if (newIdx !== targetIdx) {
+      const [moved] = tracks.splice(newIdx, 1);
+      tracks.splice(targetIdx, 0, moved);
+    }
+
+    // Create merged clip with both buffer IDs
+    this.mergedClipId = `${this.clip1.id}_merged`;
+    const mergedClip: Clip = {
+      ...this.clip1,
+      id: this.mergedClipId,
+      bufferIds: [...this.clip1.bufferIds, ...this.clip2.bufferIds],
+    };
+    stereoTrack.clips.push(mergedClip);
+
+    // Clear selection to the new merged clip
+    this.model.timeline.selectedClipIds = [this.mergedClipId];
+  }
+
+  undo(): void {
+    const tracks = this.model.timeline.tracks;
+
+    // Remove the new stereo track
+    if (this.newTrackId) {
+      this.model.removeTrack(this.newTrackId);
+      this.newTrackId = '';
+    }
+
+    // Restore source clips to their original tracks
+    const t1 = tracks.find(t => t.id === this.trackId1);
+    const t2 = tracks.find(t => t.id === this.trackId2);
+    if (t1 && !t1.clips.find(c => c.id === this.clip1.id)) {
+      t1.clips.push({ ...this.clip1 });
+    }
+    if (t2 && !t2.clips.find(c => c.id === this.clip2.id)) {
+      t2.clips.push({ ...this.clip2 });
+    }
+
+    // Restore original selection
+    this.model.timeline.selectedClipIds = [this.clip1.id, this.clip2.id];
+  }
+}
