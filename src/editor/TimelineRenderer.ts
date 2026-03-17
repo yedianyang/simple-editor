@@ -734,6 +734,37 @@ export class TimelineRenderer {
   }
 
   /**
+   * For split drags (sourceChannels > targetChannels), find the effective start
+   * track index to use for highlight and drop operations.
+   *
+   * When the user hovers over any track within a valid consecutive group, we snap
+   * the drop target to the first track of the group so ALL tracks in the span are
+   * highlighted. For example: stereo clip (2ch) over 2 mono tracks — hovering over
+   * the 2nd mono track snaps to the 1st so both are highlighted blue.
+   *
+   * Returns the snapped start index, or targetIdx if no valid group found.
+   */
+  private findSplitStartIndex(
+    sourceChannels: number, targetChannels: number, targetIdx: number,
+  ): number {
+    if (!this.timeline) return targetIdx;
+    if (sourceChannels <= targetChannels) return targetIdx;
+    const requiredTracks = sourceChannels / targetChannels;
+    if (!Number.isInteger(requiredTracks)) return targetIdx;
+
+    // Try start positions from (targetIdx - requiredTracks + 1) up to targetIdx.
+    // Pick the first one where targetIdx falls within the valid span.
+    const firstPossibleStart = Math.max(0, targetIdx - (requiredTracks - 1));
+    for (let start = firstPossibleStart; start <= targetIdx; start++) {
+      if (this.isChannelMoveCompatible(sourceChannels, targetChannels, start)) {
+        // targetIdx is within [start, start + requiredTracks)
+        return start;
+      }
+    }
+    return targetIdx; // no valid group — fall back to original index
+  }
+
+  /**
    * Hit-test the mute/solo buttons in a track header.
    * Returns the track id and which button was hit, or null.
    */
@@ -1261,16 +1292,36 @@ export class TimelineRenderer {
       const targetIdx = this.yToTrackIndex(y);
       const tracks = this.timeline!.tracks;
       const validTarget = targetIdx >= 0 && targetIdx < tracks.length;
-      this.dropTargetTrackIndex = validTarget ? targetIdx : -1;
-      const targetTrackId = validTarget ? tracks[targetIdx].id : this.drag.trackId;
-      // Check channel compatibility for cross-track moves
-      if (validTarget && this.drag.trackId !== targetTrackId) {
-        const sourceTrack = tracks.find(t => t.id === this.drag.trackId);
-        const targetTrack = tracks[targetIdx];
-        if (sourceTrack && targetTrack && sourceTrack.channels !== targetTrack.channels) {
-          // Check if this is a valid split/merge scenario or incompatible
+      // Use clip.bufferIds.length (actual clip channel count) rather than
+      // sourceTrack.channels — a clip may have fewer channels than its host track
+      // when a mono clip was dropped onto a stereo track or vice versa.
+      const draggedClipForCompat = tracks
+        .flatMap(t => t.clips)
+        .find(c => c.id === this.drag.clipId);
+      const clipChannelCount = draggedClipForCompat?.bufferIds.length ?? 1;
+
+      // For split drags, snap dropTargetTrackIndex to the start of the valid
+      // consecutive group. This ensures that hovering over any track in the group
+      // (e.g. the 2nd mono track of a stereo→mono split) highlights all tracks.
+      let effectiveTargetIdx = targetIdx;
+      if (validTarget) {
+        const hoverTrack = tracks[targetIdx];
+        if (hoverTrack && clipChannelCount > hoverTrack.channels) {
+          effectiveTargetIdx = this.findSplitStartIndex(
+            clipChannelCount, hoverTrack.channels, targetIdx,
+          );
+        }
+      }
+      this.dropTargetTrackIndex = validTarget ? effectiveTargetIdx : -1;
+      const targetTrackId = validTarget ? tracks[effectiveTargetIdx].id : this.drag.trackId;
+
+      // Check channel compatibility for cross-track moves.
+      if (validTarget && this.drag.trackId !== tracks[effectiveTargetIdx].id) {
+        const targetTrack = tracks[effectiveTargetIdx];
+        if (targetTrack && clipChannelCount !== targetTrack.channels) {
+          // Check if this is a valid split scenario or incompatible
           this.dropTargetIncompatible = !this.isChannelMoveCompatible(
-            sourceTrack.channels, targetTrack.channels, targetIdx);
+            clipChannelCount, targetTrack.channels, effectiveTargetIdx);
         } else {
           this.dropTargetIncompatible = false;
         }
@@ -1284,10 +1335,9 @@ export class TimelineRenderer {
       // After cross-track move, update drag.trackId — but only if the clip
       // actually moved. Cross-channel moves (different channel counts) are
       // deferred to dragEnd, so the clip stays on the source track.
-      const sourceTrackForUpdate = tracks.find(t => t.id === this.drag.trackId);
-      const targetTrackForUpdate = validTarget ? tracks[targetIdx] : null;
-      const channelMismatch = sourceTrackForUpdate && targetTrackForUpdate
-        && sourceTrackForUpdate.channels !== targetTrackForUpdate.channels;
+      const targetTrackForUpdate = validTarget ? tracks[effectiveTargetIdx] : null;
+      const channelMismatch = targetTrackForUpdate &&
+        clipChannelCount !== targetTrackForUpdate.channels;
       if (!channelMismatch) {
         this.drag.trackId = targetTrackId;
       }
@@ -2324,6 +2374,20 @@ export class TimelineRenderer {
     const w = this.width;
     const tracks = this.timeline!.tracks;
 
+    // Pre-compute drag split span outside the per-track loop.
+    // Use clip.bufferIds.length (actual channels) not source track's declared channel count,
+    // so a mono clip on a stereo track is handled correctly.
+    let dragSplitSpan = 1;
+    if (this.drag.mode === 'clipMove' && this.dropTargetTrackIndex >= 0) {
+      const draggedClip = tracks.flatMap(t => t.clips).find(c => c.id === this.drag.clipId);
+      const dragClipChannels = draggedClip?.bufferIds.length ?? 1;
+      const targetTrackForSpan = tracks[this.dropTargetTrackIndex];
+      if (!this.dropTargetIncompatible && targetTrackForSpan
+          && dragClipChannels > targetTrackForSpan.channels) {
+        dragSplitSpan = dragClipChannels / targetTrackForSpan.channels;
+      }
+    }
+
     for (let i = 0; i < tracks.length; i++) {
       const track = tracks[i];
       const trackH = track.height;
@@ -2334,15 +2398,7 @@ export class TimelineRenderer {
 
       // Lane background (alternating colors, highlight drop target)
       if (this.drag.mode === 'clipMove' && this.dropTargetTrackIndex >= 0) {
-        // Determine split span: how many consecutive tracks are highlighted for a split op
-        const sourceTrackForSpan = tracks.find(t => t.id === this.drag.trackId);
-        const targetTrackForSpan = tracks[this.dropTargetTrackIndex];
-        let splitSpan = 1;
-        if (!this.dropTargetIncompatible && sourceTrackForSpan && targetTrackForSpan
-            && sourceTrackForSpan.channels > targetTrackForSpan.channels) {
-          splitSpan = sourceTrackForSpan.channels / targetTrackForSpan.channels;
-        }
-        const inSplitSpan = i >= this.dropTargetTrackIndex && i < this.dropTargetTrackIndex + splitSpan;
+        const inSplitSpan = i >= this.dropTargetTrackIndex && i < this.dropTargetTrackIndex + dragSplitSpan;
         if (inSplitSpan) {
           ctx.fillStyle = this.dropTargetIncompatible ? '#3a1e1e' : '#1e2a3a';  // red for incompatible, blue for valid
         } else {
