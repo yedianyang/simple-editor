@@ -2748,10 +2748,10 @@ export class TimelineRenderer {
     }
 
     // -- Gain line across clip (dashed, only if gain != 0) --
+    // 0 dB is at vertical center (50% of clip height); positive dB moves up, negative down.
     if (clip.gainDb !== 0) {
       const gainDbClamped = Math.max(-96, Math.min(12, clip.gainDb));
-      const gainNorm = (gainDbClamped + 96) / 108; // 0..1 range
-      const lineY = clipY + clipH - gainNorm * clipH;
+      const lineY = clipY + clipH * 0.5 - (gainDbClamped / 96) * clipH * 0.5;
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
       ctx.lineWidth = 1;
       ctx.setLineDash([4, 4]);
