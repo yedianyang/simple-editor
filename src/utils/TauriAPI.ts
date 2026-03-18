@@ -54,6 +54,7 @@ export interface AppAPI {
   /** @deprecated Use readLargeFile() or readLargeAudioFile() for large files. */
   readFile(path: string): Promise<ArrayBuffer>;
   writeFile(path: string, data: ArrayBuffer): Promise<void>;
+  writeFileText(path: string, text: string): Promise<void>;
   readFileText(path: string): Promise<string>;
 
   // Audio file parsing (Rust WAV decoder — returns Float32 PCM directly)
@@ -97,6 +98,7 @@ export interface AppAPI {
     dry: number;        // 0.0-1.0
     sample_rate: number;
     num_samples: number;
+    use_gpu: boolean;
   }): Promise<ArrayBuffer>;
 
   // Large file reading via custom protocol (raw bytes)
@@ -170,6 +172,11 @@ export function createTauriAPI(): AppAPI {
 
     async readFileText(path: string): Promise<string> {
       return invoke('read_file_text', { path });
+    },
+
+    async writeFileText(path: string, text: string): Promise<void> {
+      const bytes = new TextEncoder().encode(text);
+      await invoke('write_file', { path, contents: Array.from(bytes) });
     },
 
     // ── Audio file parsing (Rust WAV decoder — binary IPC) ─────────
