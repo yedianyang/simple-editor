@@ -597,6 +597,7 @@ export class App {
         }
         if (edge === 'in') clip.fadeInCurve = curve;
         else clip.fadeOutCurve = curve;
+        this.invalidatePlayback();
       }
     };
 
