@@ -1395,9 +1395,11 @@ export class App {
           if (e.shiftKey) this.showCreateTrackDialog();
           else this.confirmNewProject();
           return;
-        case 'o':
-          e.preventDefault();
-          this.openImportDialog();
+        case 'i':
+          if (e.shiftKey) {
+            e.preventDefault();
+            this.openImportDialog();
+          }
           return;
         case 'b':
           e.preventDefault();
