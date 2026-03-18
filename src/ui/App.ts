@@ -45,6 +45,13 @@ import {
   MergeToStereoCommand,
 } from '../utils/TimelineUndoManager';
 import type { AudioFileInfo, AudioFileMeta, ParsedAudioData } from '../utils/TauriAPI';
+import {
+  getSidecarPath,
+  serializeMarkingStatus,
+  deserializeMarkingStatus,
+  cycleMarkingStatus,
+  type FileMarkingStatus,
+} from '../utils/fileBrowserMarking';
 import { generateUCSFilename, parseUCSFilename } from '../core/ucs-data';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 
@@ -107,8 +114,8 @@ export class App {
   // ---- File Browser state ----
   private folderPath: string | null = null;
   private folderFiles: AudioFileMeta[] = [];
-  /** Track per-file workflow status: 'pending' | 'done' | 'skip' */
-  private fileStatuses: Map<string, 'pending' | 'done' | 'skip'> = new Map();
+  /** Track per-file workflow status. */
+  private fileStatuses: Map<string, FileMarkingStatus> = new Map();
   private searchFilter = '';
   private selectedBrowserFile: AudioFileMeta | null = null;
   /** True after the first file import has pre-filled the inline metadata fields. */
@@ -2522,6 +2529,33 @@ export class App {
     menu.style.left = `${clientX}px`;
     menu.style.top = `${clientY}px`;
 
+    // Marking options
+    const markingStates: Array<{ label: string; status: FileMarkingStatus }> = [
+      { label: 'Mark as Unprocessed', status: 'pending' },
+      { label: 'Mark as Processing', status: 'skip' },
+      { label: 'Mark as Finished', status: 'done' },
+    ];
+    for (const { label, status } of markingStates) {
+      const item = document.createElement('div');
+      item.className = 'context-menu-item';
+      item.textContent = label;
+      const currentStatus = this.fileStatuses.get(file.path) || 'pending';
+      if (currentStatus === status) {
+        item.style.opacity = '0.5';
+        item.style.cursor = 'default';
+      } else {
+        item.addEventListener('click', () => {
+          this.dismissContextMenu();
+          this.setFileStatus(file.path, status);
+        });
+      }
+      menu.appendChild(item);
+    }
+
+    const separator = document.createElement('div');
+    separator.className = 'context-menu-separator';
+    menu.appendChild(separator);
+
     const copyItem = document.createElement('div');
     copyItem.className = 'context-menu-item';
     copyItem.textContent = 'Copy metadata to session';
@@ -2652,6 +2686,8 @@ export class App {
       }
       this.fileStatuses.clear();
       this.selectedBrowserFile = null;
+      // Load persisted sidecar statuses before rendering
+      await this.loadSidecarStatuses(this.folderFiles);
       this.renderFileBrowser();
       this.updateSourceMetadataPanel(null);
     } catch (err: unknown) {
@@ -2694,9 +2730,7 @@ export class App {
       statusBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         const cur = this.fileStatuses.get(f.path) || 'pending';
-        const next = cur === 'pending' ? 'done' : cur === 'done' ? 'skip' : 'pending';
-        this.fileStatuses.set(f.path, next);
-        this.renderFileBrowser();
+        this.setFileStatus(f.path, cycleMarkingStatus(cur));
       });
       // Prevent rapid double-click on the marker circle from triggering the
       // item-level dblclick handler that imports the file.
@@ -2769,6 +2803,49 @@ export class App {
     this.selectedBrowserFile = file;
     this.renderFileBrowser();
     this.updateSourceMetadataPanel(file);
+  }
+
+  /**
+   * Set the marking status for a file and persist it to a sidecar file.
+   * Falls back gracefully if the write fails (e.g. read-only location).
+   */
+  private setFileStatus(filePath: string, status: FileMarkingStatus): void {
+    this.fileStatuses.set(filePath, status);
+    this.renderFileBrowser();
+    // Persist asynchronously — don't block UI
+    void this.saveSidecar(filePath, status);
+  }
+
+  private async saveSidecar(filePath: string, status: FileMarkingStatus): Promise<void> {
+    if (!window.appAPI?.writeFileText) return;
+    const sidecarPath = getSidecarPath(filePath);
+    try {
+      await window.appAPI.writeFileText(sidecarPath, serializeMarkingStatus(status));
+    } catch (err) {
+      // Read-only or sandboxed location — sidecar write failed, in-memory state is preserved
+      console.warn('[FileBrowser] sidecar write failed (read-only?):', sidecarPath, err);
+    }
+  }
+
+  /**
+   * Load sidecar marking files for all files in the folder.
+   * Silently ignores files that have no sidecar (they default to 'pending').
+   */
+  private async loadSidecarStatuses(files: AudioFileMeta[]): Promise<void> {
+    const api = window.appAPI;
+    if (!api?.readFileText) return;
+    await Promise.all(files.map(async (f) => {
+      const sidecarPath = getSidecarPath(f.path);
+      try {
+        const text = await api.readFileText(sidecarPath);
+        const status = deserializeMarkingStatus(text);
+        if (status !== 'pending') {
+          this.fileStatuses.set(f.path, status);
+        }
+      } catch {
+        // No sidecar — default remains 'pending'
+      }
+    }));
   }
 
   private async importFromBrowser(file: AudioFileMeta): Promise<void> {
