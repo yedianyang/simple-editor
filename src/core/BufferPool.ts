@@ -153,6 +153,11 @@ export class BufferPool {
     return this.addBuffer(normalized, pooled.sourceFileName + ' [normalized]', pooled.sourceChannelIndex);
   }
 
+  /** Iterate all pooled buffers (id → PooledBuffer). Used by session serializer. */
+  entries(): IterableIterator<[string, PooledBuffer]> {
+    return this.buffers.entries();
+  }
+
   clear(): void {
     this.buffers.clear();
   }

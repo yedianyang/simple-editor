@@ -1,5 +1,6 @@
 import { AudioEngine } from '../core/AudioEngine';
-import { formatTime, CHANNEL_NAMES, CHANNEL_COLORS, PluginInfo, TrackInsert, ExportMetadata, Clip, TrackChannelCount, createDefaultExportMetadata } from '../core/types';
+import { formatTime, CHANNEL_NAMES, CHANNEL_COLORS, PluginInfo, TrackInsert, ExportMetadata, Clip, TrackChannelCount, createDefaultExportMetadata, SessionData } from '../core/types';
+import { serializeSession, deserializeSession, resolveAbsolutePath } from '../core/SessionManager';
 import { formatSampleRate, hasSampleRateMismatch } from '../utils/sampleRateUtils';
 import { PluginParameterPanel } from './PluginParameterPanel';
 import { AudioEditor } from '../editor/AudioEditor';
@@ -121,6 +122,12 @@ export class App {
   /** True after the first file import has pre-filled the inline metadata fields. */
   private metadataPreFilled = false;
 
+  // ---- Session file state ----
+  /** Path to the currently open .fcs session file, or null for unsaved. */
+  private _sessionFilePath: string | null = null;
+  /** True when there are unsaved changes since the last save. */
+  private _sessionDirty: boolean = false;
+
   // ---- Session metadata ----
   /** Editable metadata for the current session, pre-filled from the first imported file. */
   private sessionMetadata: ExportMetadata = createDefaultExportMetadata();
@@ -161,6 +168,7 @@ export class App {
     this.timelineModel = new TimelineModel();
     this.bufferPool = new BufferPool();
     this.timelineUndoManager = new TimelineUndoManager();
+    this.timelineUndoManager.onChange = () => this.markDirty();
 
     // Timeline renderer shares the waveform canvas (replaces waveform view in timeline mode)
     const waveformCanvas = document.getElementById('waveformCanvas') as HTMLCanvasElement | null;
@@ -1140,6 +1148,9 @@ export class App {
       'toggle-mixer': () => this.mixer.toggle(),
       'toggle-plugin-browser': () => this.togglePluginBrowser(),
       'import': () => this.openImportDialog(),
+      'open-session': () => { void this.openSession(); },
+      'save-session': () => { void this.saveSession(); },
+      'save-session-as': () => { void this.saveSessionAs(); },
       'import-folder': async () => {
         const folderPath = await window.appAPI!.openFolderDialog();
         if (folderPath) {
@@ -1399,6 +1410,14 @@ export class App {
           if (e.shiftKey) {
             e.preventDefault();
             this.openImportDialog();
+          }
+          return;
+        case 's':
+          e.preventDefault();
+          if (e.shiftKey) {
+            void this.saveSessionAs();
+          } else {
+            void this.saveSession();
           }
           return;
         case 'b':
@@ -2852,6 +2871,11 @@ export class App {
   }
 
   private async importFromBrowser(file: AudioFileMeta): Promise<void> {
+    // .fcs files open as sessions, not audio imports
+    if (file.name.toLowerCase().endsWith('.fcs')) {
+      await this._loadSession(file.path);
+      return;
+    }
     const id = this.fileQueue.addFile({ name: file.name, path: file.path });
     this.renderFileList();
     await this.loadFileFromPath(file.path, id);
@@ -3612,13 +3636,351 @@ export class App {
     const hasWork = this.timelineModel.timeline.tracks.length > 0 ||
       this.audioEngine.audioBuffer !== null;
     if (hasWork) {
-      const confirmed = await this.showConfirmDialog(
-        'Create New Project?',
-        'Unsaved changes will be lost. Save your project first if needed.',
-      );
-      if (!confirmed) return;
+      if (this._sessionDirty) {
+        const choice = await this._showThreeWayDialog(
+          'Save Changes?',
+          'The current session has unsaved changes.',
+          'Save', "Don't Save", 'Cancel',
+        );
+        if (choice === 'cancel') return;
+        if (choice === 'save') await this.saveSession();
+      } else {
+        const confirmed = await this.showConfirmDialog(
+          'Create New Project?',
+          'Unsaved changes will be lost. Save your project first if needed.',
+        );
+        if (!confirmed) return;
+      }
     }
+    this._sessionFilePath = null;
+    this._sessionDirty = false;
+    this.updateTitleBar();
     this.newBlankProject();
+  }
+
+  // ==================== Session Dirty State ====================
+
+  private markDirty(): void {
+    this._sessionDirty = true;
+    this.updateTitleBar();
+  }
+
+  private markClean(): void {
+    this._sessionDirty = false;
+    this.updateTitleBar();
+  }
+
+  private updateTitleBar(): void {
+    const name = this._sessionFilePath
+      ? this._sessionFilePath.split('/').pop()!.replace(/\.fcs$/i, '')
+      : 'Untitled';
+    const dirty = this._sessionDirty ? ' *' : '';
+    document.title = `${name}${dirty} — FieldCorder`;
+  }
+
+  // ==================== Session Save ====================
+
+  async saveSession(): Promise<void> {
+    if (!this._sessionFilePath) {
+      await this.saveSessionAs();
+      return;
+    }
+    await this._writeSession(this._sessionFilePath);
+  }
+
+  async saveSessionAs(): Promise<void> {
+    if (!window.appAPI) return;
+    const path = await window.appAPI.showSaveDialog({
+      title: 'Save Session',
+      filters: [{ name: 'FieldCorder Session', extensions: ['fcs'] }],
+    });
+    if (!path) return;
+    await this._writeSession(path);
+  }
+
+  private async _writeSession(path: string): Promise<void> {
+    const sessionData = serializeSession(
+      this.timelineModel.timeline,
+      this._buildBufferSourceMap(),
+      path,
+      this._getSessionMetadata(),
+      this.folderPath,
+    );
+    const json = JSON.stringify(sessionData, null, 2);
+    await window.appAPI!.writeFileText(path, json);
+    this._sessionFilePath = path;
+    this.markClean();
+  }
+
+  private _buildBufferSourceMap(): Map<string, { fileName: string; channelIndex: number }> {
+    const map = new Map<string, { fileName: string; channelIndex: number }>();
+    for (const [id, pooled] of this.bufferPool.entries()) {
+      map.set(id, {
+        fileName: pooled.sourceFileName,
+        channelIndex: pooled.sourceChannelIndex,
+      });
+    }
+    return map;
+  }
+
+  private _getSessionMetadata(): Record<string, unknown> {
+    const meta = this.gatherInlineMetadata();
+    return meta as unknown as Record<string, unknown>;
+  }
+
+  // ==================== Session Load ====================
+
+  async openSession(): Promise<void> {
+    if (this._sessionDirty) {
+      const choice = await this._showThreeWayDialog(
+        'Save Changes?',
+        'The current session has unsaved changes.',
+        'Save', "Don't Save", 'Cancel',
+      );
+      if (choice === 'cancel') return;
+      if (choice === 'save') await this.saveSession();
+    }
+
+    if (!window.appAPI) return;
+    const paths = await window.appAPI.showOpenDialog({
+      title: 'Open Session',
+      filters: [{ name: 'FieldCorder Session', extensions: ['fcs'] }],
+      multiple: false,
+    });
+    if (!paths || paths.length === 0) return;
+    await this._loadSession(paths[0]);
+  }
+
+  private async _loadSession(path: string): Promise<void> {
+    try {
+      const json = await window.appAPI!.readFileText(path);
+      const sessionData: SessionData = JSON.parse(json) as SessionData;
+
+      // Validate
+      if (sessionData.version !== 1 || sessionData.app !== 'FieldCorder') {
+        alert('Invalid session file.');
+        return;
+      }
+
+      // Deserialize to timeline skeleton with placeholder bufferIds
+      const { timeline, metadata, fileBrowserPath, audioFilesToLoad } = deserializeSession(sessionData);
+
+      // Clear current state (reset everything)
+      this.newBlankProject();
+
+      // Load audio files and build placeholder → real bufferId mapping
+      const bufferIdMapping = new Map<string, string>();
+
+      for (const af of audioFilesToLoad) {
+        // Try relative path first (resolved against session file location)
+        const resolvedRelative = resolveAbsolutePath(path, af.relativePath);
+        let loaded = false;
+
+        try {
+          const bufferIds = await this._loadAudioFileToPool(resolvedRelative, af.channels);
+          this._mapPlaceholderBufferIds(af.id, bufferIds, bufferIdMapping);
+          loaded = true;
+        } catch {
+          // Try absolute path as fallback
+          try {
+            const bufferIds = await this._loadAudioFileToPool(af.absolutePath, af.channels);
+            this._mapPlaceholderBufferIds(af.id, bufferIds, bufferIdMapping);
+            loaded = true;
+          } catch {
+            // Both paths failed — prompt user to locate
+          }
+        }
+
+        if (!loaded && window.appAPI) {
+          const newPaths = await window.appAPI.showOpenDialog({
+            title: `Locate missing file: ${af.relativePath.split('/').pop() ?? af.relativePath}`,
+            filters: [{ name: 'Audio Files', extensions: ['wav', 'aif', 'aiff', 'mp3'] }],
+            multiple: false,
+          });
+          if (newPaths && newPaths.length > 0) {
+            try {
+              const bufferIds = await this._loadAudioFileToPool(newPaths[0], af.channels);
+              this._mapPlaceholderBufferIds(af.id, bufferIds, bufferIdMapping);
+            } catch (err) {
+              console.error('[Session] Could not load relocated file:', err);
+            }
+          }
+        }
+      }
+
+      // Replace placeholder bufferIds with real pool IDs
+      for (const track of timeline.tracks) {
+        for (const clip of track.clips) {
+          clip.bufferIds = clip.bufferIds.map(placeholder => bufferIdMapping.get(placeholder) ?? placeholder);
+        }
+      }
+
+      // Apply the deserialized timeline
+      this.timelineModel.timeline = timeline;
+
+      // Restore metadata into inline fields
+      this._applySessionMetadata(metadata);
+
+      // Restore file browser path
+      if (fileBrowserPath) {
+        this.folderPath = fileBrowserPath;
+        const pathEl = document.getElementById('folderPath');
+        if (pathEl) {
+          pathEl.textContent = fileBrowserPath.split('/').pop() || fileBrowserPath;
+          pathEl.title = fileBrowserPath;
+        }
+      }
+
+      // Rebuild audio routing and mixer
+      await this.audioEngine.init();
+      this.audioEngine.setupTrackRouting(timeline.tracks);
+      this.mixer.setupTracks(timeline.tracks);
+
+      // Feed timeline to renderer
+      if (this.timelineRenderer) {
+        this.timelineRenderer.setTimeline(this.timelineModel.timeline, this.bufferPool);
+        this.timelineRenderer.zoomFit();
+      }
+
+      // Update session state
+      this._sessionFilePath = path;
+      this.timelineUndoManager.clear();
+      this.markClean();
+
+      this.buildInlineTrackNames();
+      this.updateUI();
+      this.updateFileInfo();
+    } catch (err) {
+      console.error('[Session] Load error:', err);
+      const msg = err instanceof Error ? err.message : String(err);
+      alert('Error loading session: ' + msg);
+    }
+  }
+
+  /**
+   * Load a single audio file into the buffer pool.
+   * Returns the array of buffer IDs (one per channel).
+   */
+  private async _loadAudioFileToPool(filePath: string, _expectedChannels: number): Promise<string[]> {
+    const name = filePath.split('/').pop() || 'audio';
+
+    await this.audioEngine.init();
+    const result = await FileHandler.importFilePath(filePath);
+
+    let bufferIds: string[];
+    if (result instanceof ArrayBuffer) {
+      // Non-WAV: decode via Web Audio
+      const audioBuffer = await this.audioEngine.loadAudio(result);
+      bufferIds = this.bufferPool.importMultiChannel(audioBuffer, name);
+    } else {
+      // WAV: raw PCM from Rust parser
+      bufferIds = this.bufferPool.importFromRawChannels(
+        result.samples, result.channels, result.num_samples, result.sample_rate, name,
+      );
+    }
+
+    // Ensure helpers exist for subsequent plugin/audio use
+    if (!this.audioEditor) {
+      this.audioEditor = new AudioEditor(this.audioEngine.audioContext!);
+    }
+    if (!this.pluginHost) {
+      this.pluginHost = new PluginHost(this.audioEngine.audioContext!);
+      this.mixer.pluginHost = this.pluginHost;
+      this.pluginParameterPanel.setPluginHost(this.pluginHost);
+    }
+
+    return bufferIds;
+  }
+
+  private _mapPlaceholderBufferIds(
+    audioFileId: string,
+    realBufferIds: string[],
+    mapping: Map<string, string>,
+  ): void {
+    for (let ch = 0; ch < realBufferIds.length; ch++) {
+      mapping.set(`${audioFileId}:${ch}`, realBufferIds[ch]);
+    }
+  }
+
+  private _applySessionMetadata(metadata: Record<string, unknown>): void {
+    // Apply metadata fields back to inline sidebar inputs
+    const setField = (id: string, value: unknown) => {
+      if (typeof value !== 'string') return;
+      const el = document.getElementById(id) as HTMLInputElement | null;
+      if (el) el.value = value;
+    };
+    setField('inlineDescription', metadata['bpiDescription']);
+    setField('inlineOriginator', metadata['originator']);
+    setField('inlineDate', metadata['date']);
+    setField('inlineTime', metadata['time']);
+    setField('inlineScene', metadata['scene']);
+    setField('inlineTake', metadata['take']);
+    setField('inlineTape', metadata['tape']);
+    setField('inlineNote', metadata['note']);
+  }
+
+  // ==================== Three-Way Dialog ====================
+
+  /**
+   * Show a 3-option dialog (Save / Don't Save / Cancel).
+   * Returns 'save', 'nosave', or 'cancel'.
+   */
+  private async _showThreeWayDialog(
+    title: string,
+    message: string,
+    saveLabel: string,
+    noSaveLabel: string,
+    cancelLabel: string,
+  ): Promise<'save' | 'nosave' | 'cancel'> {
+    // Build a simple modal since Tauri dialog API doesn't support 3-way
+    return new Promise(resolve => {
+      const overlay = document.createElement('div');
+      overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:9999';
+
+      const dialog = document.createElement('div');
+      dialog.style.cssText = 'background:#2d2d2d;border-radius:8px;padding:24px;min-width:320px;max-width:400px;color:#fff;font-family:-apple-system,BlinkMacSystemFont,sans-serif;box-shadow:0 16px 48px rgba(0,0,0,0.6)';
+
+      const titleEl = document.createElement('div');
+      titleEl.textContent = title;
+      titleEl.style.cssText = 'font-size:15px;font-weight:600;margin-bottom:8px';
+
+      const msgEl = document.createElement('div');
+      msgEl.textContent = message;
+      msgEl.style.cssText = 'font-size:13px;color:#aaa;margin-bottom:20px;line-height:1.4';
+
+      const btnRow = document.createElement('div');
+      btnRow.style.cssText = 'display:flex;gap:8px;justify-content:flex-end';
+
+      const makeBtn = (label: string, primary: boolean) => {
+        const btn = document.createElement('button');
+        btn.textContent = label;
+        btn.style.cssText = `height:28px;padding:0 14px;border-radius:4px;border:1px solid rgba(255,255,255,0.15);cursor:pointer;font-size:12px;font-weight:${primary ? '600' : '400'};background:${primary ? '#2563eb' : 'transparent'};color:${primary ? '#fff' : '#ccc'}`;
+        return btn;
+      };
+
+      const cancelBtn = makeBtn(cancelLabel, false);
+      const noSaveBtn = makeBtn(noSaveLabel, false);
+      const saveBtn = makeBtn(saveLabel, true);
+
+      const cleanup = (result: 'save' | 'nosave' | 'cancel') => {
+        overlay.remove();
+        resolve(result);
+      };
+
+      cancelBtn.addEventListener('click', () => cleanup('cancel'));
+      noSaveBtn.addEventListener('click', () => cleanup('nosave'));
+      saveBtn.addEventListener('click', () => cleanup('save'));
+
+      btnRow.appendChild(cancelBtn);
+      btnRow.appendChild(noSaveBtn);
+      btnRow.appendChild(saveBtn);
+
+      dialog.appendChild(titleEl);
+      dialog.appendChild(msgEl);
+      dialog.appendChild(btnRow);
+      overlay.appendChild(dialog);
+      document.body.appendChild(overlay);
+    });
   }
 
   private showConfirmDialog(title: string, message: string): Promise<boolean> {

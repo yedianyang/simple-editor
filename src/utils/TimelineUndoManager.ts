@@ -16,6 +16,9 @@ export class TimelineUndoManager {
   private redoStack: TimelineCommand[] = [];
   private maxSize = 50;
 
+  /** Called whenever the undo stack changes (push, undo, redo). */
+  onChange: (() => void) | null = null;
+
   push(command: TimelineCommand): void {
     command.execute();
     this.undoStack.push(command);
@@ -23,6 +26,7 @@ export class TimelineUndoManager {
       this.undoStack.shift();
     }
     this.redoStack = [];
+    this.onChange?.();
   }
 
   undo(): void {
@@ -30,6 +34,7 @@ export class TimelineUndoManager {
     if (!command) return;
     command.undo();
     this.redoStack.push(command);
+    this.onChange?.();
   }
 
   redo(): void {
@@ -37,6 +42,7 @@ export class TimelineUndoManager {
     if (!command) return;
     command.execute();
     this.undoStack.push(command);
+    this.onChange?.();
   }
 
   canUndo(): boolean {
@@ -54,6 +60,7 @@ export class TimelineUndoManager {
       this.undoStack.shift();
     }
     this.redoStack = [];
+    this.onChange?.();
   }
 
   clear(): void {
