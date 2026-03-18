@@ -87,7 +87,7 @@ export interface SerializedTrack {
 export interface ProjectData {
   version: number;
   fileName: string;
-  metadata: Record<string, any>;
+  metadata: Record<string, unknown>;
   audio: {
     sampleRate: number;
     numberOfChannels: number;
@@ -96,6 +96,65 @@ export interface ProjectData {
   };
   cuePoints: Array<{ sample: number; name: string }>;
   tracks?: SerializedTrack[];
+}
+
+/* ─── Session File (.fcs) ─── */
+
+export interface SessionAudioFile {
+  id: string;
+  relativePath: string;
+  absolutePath: string;
+  sampleRate: number;
+  channels: number;
+  numSamples: number;
+}
+
+export interface SessionClip {
+  id: string;
+  audioFileId: string;
+  channelIndices: number[];   // which channels from the audio file (e.g. [0,1] for stereo)
+  name: string;
+  timelineOffset: number;
+  sourceStart: number;
+  sourceEnd: number;
+  duration: number;
+  gainDb: number;
+  fadeInSamples: number;
+  fadeOutSamples: number;
+  fadeInCurve: number;
+  fadeOutCurve: number;
+  muted: boolean;
+  reversed: boolean;
+  crossfadeInSamples: number;
+  crossfadeOutSamples: number;
+  crossfadeType: 'equalPower' | 'equalGain';
+}
+
+export interface SessionTrack {
+  id: string;
+  name: string;
+  color: string;
+  channels: TrackChannelCount;
+  volume: number;
+  pan: number;
+  mute: boolean;
+  solo: boolean;
+  channelIndex: number;
+  height: number;
+  clips: SessionClip[];
+  inserts: SerializedTrackInsert[];
+}
+
+export interface SessionData {
+  version: 1;
+  app: 'FieldCorder';
+  savedAt: string;
+  sampleRate: number;
+  playheadSample: number;
+  fileBrowserPath: string | null;
+  metadata: Record<string, unknown>;
+  audioFiles: SessionAudioFile[];
+  tracks: SessionTrack[];
 }
 
 export interface CuePoint {
