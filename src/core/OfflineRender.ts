@@ -2,7 +2,7 @@ import { Timeline } from './types';
 import { BufferPool } from './BufferPool';
 import { PluginHost } from '../plugins/PluginHost';
 import type { PluginInstance } from './types';
-import { scheduleCrossfadeEnvelope } from './CrossfadeUtils';
+import { scheduleCrossfadeEnvelope, computeClipScheduleParams } from './CrossfadeUtils';
 
 export interface OfflineRenderResult {
   channels: Float32Array[];
@@ -150,9 +150,13 @@ export async function renderTimelineOffline(
       source.buffer = clipBuffer;
 
       const sr = sampleRate;
-      const sourceOffset = clip.sourceStart;
-      const playDuration = clip.duration;
-      const scheduledTime = clip.timelineOffset / sr;
+
+      // Compute schedule params accounting for true crossfade overlap.
+      // Offline render always starts from sample 0 (no mid-timeline skip).
+      const sched = computeClipScheduleParams(clip, 0, sr);
+      const scheduledTime = sched.scheduledTimeSec;
+      const { playDuration, actualOverlap } = sched;
+
       const baseGain = clip.gainDb !== 0 ? Math.pow(10, clip.gainDb / 20) : 1;
       const hasFadeIn = clip.fadeInSamples > 0;
       const hasFadeOut = clip.fadeOutSamples > 0;
@@ -162,47 +166,50 @@ export async function renderTimelineOffline(
       if (baseGain !== 1 || hasFadeIn || hasFadeOut || hasCrossfade) {
         const clipGain = offlineCtx.createGain();
 
-        // Schedule fade-in (configurable curve, 8 ramp points — matches AudioEngine)
+        // Schedule fade-in (configurable curve, 8 ramp points — matches AudioEngine).
+        // Fade-in starts at the visual clip start = actualOverlap samples into the extended clip.
         if (hasFadeIn) {
           const fadeInCurve = clip.fadeInCurve ?? 0;
-          const fadeInEnd = clip.fadeInSamples;
+          const fadeInStartInExtended = actualOverlap;
+          const fadeInEndInExtended = actualOverlap + clip.fadeInSamples;
           const RAMP_POINTS = 8;
-          clipGain.gain.setValueAtTime(0, scheduledTime);
+          clipGain.gain.setValueAtTime(0, scheduledTime + fadeInStartInExtended / sr);
           for (let p = 1; p <= RAMP_POINTS; p++) {
             const t = p / RAMP_POINTS;
-            const fadeSample = Math.round(t * fadeInEnd);
-            if (fadeSample > playDuration) break;
+            const fadeSampleInExtended = Math.round(fadeInStartInExtended + t * clip.fadeInSamples);
+            if (fadeSampleInExtended > playDuration) break;
             clipGain.gain.linearRampToValueAtTime(
               Math.pow(t, Math.pow(2, -fadeInCurve)) * baseGain,
-              scheduledTime + fadeSample / sr,
+              scheduledTime + fadeSampleInExtended / sr,
             );
           }
           // Ensure full gain at end of fade-in
-          const fadeEndTime = scheduledTime + fadeInEnd / sr;
-          clipGain.gain.linearRampToValueAtTime(baseGain, fadeEndTime);
+          clipGain.gain.linearRampToValueAtTime(baseGain, scheduledTime + fadeInEndInExtended / sr);
         } else {
           clipGain.gain.setValueAtTime(baseGain, scheduledTime);
         }
 
-        // Schedule fade-out (configurable curve, 8 ramp points — matches AudioEngine)
+        // Schedule fade-out (configurable curve, 8 ramp points — matches AudioEngine).
+        // Fade-out starts at (actualOverlap + clip.duration - clip.fadeOutSamples) in the extended clip.
         if (hasFadeOut) {
           const fadeOutCurve = clip.fadeOutCurve ?? 0;
-          const fadeOutStart = clip.duration - clip.fadeOutSamples;
-          const fadeOutStartTime = scheduledTime + fadeOutStart / sr;
+          const fadeOutStartInExtended = actualOverlap + clip.duration - clip.fadeOutSamples;
+          const fadeOutStartTime = scheduledTime + fadeOutStartInExtended / sr;
           clipGain.gain.setValueAtTime(baseGain, fadeOutStartTime);
           const RAMP_POINTS = 8;
           for (let p = 1; p <= RAMP_POINTS; p++) {
             const t = p / RAMP_POINTS;
-            const fadeSample = fadeOutStart + Math.round(t * clip.fadeOutSamples);
-            if (fadeSample > playDuration) break;
+            const fadeSampleInExtended = fadeOutStartInExtended + Math.round(t * clip.fadeOutSamples);
+            if (fadeSampleInExtended > playDuration) break;
             clipGain.gain.linearRampToValueAtTime(
               Math.pow(1 - t, Math.pow(2, -fadeOutCurve)) * baseGain,
-              scheduledTime + fadeSample / sr,
+              scheduledTime + fadeSampleInExtended / sr,
             );
           }
         }
 
-        // Schedule crossfade envelope (overrides regular fades in the overlap region)
+        // Schedule crossfade envelope (overrides regular fades in the overlap region).
+        // Pass actualOverlap so the xf-out position is correctly offset by the pre-roll.
         if (hasCrossfade) {
           scheduleCrossfadeEnvelope(
             clipGain,
@@ -212,6 +219,7 @@ export async function renderTimelineOffline(
             playDuration,
             sr,
             baseGain,
+            actualOverlap,
           );
         }
 
@@ -221,7 +229,7 @@ export async function renderTimelineOffline(
         source.connect(trackGain);
       }
 
-      source.start(scheduledTime, sourceOffset / sr, playDuration / sr);
+      source.start(scheduledTime, sched.sourceOffsetSec, sched.durationSec);
     }
   }
 

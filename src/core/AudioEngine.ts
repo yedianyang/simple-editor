@@ -1,7 +1,7 @@
 import { Track, TrackInsert, FaderLaw, Timeline } from './types';
 import type { PluginHost } from '../plugins/PluginHost';
 import { BufferPool } from './BufferPool';
-import { scheduleCrossfadeEnvelope } from './CrossfadeUtils';
+import { scheduleCrossfadeEnvelope, computeClipScheduleParams } from './CrossfadeUtils';
 
 /**
  * Audio Engine for FieldCorder DAW.
@@ -443,30 +443,22 @@ export class AudioEngine {
           clipBuffer = pooled.buffer;
         }
 
-        const clipStartSample = clip.timelineOffset;
-        const clipEndSample = clip.timelineOffset + clip.duration;
+        const sr = timeline.sampleRate;
 
-        // Skip clips entirely before the start position
-        if (clipEndSample <= startSample) continue;
+        // Compute schedule params accounting for true crossfade overlap:
+        // - crossfadeOut clips extend past their visual end
+        // - crossfadeIn clips start before their visual start (reading earlier source data)
+        const sched = computeClipScheduleParams(clip, startSample, sr);
+
+        // Skip clips whose extended playback range ends at or before the start position
+        if (sched.effectiveEndSample <= startSample) continue;
 
         const source = this.audioContext.createBufferSource();
         source.buffer = clipBuffer;
 
-        // Calculate start offset within the source buffer and schedule time
-        let sourceOffset = clip.sourceStart;
-        let scheduledTime = now + (clipStartSample - startSample) / timeline.sampleRate;
-        let playDuration = clip.duration;
+        const scheduledTime = now + sched.scheduledTimeSec;
+        const { skipSamples, playDuration } = sched;
 
-        // If the clip starts before our playback position, offset into it
-        let skipSamples = 0;
-        if (clipStartSample < startSample) {
-          skipSamples = startSample - clipStartSample;
-          sourceOffset += skipSamples;
-          playDuration -= skipSamples;
-          scheduledTime = now;
-        }
-
-        const sr = timeline.sampleRate;
         const baseGain = clip.gainDb !== 0 ? Math.pow(10, clip.gainDb / 20) : 1;
         const hasFadeIn = clip.fadeInSamples > 0;
         const hasFadeOut = clip.fadeOutSamples > 0;
@@ -476,19 +468,25 @@ export class AudioEngine {
         if (baseGain !== 1 || hasFadeIn || hasFadeOut || hasCrossfade) {
           const clipGain = this.audioContext.createGain();
 
-          // Schedule fade-in: configurable curve approximated with 8 ramp points
+          // Schedule fade-in: configurable curve approximated with 8 ramp points.
+          // For crossfadeIn clips the fade-in is positioned relative to the extended
+          // clip start (which is crossfadeInSamples before the visual clip start).
+          // skipSamples already accounts for the extended start.
           if (hasFadeIn) {
             const fadeInCurve = clip.fadeInCurve ?? 0;
-            const fadeInEnd = clip.fadeInSamples;
-            const fadeInStartInPlayback = -skipSamples; // relative to playback start (can be negative)
+            // Fade-in starts at the visual clip start, which is actualOverlap samples
+            // into the extended clip. Use sched.actualOverlap (already clamped by sourceStart).
+            const xfInOffset = sched.actualOverlap;
+            const fadeInEndInExtended = xfInOffset + clip.fadeInSamples;
+            const fadeInStartInPlayback = xfInOffset - skipSamples;
 
-            if (fadeInStartInPlayback + fadeInEnd > 0) {
+            if (fadeInStartInPlayback + clip.fadeInSamples > 0) {
               // Fade-in is still active at our playback position
               const RAMP_POINTS = 8;
               for (let p = 0; p <= RAMP_POINTS; p++) {
                 const t = p / RAMP_POINTS; // 0..1 through the fade
-                const fadeSample = Math.round(t * fadeInEnd);
-                const sampleInPlayback = fadeSample - skipSamples;
+                const fadeSampleInExtended = Math.round(xfInOffset + t * clip.fadeInSamples);
+                const sampleInPlayback = fadeSampleInExtended - skipSamples;
 
                 if (sampleInPlayback < 0) continue;
                 if (sampleInPlayback > playDuration) break;
@@ -498,15 +496,15 @@ export class AudioEngine {
 
                 if (p === 0 || (sampleInPlayback === 0 && skipSamples > 0)) {
                   // Starting mid-fade: set initial value
-                  const progressAtStart = skipSamples / fadeInEnd;
-                  const startGain = Math.pow(Math.min(1, progressAtStart), Math.pow(2, -fadeInCurve)) * baseGain;
+                  const progressAtStart = (skipSamples - xfInOffset) / clip.fadeInSamples;
+                  const startGain = Math.pow(Math.max(0, Math.min(1, progressAtStart)), Math.pow(2, -fadeInCurve)) * baseGain;
                   clipGain.gain.setValueAtTime(startGain, scheduledTime);
                 } else {
                   clipGain.gain.linearRampToValueAtTime(gainAtPoint, timeAtPoint);
                 }
               }
               // Ensure we reach full gain at the end of fade-in
-              const fadeEndInPlayback = fadeInEnd - skipSamples;
+              const fadeEndInPlayback = fadeInEndInExtended - skipSamples;
               if (fadeEndInPlayback > 0 && fadeEndInPlayback <= playDuration) {
                 clipGain.gain.linearRampToValueAtTime(baseGain, scheduledTime + fadeEndInPlayback / sr);
               }
@@ -518,11 +516,16 @@ export class AudioEngine {
             clipGain.gain.setValueAtTime(baseGain, scheduledTime);
           }
 
-          // Schedule fade-out: configurable curve approximated with 8 ramp points
+          // Schedule fade-out: configurable curve approximated with 8 ramp points.
+          // For crossfadeOut clips, the visual clip ends at clip.duration, then the
+          // crossfade tail extends further. Fade-out is positioned within the visual
+          // clip body (before the crossfade tail), so its position in the extended
+          // playback timeline is unchanged relative to clip.duration.
           if (hasFadeOut) {
             const fadeOutCurve = clip.fadeOutCurve ?? 0;
-            const fadeOutStart = clip.duration - clip.fadeOutSamples;
-            const fadeOutStartInPlayback = fadeOutStart - skipSamples;
+            // Fade-out starts at (actualOverlap + clip.duration - clip.fadeOutSamples) in the extended clip
+            const fadeOutStartInExtended = sched.actualOverlap + clip.duration - clip.fadeOutSamples;
+            const fadeOutStartInPlayback = fadeOutStartInExtended - skipSamples;
 
             if (fadeOutStartInPlayback < playDuration) {
               const RAMP_POINTS = 8;
@@ -534,8 +537,8 @@ export class AudioEngine {
 
               for (let p = 1; p <= RAMP_POINTS; p++) {
                 const t = p / RAMP_POINTS; // 0..1 through the fade-out
-                const fadeSample = Math.round(fadeOutStart + t * clip.fadeOutSamples);
-                const sampleInPlayback = fadeSample - skipSamples;
+                const fadeSampleInExtended = Math.round(fadeOutStartInExtended + t * clip.fadeOutSamples);
+                const sampleInPlayback = fadeSampleInExtended - skipSamples;
 
                 if (sampleInPlayback < 0) continue;
                 if (sampleInPlayback > playDuration) break;
@@ -547,7 +550,8 @@ export class AudioEngine {
             }
           }
 
-          // Schedule crossfade envelope (overrides regular fades in the overlap region)
+          // Schedule crossfade envelope (overrides regular fades in the overlap region).
+          // Pass actualOverlap so the envelope is positioned correctly within the extended clip.
           if (hasCrossfade) {
             scheduleCrossfadeEnvelope(
               clipGain,
@@ -557,6 +561,7 @@ export class AudioEngine {
               playDuration,
               sr,
               baseGain,
+              sched.actualOverlap,
             );
           }
 
@@ -566,9 +571,7 @@ export class AudioEngine {
           source.connect(gainNode);
         }
 
-        const sourceOffsetSec = sourceOffset / sr;
-        const durationSec = playDuration / sr;
-        source.start(scheduledTime, sourceOffsetSec, durationSec);
+        source.start(scheduledTime, sched.sourceOffsetSec, sched.durationSec);
         this.scheduledSources.push(source);
       }
     }

@@ -5,6 +5,7 @@ import {
   equalGainXfGain,
   clampCrossfadeSamples,
   applyCrossfadeToClips,
+  computeClipScheduleParams,
 } from '../../src/core/CrossfadeUtils';
 
 // ==================== Crossfade gain formulas ====================
@@ -177,5 +178,132 @@ describe('applyCrossfadeToClips', () => {
     applyCrossfadeToClips(clipA, clipB, 0, 'equalPower');
     expect(clipA.crossfadeOutSamples).toBe(0);
     expect(clipB.crossfadeInSamples).toBe(0);
+  });
+});
+
+// ==================== computeClipScheduleParams — true overlap scheduling ====================
+
+describe('computeClipScheduleParams — crossfade overlap', () => {
+  function makeClip(id: string, timelineOffset: number, duration: number, sourceStart = 0): Clip {
+    return {
+      id,
+      bufferIds: ['buf'],
+      name: 'test',
+      timelineOffset,
+      sourceStart,
+      sourceEnd: sourceStart + duration,
+      duration,
+      gainDb: 0,
+      fadeInSamples: 0,
+      fadeOutSamples: 0,
+      muted: false,
+    };
+  }
+
+  it('no crossfade: schedule is unchanged', () => {
+    const clip = makeClip('a', 1000, 5000, 100);
+    // startSample=0 means play from beginning of timeline
+    const p = computeClipScheduleParams(clip, 0, 48000);
+    expect(p.scheduledTimeSec).toBeCloseTo(1000 / 48000);
+    expect(p.sourceOffsetSec).toBeCloseTo(100 / 48000);
+    expect(p.durationSec).toBeCloseTo(5000 / 48000);
+    expect(p.skipSamples).toBe(0);
+    expect(p.playDuration).toBe(5000);
+  });
+
+  it('crossfadeOut: clip plays duration + crossfadeOutSamples total', () => {
+    const clip = makeClip('a', 0, 5000);
+    clip.crossfadeOutSamples = 1000;
+    const p = computeClipScheduleParams(clip, 0, 48000);
+    // clipA plays 5000 + 1000 = 6000 samples
+    expect(p.playDuration).toBe(6000);
+    expect(p.durationSec).toBeCloseTo(6000 / 48000);
+  });
+
+  it('crossfadeOut: timeline offset and source offset are unchanged', () => {
+    const clip = makeClip('a', 2000, 5000, 300);
+    clip.crossfadeOutSamples = 1000;
+    const p = computeClipScheduleParams(clip, 0, 48000);
+    expect(p.scheduledTimeSec).toBeCloseTo(2000 / 48000);
+    expect(p.sourceOffsetSec).toBeCloseTo(300 / 48000);
+  });
+
+  it('crossfadeIn: clip scheduled crossfadeInSamples earlier on the timeline', () => {
+    // sourceStart=2000 ensures we have enough source data before the clip start
+    const clip = makeClip('b', 5000, 5000, 2000);
+    clip.crossfadeInSamples = 1000;
+    const p = computeClipScheduleParams(clip, 0, 48000);
+    // actualOverlap = min(1000, 2000) = 1000
+    // Should start 1000 samples earlier: timeline position 5000 - 1000 = 4000
+    expect(p.scheduledTimeSec).toBeCloseTo(4000 / 48000);
+  });
+
+  it('crossfadeIn: source reads crossfadeInSamples earlier from buffer', () => {
+    const clip = makeClip('b', 5000, 5000, 1000);
+    clip.crossfadeInSamples = 1000;
+    const p = computeClipScheduleParams(clip, 0, 48000);
+    // sourceOffset = 1000 - 1000 = 0
+    expect(p.sourceOffsetSec).toBeCloseTo(0 / 48000);
+  });
+
+  it('crossfadeIn: source offset is clamped to 0 when crossfadeInSamples > sourceStart', () => {
+    const clip = makeClip('b', 5000, 5000, 200); // sourceStart=200, xf=1000 > 200
+    clip.crossfadeInSamples = 1000;
+    const p = computeClipScheduleParams(clip, 0, 48000);
+    // Would be 200 - 1000 = -800, clamped to 0
+    expect(p.sourceOffsetSec).toBeCloseTo(0);
+  });
+
+  it('crossfadeIn: playDuration covers the full extended range', () => {
+    const clip = makeClip('b', 5000, 5000, 1000);
+    clip.crossfadeInSamples = 1000;
+    const p = computeClipScheduleParams(clip, 0, 48000);
+    // plays 1000 (xf-in) + 5000 (clip body) = 6000 samples
+    expect(p.playDuration).toBe(6000);
+  });
+
+  it('crossfadeIn: playDuration is shorter when sourceStart clamp reduces overlap', () => {
+    const clip = makeClip('b', 5000, 5000, 300); // sourceStart=300
+    clip.crossfadeInSamples = 1000;
+    const p = computeClipScheduleParams(clip, 0, 48000);
+    // actualOverlap = min(1000, 300) = 300, playDuration = 300 + 5000 = 5300
+    expect(p.playDuration).toBe(5300);
+  });
+
+  it('mid-playback skip: clips already past are excluded via clipEndSample check (outside params)', () => {
+    // This verifies that a clip with crossfadeOut still has its end correctly extended
+    const clip = makeClip('a', 0, 5000);
+    clip.crossfadeOutSamples = 1000;
+    const p = computeClipScheduleParams(clip, 0, 48000);
+    // The effective end of clip = timelineOffset + playDuration = 0 + 6000
+    expect(p.effectiveEndSample).toBe(6000);
+  });
+
+  it('mid-playback skip: crossfadeOut clip started mid-way skips correctly', () => {
+    const clip = makeClip('a', 0, 5000, 200);
+    clip.crossfadeOutSamples = 1000;
+    // startSample=4000 means we're 4000 samples into the timeline
+    // clip starts at 0, so skipSamples=4000
+    const p = computeClipScheduleParams(clip, 4000, 48000);
+    expect(p.skipSamples).toBe(4000);
+    // sourceOffset = 200 + 4000 = 4200
+    expect(p.sourceOffsetSec).toBeCloseTo(4200 / 48000);
+    // playDuration = (5000 + 1000) - 4000 = 2000
+    expect(p.playDuration).toBe(2000);
+  });
+
+  it('mid-playback skip: crossfadeIn clip scheduled at correct position when starting in middle of xf region', () => {
+    const clip = makeClip('b', 5000, 5000, 1000);
+    clip.crossfadeInSamples = 1000;
+    // startSample=4500 — we're in the middle of the crossfade region (xf starts at 4000)
+    const p = computeClipScheduleParams(clip, 4500, 48000);
+    // Extended clip starts at 4000, startSample=4500, so skipSamples=500
+    expect(p.skipSamples).toBe(500);
+    // scheduled at now (0 sec offset)
+    expect(p.scheduledTimeSec).toBeCloseTo(0);
+    // sourceOffset = 0 (base) + 500 (skip) = 500
+    expect(p.sourceOffsetSec).toBeCloseTo(500 / 48000);
+    // playDuration = 6000 - 500 = 5500
+    expect(p.playDuration).toBe(5500);
   });
 });
