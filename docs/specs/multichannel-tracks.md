@@ -1,24 +1,115 @@
-# Spec: Multi-channel Tracks (Phase 1 + 2)
+# Spec: Multi-channel Tracks
 
-> Date: 2026-03-03
-> Status: Approved
+> Date: 2026-03-03 (original) — Updated: 2026-03-17
+> Status: Approved (Phase 1 + 2 implemented; data model superseded by Round 5 decisions)
 > Scope: Phase 1 (core model + display) + Phase 2 (drag interactions + import)
+
+---
+
+## Data Model (Current — as of 2026-03-17)
+
+> The Phase 1 + 2 spec below was implemented but the Clip interface changed after the
+> **Round 5 interview** (`round5-interview-decisions.md` §1). The authoritative types are in
+> `src/core/types.ts`. Key differences from the original spec:
+>
+> - `Clip.subChannel` — **removed**. Sub-channel assignment via Y position is no longer allowed.
+> - `Clip.groupId` — **removed** (was in `clip-group.md`). The concept is replaced by `bufferIds[]`.
+> - `Clip.bufferIds: string[]` — **replaces** the old `Clip.bufferId: string`. One buffer ID per
+>   channel; `bufferIds.length` always equals the track's `channels` count.
+> - **Strict channel matching** — a clip can only be placed on a track whose `channels` value equals
+>   `clip.bufferIds.length`. No mono clip on a stereo track. No stereo clip on a mono track.
+
+### Current `Clip` interface (from `src/core/types.ts`)
+
+```typescript
+export interface Clip {
+  id: string;
+  /** One buffer ID per channel. Length must equal the track's channel count. */
+  bufferIds: string[];
+  name: string;
+  timelineOffset: number;
+  sourceStart: number;
+  sourceEnd: number;
+  duration: number;
+  gainDb: number;
+  fadeInSamples: number;
+  fadeOutSamples: number;
+  fadeInCurve?: number;          // -1 to 1, default 0 (linear)
+  fadeOutCurve?: number;         // -1 to 1, default 0 (linear)
+  muted: boolean;
+  reversed?: boolean;
+  crossfadeInSamples?: number;
+  crossfadeOutSamples?: number;
+  crossfadeType?: 'equalPower' | 'equalGain';
+}
+```
+
+### Current `Track` interface (from `src/core/types.ts`)
+
+```typescript
+export interface Track {
+  id: string;
+  name: string;
+  color: string;
+  channels: TrackChannelCount;   // 1 | 2 | 4 | 5 | 6
+  clips: Clip[];
+  volume: number;
+  pan: number;
+  mute: boolean;
+  solo: boolean;
+  channelIndex: number;
+  inserts: TrackInsert[];
+  height: number;                // per-track height in px, default 80
+}
+```
+
+---
+
+## Cross-track Split / Merge (Current Behavior)
+
+### Split: stereo clip → mono tracks
+
+When a stereo clip is dragged onto a mono track:
+
+- If there are 2 mono tracks available: `bufferIds[0]` → Track A, `bufferIds[1]` → Track B.
+- If only 1 mono track exists: create a second mono track automatically at the bottom, then split.
+- The original stereo clip is removed.
+
+### Split: quad (4ch) clip → stereo tracks or mono tracks
+
+- Quad → 2x stereo: `bufferIds[0,1]` → new stereo clip on Track A, `bufferIds[2,3]` → new stereo
+  clip on Track B.
+- Quad → 4x mono: each `bufferIds[i]` → one mono clip on a separate mono track.
+
+### Merge: 2 mono clips → stereo clip
+
+- Select 2 mono clips → right-click → "Merge to stereo track".
+- A new stereo clip is created with `bufferIds = [monoClip1.bufferIds[0], monoClip2.bufferIds[0]]`.
+- The two source mono clips are removed.
+- Undo restores both source clips and removes the stereo clip.
+
+### Incompatible drag (channel mismatch)
+
+- Mono clip dragged onto stereo track: **rejected**. Red overlay shown over the ghost clip.
+- Stereo clip dragged onto mono track: triggers the split flow above.
+- Any other channel-count mismatch that cannot be handled by split/merge: **rejected**.
 
 ---
 
 ## Overview
 
-Add multi-channel track support to FieldCorder. A Track can be Mono (1ch), Stereo (2ch), Quad (4ch), or 5.1 (6ch). Clips are freely placed onto any track; mono clips dragged into a stereo track are assigned to a sub-channel based on Y position (Pro Tools style).
+Add multi-channel track support to FieldCorder. A Track can be Mono (1ch), Stereo (2ch), Quad (4ch),
+or 5.1 (6ch). The channel count is fixed per track; clips must match the track's channel count.
 
 ## Design Decisions (from interview)
 
 | Question | Decision |
 |----------|----------|
-| Default import behavior | Poly WAV creates matching multi-channel track (B) |
-| Mono clip → stereo track | Y position determines channel (Pro Tools style) |
+| Default import behavior | Poly WAV creates matching multi-channel track |
+| Mono clip → stereo track | Rejected (red overlay) — strict channel matching |
 | Track display | Fixed base height, sub-channels shown Audacity-style (stacked vertically) |
-| Track height | Resizable via drag (independent feature, also benefits mono) |
-| Split/Merge workflow | Split multichannel → mono tracks; drag clips back to merge (Phase 4, not this spec) |
+| Track height | Resizable via drag (independent feature) |
+| Split/Merge workflow | Stereo drag → mono track triggers split; right-click 2 mono clips → merge |
 | Mixer volume | Single fader per track |
 | Mixer pan | Mono = position, Stereo = balance |
 | Mixer meter | Stereo = dual peak bars |
@@ -34,44 +125,27 @@ Add multi-channel track support to FieldCorder. A Track can be Mono (1ch), Stere
 #### `types.ts` — Track interface
 
 ```typescript
-export type TrackChannelCount = 1 | 2 | 4 | 6;
+export type TrackChannelCount = 1 | 2 | 4 | 5 | 6;
 
 export interface Track {
   id: string;
   name: string;
   color: string;
-  channels: TrackChannelCount;  // NEW — default 1
+  channels: TrackChannelCount;
   clips: Clip[];
   volume: number;
-  pan: number;                  // mono: position [-1,1]; stereo: balance [-1,1]
+  pan: number;
   mute: boolean;
   solo: boolean;
   channelIndex: number;
   inserts: TrackInsert[];
-  height: number;               // NEW — per-track height in px, default 80
+  height: number;               // per-track height in px, default 80
 }
 ```
 
 #### `types.ts` — Clip interface
 
-```typescript
-export interface Clip {
-  id: string;
-  bufferId: string;
-  name: string;
-  timelineOffset: number;
-  sourceStart: number;
-  sourceEnd: number;
-  duration: number;
-  gainDb: number;
-  fadeInSamples: number;
-  fadeOutSamples: number;
-  muted: boolean;
-  reversed?: boolean;
-  subChannel?: number;          // NEW — which sub-channel within a multi-ch track (0-based)
-                                // undefined = ch 0 for mono clips, or "all" for matching-ch clips
-}
-```
+See the **Current** section above. The old `subChannel` and `groupId` fields are not present.
 
 ### 1.2 TimelineModel Changes
 
@@ -81,38 +155,20 @@ export interface Clip {
 addTrack(name: string, color: string, channelIndex: number, channels: TrackChannelCount = 1): Track
 ```
 
-- Set `track.channels = channels`
-- Set `track.height = 80` (default)
+#### `importMultiChannelFile()` — behavior
 
-#### `addEmptyTrack()` → `addEmptyTrack(channels: TrackChannelCount = 1)`
-
-Accept channel count parameter.
-
-#### `importMultiChannelFile()` — update behavior
-
-Currently creates N mono tracks from N-channel file. New behavior:
-- Create 1 track with `channels = N` (for N = 1, 2, 4, 6)
-- Create N clips each with `subChannel = i`, all using per-channel bufferIds
-- For unsupported channel counts (3, 5, 7, 8+): fall back to N mono tracks
-
-#### `importFileAtPosition()` — same update
-
-When importing poly WAV at a position:
-- If channel count is 1/2/4/6: create 1 multi-channel track
-- Clips get `subChannel` assigned
+- Creates 1 track with `channels = N` (for N = 1, 2, 4, 6).
+- Creates 1 clip with `bufferIds` of length N (one buffer ID per channel).
+- For unsupported channel counts (3, 5, 7, 8+): fall back to N mono tracks, each with a
+  single-element `bufferIds` array.
 
 ### 1.3 TimelineRenderer Changes
 
 #### Variable track height
 
-Replace all `TRACK_HEIGHT` constant usage with `track.height`:
-
 ```typescript
-// Before
-const topY = RULER_HEIGHT + trackIndex * TRACK_HEIGHT;
-
-// After — precompute cumulative heights
-private trackTops: number[] = [];   // cached Y offset per track
+// Precompute cumulative heights
+private trackTops: number[] = [];
 private totalTrackHeight = 0;
 
 private recomputeTrackLayout(): void {
@@ -127,9 +183,7 @@ private recomputeTrackLayout(): void {
 }
 ```
 
-Call `recomputeTrackLayout()` in `render()` (before drawing) and after any track height change.
-
-#### `yToTrackIndex()` — binary search or linear scan
+#### `yToTrackIndex()`
 
 ```typescript
 private yToTrackIndex(y: number): number {
@@ -140,31 +194,13 @@ private yToTrackIndex(y: number): number {
     const height = this.timeline!.tracks[i].height;
     if (localY >= top && localY < top + height) return i;
   }
-  return this.trackTops.length; // below all tracks
-}
-```
-
-#### Sub-channel Y detection within a multi-channel track
-
-```typescript
-/** Given a canvas-local Y inside a multi-ch track, return the sub-channel index (0-based). */
-private yToSubChannel(y: number, trackIndex: number): number {
-  const track = this.timeline!.tracks[trackIndex];
-  if (track.channels <= 1) return 0;
-  const trackTopY = RULER_HEIGHT + this.trackTops[trackIndex] - this.scrollOffsetY;
-  const relativeY = y - trackTopY;
-  const laneHeight = track.height / track.channels;
-  return Math.min(track.channels - 1, Math.max(0, Math.floor(relativeY / laneHeight)));
+  return this.trackTops.length;
 }
 ```
 
 #### Multi-channel waveform rendering
 
-In `renderClipWaveform()`, for clips on a multi-channel track:
-- Divide the track lane into N horizontal sub-lanes
-- Each sub-lane renders the waveform of clips assigned to that sub-channel
-- Sub-lanes separated by a thin 1px divider line (`rgba(255,255,255,0.1)`)
-- Use `CHANNEL_COLORS[subChannel]` for waveform color
+Each sub-lane renders the waveform for `bufferIds[i]`:
 
 ```
 Stereo Track (120px height):
@@ -175,17 +211,20 @@ Stereo Track (120px height):
 └──────────────────────────────┘
 ```
 
+#### Crossfade rendering (Pro Tools style)
+
+In the crossfade zone both clips' waveforms are drawn overlapping with semi-transparency.
+The outgoing clip's waveform extends rightward into the crossfade region; the incoming clip's
+waveform extends leftward. Each is rendered at reduced opacity so both are visible simultaneously.
+
 #### Track height resize handle
 
-- 3px hit zone at the bottom edge of each track header
-- Cursor changes to `ns-resize`
-- Drag to resize, minimum height: `channels * 24` px
-- New DragMode: `'trackResize'`
-- On drag end, update `track.height` and re-render
+- 3px hit zone at the bottom edge of each track header.
+- Cursor: `ns-resize`.
+- Minimum height: `channels * 24` px.
+- DragMode: `'trackResize'`.
 
 ### 1.4 Track Header Display
-
-For multi-channel tracks, show channel type badge:
 
 ```
 ┌─────────────────┐
@@ -199,11 +238,6 @@ Badges: `[M]` mono, `[ST]` stereo, `[Q]` quad, `[5.1]` surround
 
 ### 1.5 Create Track Dialog
 
-New track creation UI, triggered by:
-- `Cmd+Shift+N` keyboard shortcut
-- Right-click on track header area → "New Track..."
-
-Dialog content:
 ```
 ┌──────────────────────────────────┐
 │  New Track                       │
@@ -216,71 +250,60 @@ Dialog content:
 └──────────────────────────────────┘
 ```
 
+Triggered by: `Cmd+Shift+N` or right-click track header → "New Track..."
+
 ---
 
 ## Phase 2: Drag Interactions + Import
 
 ### 2.1 File Browser Drag to Multi-channel Track
 
-When dragging a file from the File Browser onto the timeline:
-
 #### Poly WAV → empty area
-- Create a new track with `channels` matching the file's channel count
-- Create N clips (one per channel) with `subChannel = 0..N-1`
-
-#### Mono file → existing stereo track
-- Determine sub-channel from Y position (`yToSubChannel()`)
-- Create clip with `subChannel = detected`
+- Create 1 track with `channels` matching the file's channel count.
+- Create 1 clip with `bufferIds` of length N.
 
 #### Stereo file → existing stereo track
-- Create 2 clips: `subChannel = 0` (L) and `subChannel = 1` (R)
+- Create 1 clip with `bufferIds = [leftBufferId, rightBufferId]`.
 
 #### Poly WAV → existing track with mismatched channels
-- If file channels > track channels: only import first `track.channels` channels, warn
-- If file channels < track channels: import available channels, leave rest empty
+- If the clip channel count ≠ track channel count: trigger split flow or reject (see
+  Cross-track Split / Merge above).
 
 ### 2.2 Drop Preview Update
 
-Current preview shows blue highlight per target track. Updated:
-- For multi-channel drops onto empty area: show ghost multi-channel track (sub-lane preview)
-- For drops onto existing multi-channel track: highlight the specific sub-channel lane
-- Show sub-channel label in the highlight ("L", "R", etc.)
+- For incompatible channel-count drops: red overlay on the ghost clip.
+- For compatible drops: blue highlight on target track.
 
 ### 2.3 Internal Clip Drag (within timeline)
 
-When dragging an existing clip:
-- Moving a clip within the same multi-channel track: can change sub-channel via Y position
-- Moving a clip from mono track to stereo track: assign sub-channel from Y
-- Moving a clip from stereo track to mono track: keep audio, clear `subChannel`
+- Dragging within the same multi-channel track: time position changes, channel count is unchanged.
+- Dragging stereo clip to mono track: triggers split (see Cross-track Split / Merge).
+- Dragging mono clip to stereo track: rejected with red overlay.
 
 ### 2.4 Import from Double-click (File Browser)
 
-Current behavior clears timeline and creates mono tracks. Updated:
-- Poly WAV (2/4/6 ch): create 1 multi-channel track with correct type
-- Mono WAV: create 1 mono track (unchanged)
-- Unsupported channel count: fall back to N mono tracks
+- Poly WAV (2/4/6 ch): create 1 multi-channel track with correct type.
+- Mono WAV: create 1 mono track.
+- Unsupported channel count: fall back to N mono tracks.
 
 ---
 
-## Files to Modify
+## Files Modified
 
-| File | Phase | Changes |
-|------|-------|---------|
-| `src/core/types.ts` | 1 | Add `TrackChannelCount`, `Track.channels`, `Track.height`, `Clip.subChannel` |
-| `src/core/TimelineModel.ts` | 1 | Update `addTrack()`, `importMultiChannelFile()`, `importFileAtPosition()` |
-| `src/editor/TimelineRenderer.ts` | 1 | Variable height layout, sub-channel waveform, resize handle, sub-channel Y detection |
-| `src/ui/App.ts` | 1+2 | Create track dialog, updated import logic, drag sub-channel assignment |
-| `src/utils/TimelineUndoManager.ts` | 1 | Update commands for new Track fields |
-| `src/mixer/Mixer.ts` | 1 | Channel type badge in strip header (no routing changes in Phase 1) |
+| File | Changes |
+|------|---------|
+| `src/core/types.ts` | `TrackChannelCount`, `Track.channels`, `Track.height`, `Clip.bufferIds` (replaced `bufferId`) |
+| `src/core/TimelineModel.ts` | Updated `addTrack()`, `importMultiChannelFile()`, `importFileAtPosition()` |
+| `src/editor/TimelineRenderer.ts` | Variable height layout, multi-channel waveform, resize handle, crossfade overlap rendering |
+| `src/ui/App.ts` | Create track dialog, drag channel enforcement, red overlay on mismatch |
+| `src/utils/TimelineUndoManager.ts` | Commands updated for new Clip fields |
 
 ## Out of Scope (Phase 3+4)
 
 - Dual Mono plugin processing
 - Stereo balance pan behavior in AudioEngine
 - Dual peak meter in Mixer
-- Split multichannel track → mono tracks
-- Merge mono tracks → multichannel track
-- Project file serialization of channel info (currently not persisted beyond runtime)
+- Project file serialization of channel info
 
 ---
 
@@ -291,10 +314,12 @@ npx tsc --noEmit           # zero type errors
 npm test -- --run           # all green
 ```
 
-Manual testing (mark with commit emoji):
+Manual testing:
 - Create stereo/quad/5.1 empty track via dialog
-- Import poly WAV → creates correct multi-channel track type
-- Sub-channel waveform display (L/R stacked, different colors)
-- Drag mono clip onto stereo track → Y position assigns sub-channel
+- Import poly WAV → creates correct multi-channel track (1 clip, bufferIds.length = N)
+- Drag stereo clip to mono track → split into 2 mono clips
+- Drag mono clip to stereo track → red overlay, drop rejected
+- Right-click 2 mono clips → "Merge to stereo track"
+- Crossfade zone shows both waveforms overlapping
 - Resize track height by dragging bottom edge
-- Undo/redo works for all new operations
+- Undo/redo works for split, merge, import
