@@ -15,7 +15,7 @@ import { PluginInfo, PluginInstance, PluginParameter } from '../core/types';
  * - Reverb (convolution)
  */
 export class PluginHost {
-  private audioContext: AudioContext;
+  private audioContext: BaseAudioContext;
   private instances: Map<string, PluginInstance> = new Map();
   private availablePlugins: PluginInfo[] = [];
   private nextInstanceId = 1;
@@ -79,7 +79,7 @@ export class PluginHost {
     },
   ];
 
-  constructor(audioContext: AudioContext) {
+  constructor(audioContext: BaseAudioContext) {
     this.audioContext = audioContext;
     this.availablePlugins = [...PluginHost.BUILTIN_PLUGINS];
   }

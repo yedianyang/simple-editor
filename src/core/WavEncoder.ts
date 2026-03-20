@@ -125,12 +125,12 @@ function buildBextData(opts: WavEncodeOptions, meta: WavMetadata): Uint8Array {
   const enc = new TextEncoder();
 
   // Use user-provided date/time if available, otherwise fall back to current
+  const now = new Date();
   let date: string;
   let time: string;
   if (meta.date && meta.date.length > 0) {
     date = meta.date;
   } else {
-    const now = new Date();
     date = [
       now.getFullYear(),
       String(now.getMonth() + 1).padStart(2, '0'),
@@ -140,7 +140,6 @@ function buildBextData(opts: WavEncodeOptions, meta: WavMetadata): Uint8Array {
   if (meta.time && meta.time.length > 0) {
     time = meta.time;
   } else {
-    const now = new Date();
     time = [
       String(now.getHours()).padStart(2, '0'),
       String(now.getMinutes()).padStart(2, '0'),

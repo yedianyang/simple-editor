@@ -19,6 +19,7 @@
       "identifier": "fs:allow-read-file",
       "allow": [{ "path": "/**" }]
     },
-    "shell:default"
+    "shell:default",
+    "core:window:allow-start-dragging"
   ]
 }

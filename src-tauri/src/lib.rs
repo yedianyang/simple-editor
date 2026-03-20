@@ -4,6 +4,9 @@ use tauri::ipc::{Request, Response};
 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder, PredefinedMenuItem};
 use tauri::Emitter;
 
+#[cfg(feature = "gpu-denoise")]
+mod df_ort;
+
 // ── File Dialog Commands ──────────────────────────────────────────
 
 /// Open file dialog with audio format filters. Returns selected file paths.
@@ -935,6 +938,8 @@ struct DenoiseParams {
     dry: f32,
     sample_rate: u32,
     num_samples: u64,
+    #[serde(default)]
+    use_gpu: bool,
 }
 
 /// Map denoise slider value (0.0–1.0) to attenuation limit in dB.
@@ -1056,56 +1061,30 @@ async fn denoise_deepfilter(
         original.len(), params.sample_rate, samples_48k.len(), was_resampled
     );
 
-    // 4. Create DfTract processor
+    // 4. Process audio
     let atten_lim = denoise_to_atten_lim_db(params.denoise);
     let pf_beta = dereverb_to_pf_beta(params.dereverb);
+    #[cfg(feature = "gpu-denoise")]
+    let output_48k: Vec<f32> = if params.use_gpu {
+        // GPU path: ONNX Runtime with CoreML
+        log::info!("[DeepFilter] Using GPU (ort/CoreML) backend");
+        let app_ref = &app;
+        let mut processor = df_ort::DfOrt::new(atten_lim, pf_beta)?;
+        processor.process(&samples_48k, &|pct| {
+            let _ = app_ref.emit("denoise:progress", pct);
+        })?
+    } else {
+        // CPU path: tract (original)
+        denoise_tract(&app, &samples_48k, atten_lim, pf_beta)?
+    };
 
-    let df_params = df::tract::DfParams::default();
-    let r_params = df::tract::RuntimeParams::default_with_ch(1)
-        .with_atten_lim(atten_lim)
-        .with_post_filter(pf_beta);
-    let mut model = df::tract::DfTract::new(df_params, &r_params)
-        .map_err(|e| format!("DfTract init failed: {}", e))?;
-
-    log::info!(
-        "[DeepFilter] Model loaded: atten_lim={:.1}dB, pf_beta={:.4}, hop_size={}",
-        atten_lim, pf_beta, model.hop_size
-    );
-
-    // 5. Process in hop_size chunks
-    let hop_size = model.hop_size;
-    let num_48k = samples_48k.len();
-    let total_hops = num_48k.div_ceil(hop_size);
-    let mut output_48k = vec![0.0f32; num_48k];
-
-    log::info!("[DeepFilter] Processing {} hops (hop_size={})", total_hops, hop_size);
-
-    for (i, start) in (0..num_48k).step_by(hop_size).enumerate() {
-        let end = (start + hop_size).min(num_48k);
-        let actual_len = end - start;
-
-        // Pad last chunk to hop_size if needed
-        let mut chunk = vec![0.0f32; hop_size];
-        chunk[..actual_len].copy_from_slice(&samples_48k[start..end]);
-
-        let noisy = ndarray::Array2::from_shape_vec((1, hop_size), chunk)
-            .map_err(|e| format!("Noisy array creation failed: {}", e))?;
-        let mut enh = ndarray::Array2::<f32>::zeros((1, hop_size));
-
-        model
-            .process(noisy.view(), enh.view_mut())
-            .map_err(|e| format!("DeepFilter process error at hop {}: {}", i, e))?;
-
-        for j in 0..actual_len {
-            output_48k[start + j] = enh[[0, j]];
+    #[cfg(not(feature = "gpu-denoise"))]
+    let output_48k: Vec<f32> = {
+        if params.use_gpu {
+            log::warn!("[DeepFilter] GPU not available (compiled without gpu-denoise feature), falling back to CPU");
         }
-
-        // 6. Emit progress events every ~50 hops
-        if i % 50 == 0 || i == total_hops - 1 {
-            let percent = ((i + 1) as f64 / total_hops as f64 * 100.0) as u32;
-            let _ = app.emit("denoise:progress", percent);
-        }
-    }
+        denoise_tract(&app, &samples_48k, atten_lim, pf_beta)?
+    };
 
     log::info!(
         "[DeepFilter] Processing complete. Input RMS={:.4}, Output RMS={:.4}",
@@ -1155,6 +1134,60 @@ async fn denoise_deepfilter(
     buf.extend_from_slice(pcm_bytes);
 
     Ok(Response::new(buf))
+}
+
+/// CPU-based DeepFilter processing via tract (frame-by-frame pulsed mode).
+fn denoise_tract(
+    app: &tauri::AppHandle,
+    samples_48k: &[f32],
+    atten_lim: f32,
+    pf_beta: f32,
+) -> Result<Vec<f32>, String> {
+    let df_params = df::tract::DfParams::default();
+    let r_params = df::tract::RuntimeParams::default_with_ch(1)
+        .with_atten_lim(atten_lim)
+        .with_post_filter(pf_beta);
+    let mut model = df::tract::DfTract::new(df_params, &r_params)
+        .map_err(|e| format!("DfTract init failed: {}", e))?;
+
+    log::info!(
+        "[DeepFilter/CPU] Model loaded: atten_lim={:.1}dB, pf_beta={:.4}, hop_size={}",
+        atten_lim, pf_beta, model.hop_size
+    );
+
+    let hop_size = model.hop_size;
+    let num_48k = samples_48k.len();
+    let total_hops = num_48k.div_ceil(hop_size);
+    let mut output = vec![0.0f32; num_48k];
+
+    log::info!("[DeepFilter/CPU] Processing {} hops (hop_size={})", total_hops, hop_size);
+
+    for (i, start) in (0..num_48k).step_by(hop_size).enumerate() {
+        let end = (start + hop_size).min(num_48k);
+        let actual_len = end - start;
+
+        let mut chunk = vec![0.0f32; hop_size];
+        chunk[..actual_len].copy_from_slice(&samples_48k[start..end]);
+
+        let noisy = ndarray::Array2::from_shape_vec((1, hop_size), chunk)
+            .map_err(|e| format!("Array creation failed: {}", e))?;
+        let mut enh = ndarray::Array2::<f32>::zeros((1, hop_size));
+
+        model
+            .process(noisy.view(), enh.view_mut())
+            .map_err(|e| format!("DeepFilter process error at hop {}: {}", i, e))?;
+
+        for j in 0..actual_len {
+            output[start + j] = enh[[0, j]];
+        }
+
+        if i % 50 == 0 || i == total_hops - 1 {
+            let percent = ((i + 1) as f64 / total_hops as f64 * 100.0) as u32;
+            let _ = app.emit("denoise:progress", percent);
+        }
+    }
+
+    Ok(output)
 }
 
 // ── App Entry ─────────────────────────────────────────────────────

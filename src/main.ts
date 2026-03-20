@@ -1,5 +1,6 @@
 import { App } from './ui/App';
 import { createTauriAPI } from './utils/TauriAPI';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import './styles/main.css';
 
 // Initialize Tauri API adapter and mount globally
@@ -8,6 +9,16 @@ window.appAPI = createTauriAPI();
 // Prevent default drag-drop navigation (replaces entire app with file content)
 document.addEventListener('dragover', (e) => e.preventDefault());
 document.addEventListener('drop', (e) => e.preventDefault());
+
+// Titlebar drag — call Tauri startDragging() explicitly for Overlay titlebar
+const appWindow = getCurrentWindow();
+document.addEventListener('mousedown', (e) => {
+  const target = e.target as HTMLElement;
+  if (target.closest('[data-tauri-drag-region]') && !target.closest('button, input, select, [data-no-drag]')) {
+    e.preventDefault();
+    appWindow.startDragging();
+  }
+});
 
 // Global error handlers — prevent blank screen on uncaught exceptions
 window.addEventListener('error', (event) => {
