@@ -1,11 +1,20 @@
 /**
  * TDD tests for DeepFilterNet denoise integration.
- * Tests DenoiseClipCommand (undo/redo), denoise parameter presets,
+ * Tests DenoiseClipCommand (undo/redo), dB-based fader UI conversion,
  * and dry/wet mix signal behavior.
  */
 import { describe, it, expect } from 'vitest';
 import { DenoiseClipCommand } from '../../src/utils/TimelineUndoManager';
 import { TimelineModel } from '../../src/core/TimelineModel';
+import {
+  dbToParam,
+  paramToDb,
+  FADER_MIN_DB,
+  FADER_MAX_DB,
+  FADER_DEFAULT_DB,
+  FADER_LABELS,
+  FADER_PARAM_KEYS,
+} from '../../src/ui/DeepFilterUtils';
 
 // ==================== DenoiseClipCommand ====================
 
@@ -79,48 +88,61 @@ describe('DenoiseClipCommand', () => {
   });
 });
 
-// ==================== Denoise parameter presets ====================
+// ==================== dB <-> param conversion ====================
 
-// These must match the values in App.ts initDenoiseSliders()
-const PRESETS = {
-  gentle:     { denoise: 0.3,  dereverb: 0.1, dry: 0.8 },
-  balanced:   { denoise: 0.5,  dereverb: 0.3, dry: 0.3 },
-  aggressive: { denoise: 0.85, dereverb: 0.5, dry: 0.0 },
-} as const;
-
-describe('Denoise parameter presets', () => {
-  it('Gentle preset should have correct values', () => {
-    expect(PRESETS.gentle.denoise).toBe(0.3);
-    expect(PRESETS.gentle.dereverb).toBe(0.1);
-    expect(PRESETS.gentle.dry).toBe(0.8);
+describe('dB \u2194 param conversion', () => {
+  it('dbToParam(-56) should return exactly 0 (floor)', () => {
+    expect(dbToParam(-56)).toBe(0);
   });
 
-  it('Balanced preset should have correct values', () => {
-    expect(PRESETS.balanced.denoise).toBe(0.5);
-    expect(PRESETS.balanced.dereverb).toBe(0.3);
-    expect(PRESETS.balanced.dry).toBe(0.3);
+  it('dbToParam(0) should be approximately 0.8235 (56/68)', () => {
+    expect(dbToParam(0)).toBeCloseTo(0.8235, 3);
   });
 
-  it('Aggressive preset should have correct values', () => {
-    expect(PRESETS.aggressive.denoise).toBe(0.85);
-    expect(PRESETS.aggressive.dereverb).toBe(0.5);
-    expect(PRESETS.aggressive.dry).toBe(0.0);
+  it('dbToParam(12) should return exactly 1 (ceiling)', () => {
+    expect(dbToParam(12)).toBe(1);
   });
 
-  it('should clamp denoise to 0-1 range', () => {
-    expect(Math.max(0, Math.min(1, -0.1))).toBe(0);
-    expect(Math.max(0, Math.min(1, 1.5))).toBe(1);
-    expect(Math.max(0, Math.min(1, 0.5))).toBe(0.5);
+  it('paramToDb(0) should return -56', () => {
+    expect(paramToDb(0)).toBe(-56);
   });
 
-  it('should clamp dereverb to 0-1 range', () => {
-    expect(Math.max(0, Math.min(1, -0.5))).toBe(0);
-    expect(Math.max(0, Math.min(1, 2.0))).toBe(1);
+  it('paramToDb(1) should return 12', () => {
+    expect(paramToDb(1)).toBe(12);
   });
 
-  it('should clamp dry to 0-1 range', () => {
-    expect(Math.max(0, Math.min(1, 0))).toBe(0);
-    expect(Math.max(0, Math.min(1, 1))).toBe(1);
+  it('paramToDb(0.5) should return -22 (0.5 * 68 - 56)', () => {
+    expect(paramToDb(0.5)).toBe(-22);
+  });
+
+  it('round-trip: paramToDb(dbToParam(x)) === x for several values', () => {
+    for (const db of [-56, -40, -22, 0, 6, 12]) {
+      expect(paramToDb(dbToParam(db))).toBeCloseTo(db, 10);
+    }
+  });
+});
+
+// ==================== Fader defaults and ranges ====================
+
+describe('Fader defaults and ranges', () => {
+  it('FADER_MIN_DB should be -56', () => {
+    expect(FADER_MIN_DB).toBe(-56);
+  });
+
+  it('FADER_MAX_DB should be 12', () => {
+    expect(FADER_MAX_DB).toBe(12);
+  });
+
+  it('FADER_DEFAULT_DB should be 0', () => {
+    expect(FADER_DEFAULT_DB).toBe(0);
+  });
+
+  it('FADER_LABELS should be [Dereverb, Denoise, Dialogue]', () => {
+    expect(FADER_LABELS).toEqual(['Dereverb', 'Denoise', 'Dialogue']);
+  });
+
+  it('FADER_PARAM_KEYS should be [dereverb, denoise, dry]', () => {
+    expect(FADER_PARAM_KEYS).toEqual(['dereverb', 'denoise', 'dry']);
   });
 });
 
@@ -157,27 +179,21 @@ describe('Dry/wet mix signal behavior', () => {
     });
   });
 
-  it('all presets should have wet > 0 (processing has some effect)', () => {
-    for (const [name, preset] of Object.entries(PRESETS)) {
-      const wet = 1.0 - preset.dry;
-      expect(wet, `Preset '${name}' should have wet > 0`).toBeGreaterThan(0);
-    }
-  });
-
-  it('balanced preset wet should be >= 50%', () => {
-    const wet = 1.0 - PRESETS.balanced.dry;
-    expect(wet).toBeGreaterThanOrEqual(0.5);
-  });
-
-  it('aggressive preset should be 100% wet (full processing)', () => {
-    const wet = 1.0 - PRESETS.aggressive.dry;
+  it('dry=0.0 (param=dbToParam(-56)) should be 100% wet (full processing)', () => {
+    const dryParam = dbToParam(-56);
+    const wet = 1.0 - dryParam;
     expect(wet).toBe(1.0);
   });
 
-  it('gentle preset should still apply some processing (wet > 0)', () => {
-    const wet = 1.0 - PRESETS.gentle.dry;
-    expect(wet).toBeGreaterThan(0);
-    // Gentle should be less aggressive than balanced
-    expect(wet).toBeLessThan(1.0 - PRESETS.balanced.dry);
+  it('dry param at default (0 dB) should be ~82% wet', () => {
+    const dryParam = dbToParam(FADER_DEFAULT_DB);
+    const wet = 1.0 - dryParam;
+    expect(wet).toBeCloseTo(1.0 - 56 / 68, 3);
+  });
+
+  it('dry param at max (12 dB) should be 0% wet (fully dry)', () => {
+    const dryParam = dbToParam(FADER_MAX_DB);
+    const wet = 1.0 - dryParam;
+    expect(wet).toBe(0.0);
   });
 });

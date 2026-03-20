@@ -1374,6 +1374,81 @@
             margin-top: 20px;
         }
 
+        .fader-bank {
+            display: flex;
+            justify-content: center;
+            gap: 24px;
+            padding: 16px 0;
+        }
+
+        .fader-channel {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .fader-db {
+            font-size: 11px;
+            font-variant-numeric: tabular-nums;
+            color: var(--text-secondary);
+            min-width: 48px;
+            text-align: center;
+        }
+
+        .fader-track {
+            position: relative;
+            height: 160px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .fader-zero-mark {
+            position: absolute;
+            width: 28px;
+            height: 1px;
+            background: var(--text-secondary);
+            opacity: 0.5;
+            /* 0dB is at position: (0 - (-56)) / (12 - (-56)) = 56/68 ≈ 82.35% from bottom */
+            bottom: 82.35%;
+        }
+
+        .fader-input {
+            -webkit-appearance: none;
+            appearance: none;
+            writing-mode: vertical-lr;
+            direction: rtl;
+            width: 6px;
+            height: 150px;
+            background: var(--bg-primary);
+            border-radius: 3px;
+            outline: none;
+            cursor: pointer;
+        }
+
+        .fader-input::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 20px;
+            height: 10px;
+            background: var(--text-primary);
+            border-radius: 2px;
+            cursor: grab;
+            border: 1px solid var(--bg-primary);
+        }
+
+        .fader-input::-webkit-slider-thumb:active {
+            cursor: grabbing;
+        }
+
+        .fader-label {
+            font-size: 11px;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
         .checkbox-label {
             display: flex;
             align-items: center;
@@ -2149,29 +2224,31 @@
     <div class="modal-overlay" id="denoiseModal">
         <div class="modal" style="min-width: 360px;">
             <h3>Noise Reduction (DeepFilterNet)</h3>
-            <div class="modal-row">
-                <label>Preset</label>
-                <select id="denoisePreset">
-                    <option value="gentle">Gentle</option>
-                    <option value="balanced" selected>Balanced</option>
-                    <option value="aggressive">Aggressive</option>
-                    <option value="custom">Custom</option>
-                </select>
-            </div>
-            <div class="modal-row" style="display: flex; align-items: center; gap: 8px;">
-                <label style="min-width: 70px;">De-noise</label>
-                <input type="range" id="denoiseAmount" min="0" max="100" value="50" style="flex:1;">
-                <span id="denoiseAmountLabel" style="min-width: 36px; text-align: right;">50%</span>
-            </div>
-            <div class="modal-row" style="display: flex; align-items: center; gap: 8px;">
-                <label style="min-width: 70px;">De-reverb</label>
-                <input type="range" id="dereverbAmount" min="0" max="100" value="30" style="flex:1;">
-                <span id="dereverbAmountLabel" style="min-width: 36px; text-align: right;">30%</span>
-            </div>
-            <div class="modal-row" style="display: flex; align-items: center; gap: 8px;">
-                <label style="min-width: 70px;">Dry Sound</label>
-                <input type="range" id="drySoundAmount" min="0" max="100" value="30" style="flex:1;">
-                <span id="drySoundAmountLabel" style="min-width: 36px; text-align: right;">30%</span>
+            <div class="fader-bank">
+                <div class="fader-channel">
+                    <span class="fader-db" id="faderDereverbDb">0 dB</span>
+                    <div class="fader-track">
+                        <div class="fader-zero-mark"></div>
+                        <input type="range" id="faderDereverb" class="fader-input" min="-56" max="12" value="0" step="1" orient="vertical" />
+                    </div>
+                    <label class="fader-label">Dereverb</label>
+                </div>
+                <div class="fader-channel">
+                    <span class="fader-db" id="faderDenoiseDb">0 dB</span>
+                    <div class="fader-track">
+                        <div class="fader-zero-mark"></div>
+                        <input type="range" id="faderDenoise" class="fader-input" min="-56" max="12" value="0" step="1" orient="vertical" />
+                    </div>
+                    <label class="fader-label">Denoise</label>
+                </div>
+                <div class="fader-channel">
+                    <span class="fader-db" id="faderDialogueDb">0 dB</span>
+                    <div class="fader-track">
+                        <div class="fader-zero-mark"></div>
+                        <input type="range" id="faderDialogue" class="fader-input" min="-56" max="12" value="0" step="1" orient="vertical" />
+                    </div>
+                    <label class="fader-label">Dialogue</label>
+                </div>
             </div>
             <div class="modal-row" style="display: flex; align-items: center; gap: 8px;">
                 <label style="min-width: 70px;">GPU</label>

@@ -13,6 +13,7 @@ import { Mixer } from '../mixer/Mixer';
 import { PluginHost } from '../plugins/PluginHost';
 import { Metering } from './Metering';
 import { MetadataManager } from './MetadataManager';
+import { dbToParam, FADER_DEFAULT_DB, FADER_LABELS } from './DeepFilterUtils';
 import { CollapsiblePanel } from './CollapsiblePanel';
 import { AnalysisPanel } from './AnalysisPanel';
 import { FileQueue } from './FileQueue';
@@ -814,8 +815,8 @@ export class App {
     document.getElementById('denoiseCancelBtn')!.addEventListener('click', () => this.hideModal('denoiseModal'));
     document.getElementById('denoiseApplyBtn')!.addEventListener('click', () => this.applyDenoise());
 
-    // Denoise preset/slider wiring
-    this.initDenoiseSliders();
+    // Denoise fader wiring
+    this.initDenoiseFaders();
 
     // Plugin browser
     document.getElementById('pluginBrowserCancelBtn')!.addEventListener('click', () => this.hideModal('pluginBrowserModal'));
@@ -4133,62 +4134,28 @@ export class App {
     (document.getElementById('denoiseProgressFill') as HTMLElement).style.width = '0%';
     document.getElementById('denoiseProgressLabel')!.textContent = '0%';
     (document.getElementById('denoiseApplyBtn') as HTMLButtonElement).disabled = false;
+    // Reset faders to default
+    for (const label of FADER_LABELS) {
+      (document.getElementById(`fader${label}`) as HTMLInputElement).value = String(FADER_DEFAULT_DB);
+      document.getElementById(`fader${label}Db`)!.textContent = `${FADER_DEFAULT_DB} dB`;
+    }
     this.showModal('denoiseModal');
   }
 
-  private initDenoiseSliders(): void {
-    const presets: Record<string, [number, number, number]> = {
-      gentle: [30, 10, 80],
-      balanced: [50, 30, 30],
-      aggressive: [85, 50, 0],
-    };
-
-    const presetSelect = document.getElementById('denoisePreset') as HTMLSelectElement;
-    const denoiseSlider = document.getElementById('denoiseAmount') as HTMLInputElement;
-    const dereverbSlider = document.getElementById('dereverbAmount') as HTMLInputElement;
-    const drySlider = document.getElementById('drySoundAmount') as HTMLInputElement;
-    const denoiseLabel = document.getElementById('denoiseAmountLabel')!;
-    const dereverbLabel = document.getElementById('dereverbAmountLabel')!;
-    const dryLabel = document.getElementById('drySoundAmountLabel')!;
-
-    const updateLabels = () => {
-      denoiseLabel.textContent = `${denoiseSlider.value}%`;
-      dereverbLabel.textContent = `${dereverbSlider.value}%`;
-      dryLabel.textContent = `${drySlider.value}%`;
-    };
-
-    presetSelect.addEventListener('change', () => {
-      const vals = presets[presetSelect.value];
-      if (vals) {
-        denoiseSlider.value = String(vals[0]);
-        dereverbSlider.value = String(vals[1]);
-        drySlider.value = String(vals[2]);
-        updateLabels();
-      }
-    });
-
-    const onSliderChange = () => {
-      updateLabels();
-      // Check if current values match a preset, otherwise set to Custom
-      const d = parseInt(denoiseSlider.value);
-      const r = parseInt(dereverbSlider.value);
-      const dry = parseInt(drySlider.value);
-      let matched = 'custom';
-      for (const [name, vals] of Object.entries(presets)) {
-        if (d === vals[0] && r === vals[1] && dry === vals[2]) { matched = name; break; }
-      }
-      presetSelect.value = matched;
-    };
-
-    denoiseSlider.addEventListener('input', onSliderChange);
-    dereverbSlider.addEventListener('input', onSliderChange);
-    drySlider.addEventListener('input', onSliderChange);
+  private initDenoiseFaders(): void {
+    for (const label of FADER_LABELS) {
+      const fader = document.getElementById(`fader${label}`) as HTMLInputElement;
+      const dbLabel = document.getElementById(`fader${label}Db`)!;
+      fader.addEventListener('input', () => {
+        dbLabel.textContent = `${fader.value} dB`;
+      });
+    }
   }
 
   async applyDenoise(): Promise<void> {
-    const denoise = parseInt((document.getElementById('denoiseAmount') as HTMLInputElement).value) / 100;
-    const dereverb = parseInt((document.getElementById('dereverbAmount') as HTMLInputElement).value) / 100;
-    const dry = parseInt((document.getElementById('drySoundAmount') as HTMLInputElement).value) / 100;
+    const denoise = dbToParam(parseInt((document.getElementById('faderDenoise') as HTMLInputElement).value));
+    const dereverb = dbToParam(parseInt((document.getElementById('faderDereverb') as HTMLInputElement).value));
+    const dry = dbToParam(parseInt((document.getElementById('faderDialogue') as HTMLInputElement).value));
     const useGpu = (document.getElementById('denoiseUseGpu') as HTMLInputElement).checked;
 
     if (this.timelineModel.timeline.tracks.length === 0) {
