@@ -146,6 +146,13 @@ commit
 
 ### Session 启动流程（每次 session 开始必做）
 
+**Team Lead 启动步骤（按顺序）：**
+
+1. **确认团队规范** — 本文件已加载，确认 TDD 流程和提交规则
+2. **读取产品方向** — `@docs/decisions/tech-stack-vision.md`（AI prompt 编辑、WASM 策略等）
+3. **检查任务列表** — TaskList 查看当前待办
+4. **就绪报告** — 告知状态，等待指令
+
 **所有 teammate agents 的第一条指令：**
 
 ```bash
@@ -167,7 +174,7 @@ cd src-tauri && cargo test
 - ✅ 获取项目规模感（测试数量）
 - ✅ 置于测试心态
 
-**Lead agent 可以跳过这一步**（不直接写代码）。
+**Lead agent 可以跳过测试这一步**（不直接写代码）。
 
 ### 核心机制
 
